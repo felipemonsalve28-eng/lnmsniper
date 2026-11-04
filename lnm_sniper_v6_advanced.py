@@ -422,6 +422,7 @@ class AutonomousGoalBrain:
             },
         }
 
+        self.store = AtomicBrainStore(self.filename)
         self.dirty = False
         self.last_save_time = 0.0
         self.load_brain()
@@ -575,14 +576,7 @@ class AutonomousGoalBrain:
                 "active_trades": self.active_trades,
                 "memory": list(self.memory)[-1600:],
             }
-            tmp, bak = f"{self.filename}.tmp", f"{self.filename}.bak"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(payload, f, separators=(",", ":"))
-                f.flush()
-                os.fsync(f.fileno())
-            if os.path.exists(self.filename):
-                shutil.copy2(self.filename, bak)
-            os.replace(tmp, self.filename)
+            self.store.save(payload)
             self.dirty = False
             self.last_save_time = now
         except Exception as e:
@@ -820,7 +814,7 @@ class AutonomousGoalBrain:
         lr = custom_alpha if custom_alpha is not None else self.alpha
         current_q = self.q_table[norm_s][a]
         max_future_q = max(self.q_table[norm_ns][1:])
-        new_q = current_q + lr * (r + self.gamma * max_future_q - current_q)
+        new_q = float(np.clip(current_q + lr * (r + self.gamma * max_future_q - current_q), -0.95, 0.95))
         self.q_table[norm_s][a] = round(new_q, 4)
 
     def _experience_replay(self, sample_count, custom_alpha=None):
@@ -953,7 +947,7 @@ class LNMarketsClient:
                     url,
                     headers=headers,
                     data=data_str if method_up in ("POST", "PUT") and data_str else None,
-                    timeout=9,
+                    timeout=(6.0, 15.0),
                 )
                 if resp.status_code in (429, 500, 502, 503, 504) and max_retries > 1:
                     time.sleep((1.5 ** attempt) + random.uniform(0.2, 0.6))
@@ -1027,7 +1021,11 @@ class LNMarketsClient:
 def compute_account_equity(available_balance, running_trades):
     locked_margin = sum(int(t.get("margin") or 0) for t in running_trades)
     floating_pl = sum(int(t.get("pl") or 0) for t in running_trades)
-    true_equity = max(1, available_balance + locked_margin + floating_pl)
+    est_exit_fees = sum(
+        int(round(int(t.get("margin") or 0) * float(t.get("leverage") or 20.0) * Config.TAKER_FEE))
+        for t in running_trades
+    )
+    true_equity = max(1, available_balance + locked_margin + floating_pl - est_exit_fees)
     return true_equity, locked_margin, floating_pl
 
 
@@ -1059,14 +1057,13 @@ def infer_adopted_trade(trade, ind_5m, state, now, existing_meta=None, forced_ac
         action = int(forced_action)
         style_map = {1: "TREND", 2: "REVERSION", 3: "SNIPER", 4: "DEF_SCALP", 5: "TREND", 6: "REVERSION", 7: "SNIPER", 8: "DEF_SCALP"}
         style = style_map[action]
-    elif lev >= 68:
-        style, action = "SNIPER", (3 if side == "buy" else 7)
-    elif lev <= 36:
-        style, action = "DEF_SCALP", (4 if side == "buy" else 8)
-    elif (side == "buy" and regime == "TREND_BULL") or (side == "sell" and regime == "TREND_BEAR"):
-        style, action = "TREND", (1 if side == "buy" else 5)
+    elif isinstance(existing_meta, dict) and existing_meta.get("action") in (1, 2, 3, 4, 5, 6, 7, 8):
+        action = int(existing_meta["action"])
+        style_map = {1: "TREND", 2: "REVERSION", 3: "SNIPER", 4: "DEF_SCALP", 5: "TREND", 6: "REVERSION", 7: "SNIPER", 8: "DEF_SCALP"}
+        style = style_map[action]
     else:
-        style, action = "REVERSION", (2 if side == "buy" else 6)
+        # Huérfano real sin metadata previa: asignar perfil conservador DEF_SCALP (LOCK)
+        style, action = "DEF_SCALP", (4 if side == "buy" else 8)
 
     base = {
         "state": state,
@@ -1157,8 +1154,9 @@ def execute_strategy_guardian(client, brain, trade, ind_5m, ind_15m, trade_meta,
 
         pnl_dist = (lnm_price - entry) if side == "buy" else (entry - lnm_price)
         pnl_atr = pnl_dist / atr
-        last_pnl_atr = float(trade_meta.get("last_pnl_atr", pnl_atr))
-        delta_atr = pnl_atr - last_pnl_atr
+        prev_loop_pnl_atr = float(trade_meta.get("prev_loop_pnl_atr", trade_meta.get("last_pnl_atr", pnl_atr)))
+        delta_atr = pnl_atr - prev_loop_pnl_atr
+        trade_meta["prev_loop_pnl_atr"] = round(pnl_atr, 4)
         eval_count = int(trade_meta.get("eval_count", 0))
 
         sl_locked = (
@@ -1169,7 +1167,7 @@ def execute_strategy_guardian(client, brain, trade, ind_5m, ind_15m, trade_meta,
         trade_meta.update({"last_guardian_mode": mode_label, "sl_locked": bool(sl_locked)})
 
         vol_scale = 1.12 if atr_pct < 0.0025 else (0.88 if atr_pct > 0.0068 else 1.00)
-        sys_scale = 0.86 if system_mode in ("DEFENSIVE", "RECOVERY") else 1.00
+        sys_scale = 0.72 if (system_mode in ("DEFENSIVE", "RECOVERY") and regime == "RANGE_SQUEEZE") else (0.86 if system_mode in ("DEFENSIVE", "RECOVERY") else 1.00)
 
         harvest_target_atr = strat["harvest_atr"] * sys_scale
         min_profit_ok = pnl_dist > (fee_offset * 1.35) and pl_sats >= max(12, int(margin * 0.030))
@@ -1678,6 +1676,7 @@ def main():
                                         )
                                 except Exception as open_err:
                                     print(f"  [VERIFICANDO ORDEN POST-TIMEOUT] {open_err}")
+                                    time.sleep(1.5)
                                     verify_running = client.get_running_trades()
                                     for vt in verify_running:
                                         vtid = str(vt["id"])
