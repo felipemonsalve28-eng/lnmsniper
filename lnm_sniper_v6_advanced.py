@@ -1417,22 +1417,27 @@ def execute_strategy_guardian(
         deg_streak = int(trade_meta["edge_deg_streak"])
         vel_ema = float(perception.get("vel_ema_atr", 0.0)) if isinstance(perception, dict) else 0.0
         ovr_side = perception.get("override_side") if isinstance(perception, dict) else None
+        st_str = str(trade_meta.get("state", ""))
+        macro_counter = (
+            (side == "sell" and ("|BULL|" in st_str or "BULL_DIP" in st_str or "FULL_BULL" in st_str)) or
+            (side == "buy" and ("|BEAR|" in st_str or "BEAR_RALLY" in st_str or "FULL_BEAR" in st_str))
+        )
         contrary_momentum = (
-            (side == "buy" and (vel_ema < -0.35 or rsi < 44.0 or ovr_side == "BEAR")) or
-            (side == "sell" and (vel_ema > 0.35 or rsi > 56.0 or ovr_side == "BULL"))
+            (side == "buy" and (vel_ema < -0.30 or rsi < 45.0 or ovr_side == "BEAR" or (macro_counter and ovr_side is None))) or
+            (side == "sell" and (vel_ema > 0.30 or rsi > 55.0 or ovr_side == "BULL" or (macro_counter and ovr_side is None)))
         )
 
         if deg_streak >= Config.EDGE_DEGRADATION_PERSISTENCE and contrary_momentum:
             # Caso A: La posición tiene beneficio neto disponible -> Cosechar para proteger sats
-            if pl_sats > (est_round_fee_sats + 10) and pnl_dist > (fee_offset * 1.15):
+            if pl_sats > (est_round_fee_sats + 8) and pnl_dist > (fee_offset * 1.10):
                 if confirm_and_close_trade(client, brain, tid, trade_meta, "EDGE_DEGRADATION_PROFIT_PROTECT"):
                     print(
                         f"  🛡️ [GUARDIÁN EDGE PROTECT] Cosecha defensiva en {tid[:6]} tras {deg_streak} ciclos "
                         f"de degradación (Edge:{edge_score:+.3f} | +{pl_sats} sats)"
                     )
                     return True
-            # Caso B: La posición está en pérdida con expectativa muy deteriorada y momentum en contra
-            elif edge_score <= Config.EDGE_DEGRADATION_EXIT and pnl_atr <= -1.10:
+            # Caso B: La posición está en pérdida con expectativa muy deteriorada y momentum/macro en contra
+            elif (edge_score <= Config.EDGE_DEGRADATION_EXIT and pnl_atr <= -1.05) or (macro_counter and ovr_side is None and edge_score <= -0.52 and pnl_atr <= -0.85):
                 if confirm_and_close_trade(client, brain, tid, trade_meta, "EDGE_DEGRADATION_DEFENSIVE_EXIT"):
                     print(
                         f"  🛑 [GUARDIÁN EDGE CUT] Cierre defensivo en {tid[:6]} (Streak:{deg_streak} | "
@@ -1624,11 +1629,24 @@ def compute_situational_order_params(
     rec_mult = 0.58 if recovery_mode else 1.0
     streak_mult = 0.84 ** min(4, max(0, consecutive_losses))
 
+    macro_counter_trend = (
+        (is_long and ("|BEAR|" in norm_s or "FULL_BEAR" in norm_s or "BEAR_RALLY" in norm_s)) or
+        ((not is_long) and ("|BULL|" in norm_s or "FULL_BULL" in norm_s or "BULL_DIP" in norm_s))
+    )
+    if macro_counter_trend and "RANGE_SQUEEZE" in norm_s:
+        mtf_mult = min(mtf_mult, 0.50)
+    if q_val < 0.0:
+        conv_mult = min(conv_mult, 0.48)
+
     situational_mult = regime_mult * mtf_mult * conv_mult * dd_mult * rec_mult * streak_mult
     dynamic_lev = int(round(float(raw_lev) * situational_mult))
     dynamic_lev = max(Config.MIN_LEVERAGE, min(85 if not aligned_override else 90, dynamic_lev))
+    if "RANGE_SQUEEZE" in norm_s:
+        dynamic_lev = min(28 if macro_counter_trend else 35, dynamic_lev)
+    elif macro_counter_trend:
+        dynamic_lev = min(35, dynamic_lev)
     if recovery_mode:
-        dynamic_lev = min(38, dynamic_lev)
+        dynamic_lev = min(25 if "RANGE_SQUEEZE" in norm_s else 35, dynamic_lev)
 
     min_sl_dist = max(atr * 1.18, price * 0.0040)
     orig_sl_dist = abs(price - float(raw_sl)) if raw_sl else (atr * 1.35)
@@ -1892,11 +1910,13 @@ def main():
                 _pnl_atr = float(_meta.get("last_pnl_atr", 0.0))
                 _q_act = float(q_vec[_act]) if _act < len(q_vec) else 0.0
                 _ovr = perception.get("override_side")
-                _ovr_bias = -0.35 if ((_act <= 4 and _ovr == "BEAR") or (_act >= 5 and _ovr == "BULL")) else (0.15 if ((_act <= 4 and _ovr == "BULL") or (_act >= 5 and _ovr == "BEAR")) else 0.0)
+                _macro_c = (_act <= 4 and "|BEAR|" in state) or (_act >= 5 and "|BULL|" in state)
+                _ovr_bias = -0.35 if ((_act <= 4 and _ovr == "BEAR") or (_act >= 5 and _ovr == "BULL")) else (0.15 if ((_act <= 4 and _ovr == "BULL") or (_act >= 5 and _ovr == "BEAR")) else (-0.12 if _macro_c else 0.0))
                 edge_score = round(_q_act + (0.20 * _pnl_atr) + _ovr_bias, 4)
                 edge_scores_by_tid[_tid] = edge_score
-                if edge_score < 0.0:
-                    print(f"  ⚠️ [DEGRADACIÓN DE EDGE] ID:{_tid[:6]} | Act:{_act} | Edge:{edge_score:+.3f} (Q:{_q_act:+.3f} | PnL:{_pnl_atr:+.2f}ATR | OVR:{ovr_tag})")
+                _deg_cnt = int(_meta.get("edge_deg_streak", 0))
+                if edge_score <= Config.EDGE_DEGRADATION_WARN and (_deg_cnt == 1 or _deg_cnt % 5 == 0):
+                    print(f"  ⚠️ [DEGRADACIÓN DE EDGE] ID:{_tid[:6]} | Act:{_act} | Edge:{edge_score:+.3f} (Q:{_q_act:+.3f} | PnL:{_pnl_atr:+.2f}ATR | OVR:{ovr_tag} | Streak:{_deg_cnt})")
 
             if floor_threat and (now >= pause_until):
                 print(f"  🚨 [GUARDIÁN PISO DURO UNIFICADO] {prot['reason']} | Eq:{equity:,} <= Piso:{brain.locked_floor:,}. Liquidando y pausando 45m.")

@@ -191,6 +191,19 @@ class SatsExpectancyGate:
         raw_action, state, q_values, strategies, perception,
         recovery_mode=False, current_dd_pct=0.0
     ):
+        # Compuerta P0 de Ventaja Estadística: Bloquear entradas en contratendencia con Q-Value degradado
+        if raw_action in (1, 2, 3, 4, 5, 6, 7, 8) and isinstance(q_values, (list, tuple)) and len(q_values) > int(raw_action):
+            _rq = float(q_values[int(raw_action)])
+            _st = str(state)
+            _is_counter = (int(raw_action) >= 5 and ("|BULL|" in _st or "BULL_DIP" in _st or "FULL_BULL" in _st)) or (
+                int(raw_action) <= 4 and ("|BEAR|" in _st or "BEAR_RALLY" in _st or "FULL_BEAR" in _st)
+            )
+            if "RANGE_SQUEEZE" in _st and "HIGH_EXP" in _st:
+                return 0, "BLOCKED_SQUEEZE_HIGH_EXP"
+            if _is_counter and "RANGE_SQUEEZE" in _st and _rq <= -0.18:
+                return 0, f"BLOCKED_NEGATIVE_Q_COUNTERTREND(Q={_rq:+.3f})"
+            if _rq <= -0.28 and (not isinstance(perception, dict) or perception.get("override_side") is None):
+                return 0, f"BLOCKED_SEVERE_NEGATIVE_Q(Q={_rq:+.3f})"
         override = perception.get("override_side") if isinstance(perception, dict) else None
         norm_s = str(state)
 

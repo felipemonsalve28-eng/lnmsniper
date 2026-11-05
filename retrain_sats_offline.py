@@ -90,6 +90,11 @@ def recalibrate_brain_for_sats_accumulation(
             else:
                 new_q[6] = round(new_q[6] - 0.065, 5)
 
+        if "RANGE_SQUEEZE" in regime and "BULL" in micro_trend and "BULL_DIP" in ema_struct:
+            new_q[0] = max(new_q[0], 0.025)
+            for s_idx in (5, 6, 7, 8):
+                if new_q[s_idx] > 0.0:
+                    new_q[s_idx] = round(new_q[s_idx] * 0.25 - 0.12, 5)
         if "RANGE_SQUEEZE" in regime and ("CHOP" in micro_trend or "HIGH_EXP" in exp):
             new_q[0] = max(new_q[0], 0.025)
             new_q[3] -= 0.045
