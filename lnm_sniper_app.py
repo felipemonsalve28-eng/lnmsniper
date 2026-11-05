@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-LNM Sniper Command Center · Flet Edition
-100% independiente. Solo lee brain + log.
-Optimizado para Termux (web :8550) y Desktop.
+LNM Sniper Command Center · Flet Edition (v7.3 Sats Net Balance Audited)
+100% independiente. Lectura pasiva y atómica de q_brain_advanced_lnm.json + sniper_advanced.log.
+Optimizado para Termux (Web :8550) y Desktop. Cero SyntaxWarnings.
 """
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ CANDIDATE_DIRS = [
     Path.home() / "storage" / "downloads", Path.home() / "lnm_sniper",
 ]
 
+
 def find_file(name: str) -> Optional[Path]:
     for d in CANDIDATE_DIRS:
         try:
@@ -34,6 +35,7 @@ def find_file(name: str) -> Optional[Path]:
         except Exception:
             continue
     return None
+
 
 BRAIN_FILE = find_file("q_brain_advanced_lnm.json") or (BASE_DIR / "q_brain_advanced_lnm.json")
 LOG_FILE = find_file("sniper_advanced.log") or (BASE_DIR / "sniper_advanced.log")
@@ -51,16 +53,19 @@ C = {
     "red": "#ff1744", "orange": "#ffab00", "text": "#e8eaf6", "dim": "#8b95b0",
 }
 
+
 def safe_load_json(path: Path, default: Any = None) -> Any:
     if default is None:
         default = {}
-    try:
-        if path.exists():
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
+    for candidate in (path, Path(f"{path}.bak")):
+        try:
+            if candidate.exists():
+                with open(candidate, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            continue
     return default
+
 
 def safe_save_json(path: Path, data: Any) -> bool:
     try:
@@ -75,21 +80,28 @@ def safe_save_json(path: Path, data: Any) -> bool:
         print(f"[APP] save error: {e}")
         return False
 
-def tail_log(path: Path, n: int = 160) -> List[str]:
+
+def tail_log(path: Path, n: int = 180) -> List[str]:
     if not path.exists():
         return []
     try:
         with open(path, "rb") as f:
             f.seek(0, os.SEEK_END)
             fsize = f.tell()
-            block = min(fsize, max(16384, n * 180))
+            block = min(fsize, max(16384, n * 190))
             f.seek(max(0, fsize - block), os.SEEK_SET)
             raw = f.read().decode("utf-8", errors="ignore")
         return raw.splitlines()[-n:]
     except Exception:
         return []
 
+
 RE_PEAK_SYNC = re.compile(r"Peak=([\d,]+)\s*sats\s*\|\s*Piso Duro\s*\(75%\)=([\d,]+)\s*sats")
+RE_BAL_NEW = re.compile(r"Bal:([\d,]+)")
+RE_EQ_ANY = re.compile(r"Eq:([\d,]+)")
+RE_LATENCY = re.compile(r"\|\s*(\d+)ms\b")
+RE_EDGE_DEG = re.compile(r"\[DEGRADACIÓN DE EDGE\]\s*ID:([a-f0-9]+)\s*\|\s*Act:(\d+)\s*\|\s*Edge:([+-]?\d+\.\d+)")
+
 
 def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
     line = line.strip()
@@ -98,8 +110,8 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
     r: Dict[str, Any] = {
         "raw": line, "ts": None, "mode": None, "state": None,
         "price": None, "equity": None, "balance": None,
-        "active": None, "dd": None, "ovr": None,
-        "sync_peak": None, "sync_floor": None,
+        "active": None, "dd": None, "ovr": None, "latency_ms": None,
+        "sync_peak": None, "sync_floor": None, "edge_warn": None,
     }
     m_sync = RE_PEAK_SYNC.search(line)
     if m_sync:
@@ -108,6 +120,14 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
             r["sync_floor"] = int(m_sync.group(2).replace(",", ""))
         except Exception:
             pass
+
+    m_edge = RE_EDGE_DEG.search(line)
+    if m_edge:
+        try:
+            r["edge_warn"] = (m_edge.group(1), int(m_edge.group(2)), float(m_edge.group(3)))
+        except Exception:
+            pass
+
     if line.startswith("[") and "]" in line:
         try:
             r["ts"] = line[1:line.index("]")]
@@ -117,14 +137,21 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
         if f"[{m}]" in line:
             r["mode"] = m
             break
-    if "Eq:" in line:
+
+    # Soporte dual para formato nuevo (Bal:X (Y% Meta) | Eq:Z) y formato antiguo (Eq:Z (Bal:X))
+    m_bal = RE_BAL_NEW.search(line)
+    if m_bal:
         try:
-            part = line.split("Eq:")[1].split("|")[0].strip()
-            r["equity"] = int(part.split("(")[0].replace(",", "").strip())
-            if "Bal:" in part:
-                r["balance"] = int(part.split("Bal:")[1].split(")")[0].replace(",", "").strip())
+            r["balance"] = int(m_bal.group(1).replace(",", ""))
         except Exception:
             pass
+    m_eq = RE_EQ_ANY.search(line)
+    if m_eq:
+        try:
+            r["equity"] = int(m_eq.group(1).replace(",", ""))
+        except Exception:
+            pass
+
     if "Act:" in line:
         try:
             r["active"] = line.split("Act:")[1].split("|")[0].strip()
@@ -145,6 +172,12 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
             r["ovr"] = line.split("OVR:")[1].split("]")[0].strip()
         except Exception:
             pass
+    m_lat = RE_LATENCY.search(line)
+    if m_lat:
+        try:
+            r["latency_ms"] = int(m_lat.group(1))
+        except Exception:
+            pass
     if "][" in line and r["mode"]:
         try:
             for p in line.split("]"):
@@ -161,11 +194,16 @@ class SniperApp:
         self.page = page
         self.running = True
         self.refresh_sec = 2.5
+        self.balance_hist: List[int] = []
         self.equity_hist: List[int] = []
         self.metrics: Dict[str, Any] = {
             "mode": "—", "state": "—", "equity": 0, "balance": 0,
-            "active": "0/5", "dd": 0.0, "price": 0.0, "ovr": "OFF",
-            "peak": 0, "floor": 0, "target": 300000,
+            "realized_pnl": 0, "fees_paid": 0, "locked_margin": 0,
+            "exposure_pct": 0.0, "floating_pnl": 0, "degraded_count": 0,
+            "profit_factor": 0.0, "expectancy_trade": 0.0, "win_rate": 0.0,
+            "active": "0/5", "dd": 0.0, "bal_dd": 0.0, "price": 0.0, "ovr": "OFF",
+            "latency_ms": 0, "api_errors": 0, "cycles_per_min": 0.0,
+            "peak": 0, "peak_balance": 0, "floor": 0, "target": 300000,
             "trained": 0, "online": 0, "q_states": 0, "epsilon": 0.4, "milestone": 1,
         }
         self.brain: Dict[str, Any] = {}
@@ -191,45 +229,60 @@ class SniperApp:
 
     def _setup_page(self):
         p = self.page
-        p.title = "LNM Sniper · Command Center"
+        p.title = "LNM Sniper v7.3 · Sats Net Balance Command Center"
         p.theme_mode = ft.ThemeMode.DARK
         p.bgcolor = C["bg"]
         p.padding = 0
         p.spacing = 0
 
-    def _kpi_card(self, title: str, value_ref: ft.Ref[ft.Text], color: str) -> ft.Container:
+    def _kpi_card(self, title: str, value_ref: ft.Ref[ft.Text], color: str, subtitle_ref: Optional[ft.Ref[ft.Text]] = None) -> ft.Container:
+        items = [
+            ft.Text(title, size=10, color=C["dim"], weight=ft.FontWeight.W_600),
+            ft.Text("—", size=16, color=color, weight=ft.FontWeight.BOLD, ref=value_ref),
+        ]
+        if subtitle_ref is not None:
+            items.append(ft.Text("—", size=10, color=C["dim"], ref=subtitle_ref))
         return ft.Container(
-            content=ft.Column([
-                ft.Text(title, size=11, color=C["dim"]),
-                ft.Text("—", size=17, color=color, weight=ft.FontWeight.BOLD, ref=value_ref),
-            ], spacing=2, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            content=ft.Column(items, spacing=2, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
             bgcolor=C["card"], border=ft.border.all(1, C["border"]),
-            border_radius=12, padding=ft.padding.symmetric(horizontal=8, vertical=10),
+            border_radius=12, padding=ft.padding.symmetric(horizontal=8, vertical=9),
             col={"xs": 6, "sm": 4, "md": 2},
         )
 
     def _info_row(self, label: str, value_ref: ft.Ref[ft.Text]) -> ft.Row:
         return ft.Row([
-            ft.Text(label, size=12, color=C["dim"], width=120),
+            ft.Text(label, size=12, color=C["dim"], width=155),
             ft.Text("—", size=12, color=C["text"], weight=ft.FontWeight.W_600,
                     ref=value_ref, expand=True, text_align=ft.TextAlign.RIGHT),
         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
 
     def _build_ui(self):
+        # 6 KPIs Superiores centrados en la Verdad Económica
+        self.ref_balance = ft.Ref[ft.Text]()
+        self.ref_goal_sub = ft.Ref[ft.Text]()
+        self.ref_realized = ft.Ref[ft.Text]()
+        self.ref_fees_sub = ft.Ref[ft.Text]()
         self.ref_equity = ft.Ref[ft.Text]()
+        self.ref_float_sub = ft.Ref[ft.Text]()
         self.ref_dd = ft.Ref[ft.Text]()
+        self.ref_floor_sub = ft.Ref[ft.Text]()
         self.ref_mode = ft.Ref[ft.Text]()
-        self.ref_active = ft.Ref[ft.Text]()
+        self.ref_active_sub = ft.Ref[ft.Text]()
         self.ref_price = ft.Ref[ft.Text]()
-        self.ref_ovr = ft.Ref[ft.Text]()
+        self.ref_ovr_sub = ft.Ref[ft.Text]()
+
+        # Filas detalladas de rendimiento económico, riesgo y telemetría HFT
         self.ref_state = ft.Ref[ft.Text]()
-        self.ref_peak = ft.Ref[ft.Text]()
-        self.ref_floor = ft.Ref[ft.Text]()
         self.ref_target = ft.Ref[ft.Text]()
         self.ref_goal = ft.Ref[ft.Text]()
+        self.ref_peak = ft.Ref[ft.Text]()
+        self.ref_floor = ft.Ref[ft.Text]()
+        self.ref_exposure = ft.Ref[ft.Text]()
+        self.ref_pf_exp = ft.Ref[ft.Text]()
+        self.ref_edge_deg = ft.Ref[ft.Text]()
         self.ref_trained = ft.Ref[ft.Text]()
-        self.ref_online = ft.Ref[ft.Text]()
-        self.ref_qstates = ft.Ref[ft.Text]()
+        self.ref_hft_perf = ft.Ref[ft.Text]()
+
         self.ref_clock = ft.Ref[ft.Text]()
         self.ref_status = ft.Ref[ft.Text]()
         self.ref_live = ft.Ref[ft.Text]()
@@ -243,10 +296,11 @@ class SniperApp:
                 ft.DataColumn(ft.Text("Estrategia", color=C["accent"])),
                 ft.DataColumn(ft.Text("Margen", color=C["accent"])),
                 ft.DataColumn(ft.Text("PnL ATR", color=C["accent"])),
+                ft.DataColumn(ft.Text("Edge / SL", color=C["accent"])),
                 ft.DataColumn(ft.Text("Guardián", color=C["accent"])),
             ],
             rows=[], border=ft.border.all(1, C["border"]), border_radius=8,
-            heading_row_color=C["card2"], data_row_min_height=36, column_spacing=14,
+            heading_row_color=C["card2"], data_row_min_height=36, column_spacing=12,
         )
         self.brain_refs = {k: ft.Ref[ft.Text]() for k in
                            ("states", "trained", "online", "epsilon", "target", "milestone", "peak", "floor")}
@@ -255,7 +309,7 @@ class SniperApp:
         header = ft.Container(
             content=ft.Row([
                 ft.Text("⚡ LNM SNIPER", size=17, weight=ft.FontWeight.BOLD, color=C["accent"]),
-                ft.Text("v7.3", size=13, color=C["dim"]),
+                ft.Text("v7.3 · Sats Netos", size=12, color=C["dim"]),
                 ft.Container(expand=True),
                 ft.Text("—", size=12, color=C["dim"], ref=self.ref_clock),
                 ft.Text("● LIVE", size=12, weight=ft.FontWeight.BOLD, color=C["green"], ref=self.ref_live),
@@ -264,35 +318,37 @@ class SniperApp:
         )
 
         kpi_grid = ft.ResponsiveRow([
-            self._kpi_card("EQUITY", self.ref_equity, C["accent"]),
-            self._kpi_card("DRAWDOWN", self.ref_dd, C["orange"]),
-            self._kpi_card("MODO", self.ref_mode, C["accent2"]),
-            self._kpi_card("ACTIVOS", self.ref_active, C["text"]),
-            self._kpi_card("BTC USD", self.ref_price, C["green"]),
-            self._kpi_card("OVR", self.ref_ovr, C["dim"]),
+            self._kpi_card("BALANCE DISPONIBLE", self.ref_balance, C["green"], self.ref_goal_sub),
+            self._kpi_card("BENEFICIO REALIZADO", self.ref_realized, C["accent"], self.ref_fees_sub),
+            self._kpi_card("EQUITY PATRIMONIAL", self.ref_equity, C["text"], self.ref_float_sub),
+            self._kpi_card("DRAWDOWN / PISO", self.ref_dd, C["orange"], self.ref_floor_sub),
+            self._kpi_card("GUARDIÁN / ACTIVAS", self.ref_mode, C["accent2"], self.ref_active_sub),
+            self._kpi_card("BTC USD / OVERRIDE", self.ref_price, C["green"], self.ref_ovr_sub),
         ], spacing=8, run_spacing=8)
 
         info_panel = ft.Container(
             content=ft.Column([
-                ft.Text("ESTADO DEL SISTEMA", size=13, weight=ft.FontWeight.BOLD, color=C["accent"]),
+                ft.Text("AUDITORÍA ECONÓMICA Y RIESGO EN VIVO", size=12, weight=ft.FontWeight.BOLD, color=C["accent"]),
                 ft.Divider(color=C["border"], height=1),
-                self._info_row("Estado", self.ref_state),
-                self._info_row("Peak Equity", self.ref_peak),
-                self._info_row("Piso Duro (75%)", self.ref_floor),
-                self._info_row("Meta Activa", self.ref_target),
-                self._info_row("Avance Meta", self.ref_goal),
-                self._info_row("Cierres IA", self.ref_trained),
-                self._info_row("Updates Online", self.ref_online),
-                self._info_row("Estados Q", self.ref_qstates),
-            ], spacing=6),
+                self._info_row("Estado Táctico", self.ref_state),
+                self._info_row("Meta de Acumulación", self.ref_target),
+                self._info_row("Avance Real (Balance)", self.ref_goal),
+                self._info_row("Peak Equity / Balance", self.ref_peak),
+                self._info_row("Piso Duro Protegido", self.ref_floor),
+                self._info_row("Margen / Exposición", self.ref_exposure),
+                self._info_row("Profit Factor / Expect.", self.ref_pf_exp),
+                self._info_row("Edge Degradado (Pos)", self.ref_edge_deg),
+                self._info_row("Aprendizaje (Cierres/Onl)", self.ref_trained),
+                self._info_row("Latencia / Salud API", self.ref_hft_perf),
+            ], spacing=5),
             bgcolor=C["card"], border=ft.border.all(1, C["border"]),
             border_radius=12, padding=14, col={"xs": 12, "md": 5},
         )
 
         chart_box = ft.Container(
             content=ft.Column([
-                ft.Text("CURVA DE EQUITY (SATS EN VIVO)", size=12, color=C["dim"], weight=ft.FontWeight.W_600),
-                ft.Text("Cargando…", size=12, color=C["accent"], ref=self.equity_chart_text, font_family="monospace"),
+                ft.Text("ACUMULACIÓN DE BALANCE DISPONIBLE vs EQUITY (SATS)", size=12, color=C["dim"], weight=ft.FontWeight.W_600),
+                ft.Text("Cargando telemetría…", size=12, color=C["accent"], ref=self.equity_chart_text, font_family="monospace"),
             ], spacing=8),
             bgcolor=C["card"], border=ft.border.all(1, C["border"]),
             border_radius=12, padding=14, col={"xs": 12, "md": 7},
@@ -310,7 +366,7 @@ class SniperApp:
 
         pos_tab = ft.Column([
             ft.Row([
-                ft.Text("POSICIONES ACTIVAS", size=15, weight=ft.FontWeight.BOLD, color=C["accent"]),
+                ft.Text("POSICIONES ACTIVAS Y ESTADO DEL GUARDIÁN", size=15, weight=ft.FontWeight.BOLD, color=C["accent"]),
                 ft.Container(expand=True),
                 ft.ElevatedButton("↻ Refrescar", on_click=lambda e: self._refresh_positions(),
                                   bgcolor=C["accent2"], color=C["text"]),
@@ -330,19 +386,19 @@ class SniperApp:
 
         brain_tab = ft.Column([
             ft.Row([
-                ft.Text("CEREBRO Q-LEARNING", size=15, weight=ft.FontWeight.BOLD, color=C["accent"]),
+                ft.Text("CEREBRO Q-LEARNING (INCLUYE NO_TRADE GREEDY)", size=15, weight=ft.FontWeight.BOLD, color=C["accent"]),
                 ft.Container(expand=True),
                 ft.ElevatedButton("↻ Recargar", on_click=lambda e: self._load_brain_ui(),
                                   bgcolor=C["accent2"], color=C["text"]),
                 ft.ElevatedButton("💾 Backup", on_click=lambda e: self._backup_brain(),
                                   bgcolor=C["card2"], color=C["text"]),
             ]),
-            ft.Row([brain_stat("states", "Estados Q"), brain_stat("trained", "Trained"),
+            ft.Row([brain_stat("states", "Estados Q"), brain_stat("trained", "Cierres"),
                     brain_stat("online", "Online"), brain_stat("epsilon", "Epsilon")], spacing=6),
-            ft.Row([brain_stat("target", "Target"), brain_stat("milestone", "Milestone"),
-                    brain_stat("peak", "Peak"), brain_stat("floor", "Floor")], spacing=6),
+            ft.Row([brain_stat("target", "Meta Balance"), brain_stat("milestone", "Nivel Meta"),
+                    brain_stat("peak", "Peak Eq"), brain_stat("floor", "Piso Duro")], spacing=6),
             ft.Container(
-                content=ft.Column([ft.Text("Top estados por visitas", size=12, color=C["dim"]), self.q_list], expand=True),
+                content=ft.Column([ft.Text("Top estados por visitas (evaluando acciones 0..8)", size=12, color=C["dim"]), self.q_list], expand=True),
                 bgcolor=C["card"], border_radius=12, padding=10, expand=True,
             ),
         ], spacing=10, expand=True)
@@ -351,17 +407,17 @@ class SniperApp:
             ("MAX_CONCURRENT_TRADES", "5", "Máx posiciones"),
             ("RISK_NORMAL", "0.12", "Riesgo normal"),
             ("RISK_WARMUP", "0.06", "Riesgo warmup"),
-            ("SOFT_EXPOSURE_LIMIT", "0.38", "Exposición soft"),
-            ("ENTRY_COOLDOWN_SEC", "40", "Cooldown entradas (s)"),
+            ("SOFT_EXPOSURE_LIMIT", "0.38", "Exposición proyectada máx"),
+            ("ENTRY_COOLDOWN_SEC", "35", "Cooldown entradas (s)"),
             ("RECOVERY_ENTER_DD", "0.095", "Entrar Recovery DD"),
             ("RECOVERY_EXIT_DD", "0.065", "Salir Recovery DD"),
-            ("RECOVERY_RISK_MULT", "0.50", "Mult. riesgo Recovery"),
+            ("MAX_DAILY_LOSS_PCT", "0.11", "Pérdida diaria máx"),
             ("MAX_DRAWDOWN_PCT", "0.16", "Max Drawdown"),
             ("CONSECUTIVE_LOSS_LIMIT", "4", "Límite rachas"),
             ("MIN_LEVERAGE", "15", "Lev mínimo"),
             ("MAX_LEVERAGE", "95", "Lev máximo"),
             ("TAKER_FEE", "0.001", "Taker fee"),
-            ("ALPHA_INTERMEDIATE", "0.020", "Alpha intermedio"),
+            ("ALPHA_INTERMEDIATE", "0.018", "Alpha táctico"),
             ("WARMUP_TRADES", "20", "Trades warmup"),
         ]
         strat_controls = []
@@ -374,8 +430,8 @@ class SniperApp:
             strat_controls.append(tf)
 
         strat_tab = ft.Column([
-            ft.Text("AJUSTE DE ESTRATEGIA", size=15, weight=ft.FontWeight.BOLD, color=C["accent"]),
-            ft.Text("Overrides → strategy_overrides.json (el bot no los lee solo)", size=11, color=C["dim"]),
+            ft.Text("PARÁMETROS DE ESTRATEGIA", size=15, weight=ft.FontWeight.BOLD, color=C["accent"]),
+            ft.Text("Referencia de configuración auditable (strategy_overrides.json)", size=11, color=C["dim"]),
             ft.Container(content=ft.Column(strat_controls, spacing=8, scroll=ft.ScrollMode.AUTO),
                          bgcolor=C["card"], border_radius=12, padding=12, expand=True),
             ft.Row([
@@ -388,15 +444,15 @@ class SniperApp:
 
         self.log_filter_dd = ft.Dropdown(
             options=[ft.dropdown.Option(x) for x in
-                     ["TODO", "ERROR", "RECOVERY", "NORMAL", "IA ONLINE", "OVR:BULL", "OVR:BEAR"]],
-            value="TODO", width=145, dense=True, border_color=C["border"], color=C["text"],
+                     ["TODO", "ERROR", "DEGRADACIÓN DE EDGE", "GUARDIÁN", "RECOVERY", "NORMAL", "IA ONLINE", "OVR:BULL", "OVR:BEAR"]],
+            value="TODO", width=180, dense=True, border_color=C["border"], color=C["text"],
             on_change=lambda e: self._update_ui(),
         )
         logs_tab = ft.Column([
             ft.Row([
                 ft.Text("LOG EN VIVO", size=15, weight=ft.FontWeight.BOLD, color=C["accent"]),
                 ft.Container(expand=True), self.log_filter_dd,
-                ft.ElevatedButton("🗑 Limpiar", on_click=lambda e: self._clear_logs(),
+                ft.ElevatedButton("🗑 Limpiar vista", on_click=lambda e: self._clear_logs(),
                                   bgcolor=C["card2"], color=C["text"]),
             ]),
             ft.Container(content=self.log_list, bgcolor=C["card"], border_radius=12, expand=True),
@@ -410,16 +466,16 @@ class SniperApp:
                                         active_color=C["accent"], on_change=self._on_refresh_change)
 
         settings_tab = ft.Column([
-            ft.Text("AJUSTES", size=15, weight=ft.FontWeight.BOLD, color=C["accent"]),
+            ft.Text("AJUSTES DEL COMMAND CENTER", size=15, weight=ft.FontWeight.BOLD, color=C["accent"]),
             ft.Container(content=ft.Column([
                 self.brain_path_tf, self.log_path_tf,
                 ft.Text("Intervalo de refresco (segundos)", size=12, color=C["dim"]),
                 self.refresh_slider,
             ], spacing=12), bgcolor=C["card"], border_radius=12, padding=14),
             ft.Container(content=ft.Text(
-                "LNM Sniper Command Center · Flet Edition\n"
-                "100% Independiente · Lectura pasiva\n"
-                "Termux: http://127.0.0.1:8550  |  Desktop: ventana nativa",
+                "LNM Sniper Command Center · v7.3 Audited Edition\n"
+                "Fuente de verdad económica: Balance Disponible Real (Sats)\n"
+                "Termux Web: http://127.0.0.1:8550  |  Desktop: ventana nativa",
                 size=12, color=C["dim"]), bgcolor=C["card"], border_radius=12, padding=14),
         ], spacing=12, expand=True, scroll=ft.ScrollMode.AUTO)
 
@@ -466,96 +522,194 @@ class SniperApp:
             self.metrics["q_states"] = len(bd.get("q_table", {}))
             self.metrics["epsilon"] = float(bd.get("epsilon", 0.4))
             self.metrics["milestone"] = int(bd.get("milestone_level", 1))
+            self.metrics["realized_pnl"] = int(bd.get("realized_net_profit_sats", 0))
+            self.metrics["fees_paid"] = int(bd.get("total_fees_paid_sats", 0))
+
+            active_dict = bd.get("active_trades", {})
+            locked_m = 0
+            deg_cnt = 0
+            for _, meta in active_dict.items():
+                if isinstance(meta, dict):
+                    locked_m += int(meta.get("margin", 0))
+                    if float(meta.get("last_edge_score", 0.0)) < 0.0 or int(meta.get("edge_deg_streak", 0)) > 0:
+                        deg_cnt += 1
+            self.metrics["locked_margin"] = locked_m
+            self.metrics["degraded_count"] = deg_cnt
+
+            # Estimar Profit Factor y Expectativa a partir de la memoria PER y ciclos
+            mem = bd.get("memory", [])
+            pos_r = sum(float(x[3]) for x in mem if isinstance(x, (list, tuple)) and len(x) >= 4 and float(x[3]) > 0)
+            neg_r = abs(sum(float(x[3]) for x in mem if isinstance(x, (list, tuple)) and len(x) >= 4 and float(x[3]) < 0))
+            self.metrics["profit_factor"] = round(pos_r / neg_r, 2) if neg_r > 0 else (round(pos_r, 2) if pos_r > 0 else 1.0)
+            wins_mem = sum(1 for x in mem if isinstance(x, (list, tuple)) and len(x) >= 4 and float(x[3]) > 0)
+            self.metrics["win_rate"] = round((wins_mem / len(mem)) * 100.0, 1) if mem else 0.0
 
         lpath = Path(self.log_path_tf.value) if hasattr(self, "log_path_tf") else LOG_FILE
-        lines = tail_log(lpath, 120)
+        lines = tail_log(lpath, 160)
         eq_series: List[int] = []
+        bal_series: List[int] = []
         clean_lines: List[str] = []
+        err_cnt = 0
+        recent_edge_ids = set()
+
         for line in lines:
             s_line = line.strip()
             if not s_line:
                 continue
             clean_lines.append(s_line)
+            if "[ERROR " in s_line or "[API CIRCUIT BREAKER]" in s_line:
+                err_cnt += 1
             parsed = parse_log_line(s_line)
             if parsed:
                 if parsed.get("sync_peak"):
                     self.metrics["peak"] = parsed["sync_peak"]
                 if parsed.get("sync_floor"):
                     self.metrics["floor"] = parsed["sync_floor"]
+                if parsed.get("edge_warn"):
+                    recent_edge_ids.add(parsed["edge_warn"][0])
                 if parsed.get("equity") is not None:
-                    for k in ("ts", "mode", "state", "price", "equity", "balance", "active", "dd", "ovr"):
+                    for k in ("ts", "mode", "state", "price", "equity", "balance", "active", "dd", "ovr", "latency_ms"):
                         if parsed.get(k) is not None:
                             self.metrics[k] = parsed[k]
                     eq_series.append(parsed["equity"])
                     if parsed["equity"] > self.metrics.get("peak", 0):
                         self.metrics["peak"] = parsed["equity"]
+                if parsed.get("balance") is not None:
+                    bal_series.append(parsed["balance"])
+                    if parsed["balance"] > self.metrics.get("peak_balance", 0):
+                        self.metrics["peak_balance"] = parsed["balance"]
+
+        self.metrics["api_errors"] = err_cnt
+        if self.metrics["degraded_count"] == 0 and recent_edge_ids and len(self.brain.get("active_trades", {})) > 0:
+            self.metrics["degraded_count"] = min(len(self.brain.get("active_trades", {})), len(recent_edge_ids))
+
+        eq_now = int(self.metrics.get("equity", 0))
+        bal_now = int(self.metrics.get("balance", 0))
+        locked_now = int(self.metrics.get("locked_margin", 0))
+        self.metrics["floating_pnl"] = eq_now - bal_now - locked_now if eq_now > 0 and bal_now > 0 else 0
+        self.metrics["exposure_pct"] = round((locked_now / max(eq_now, 1)) * 100.0, 1) if eq_now > 0 else 0.0
+
+        pk_bal = max(self.metrics.get("peak_balance", 0), bal_now, 1)
+        self.metrics["bal_dd"] = round(max(0.0, (pk_bal - bal_now) / pk_bal * 100.0), 1)
+
+        trained_cnt = max(1, int(self.metrics.get("trained", 1)))
+        self.metrics["expectancy_trade"] = round(self.metrics.get("realized_pnl", 0) / trained_cnt, 1)
+
         if clean_lines:
-            self.log_lines = clean_lines[-120:]
+            self.log_lines = clean_lines[-140:]
         if eq_series:
             self.equity_hist = eq_series[-60:]
+        if bal_series:
+            self.balance_hist = bal_series[-60:]
 
     def _update_ui(self):
         m = self.metrics
-        eq = m.get("equity", 0)
-        dd = m.get("dd", 0.0)
-        mode = m.get("mode", "—")
+        bal = int(m.get("balance", 0))
+        eq = int(m.get("equity", 0))
+        target = max(int(m.get("target", 300000)), 1)
+        # CORRECCIÓN P0: Progreso de la meta calculado EXCLUSIVAMENTE sobre Balance Disponible
+        goal_pct = (bal / target) * 100.0
+        realized = int(m.get("realized_pnl", 0))
+        fees = int(m.get("fees_paid", 0))
+        fl_pnl = int(m.get("floating_pnl", 0))
+        dd = float(m.get("dd", 0.0))
+        mode = str(m.get("mode", "—"))
+        ovr = str(m.get("ovr", "OFF"))
+        p = float(m.get("price", 0.0))
+
+        if self.ref_balance.current:
+            self.ref_balance.current.value = f"{bal:,} sats"
+            self.ref_balance.current.color = C["green"] if bal > 0 else C["text"]
+        if self.ref_goal_sub.current:
+            self.ref_goal_sub.current.value = f"Meta: {goal_pct:.2f}% (Nvl {m.get('milestone', 1)})"
+
+        if self.ref_realized.current:
+            self.ref_realized.current.value = f"{realized:+,} sats"
+            self.ref_realized.current.color = C["green"] if realized >= 0 else C["red"]
+        if self.ref_fees_sub.current:
+            self.ref_fees_sub.current.value = f"Fees: {fees:,} sats | Exp: {m.get('expectancy_trade', 0):+.1f}/t"
 
         if self.ref_equity.current:
             self.ref_equity.current.value = f"{eq:,} sats"
-            self.ref_equity.current.color = C["green"] if eq > 0 else C["text"]
+        if self.ref_float_sub.current:
+            self.ref_float_sub.current.value = f"Flotante: {fl_pnl:+,} sats"
+            self.ref_float_sub.current.color = C["green"] if fl_pnl >= 0 else C["orange"]
+
         if self.ref_dd.current:
-            self.ref_dd.current.value = f"{dd:.1f}%"
+            self.ref_dd.current.value = f"{dd:.1f}% (Bal {m.get('bal_dd', 0.0):.1f}%)"
             self.ref_dd.current.color = C["green"] if dd < 5 else (C["orange"] if dd < 10 else C["red"])
+        if self.ref_floor_sub.current:
+            self.ref_floor_sub.current.value = f"Piso: {m.get('floor', 0):,} sats"
+
         if self.ref_mode.current:
             self.ref_mode.current.value = mode
             self.ref_mode.current.color = {"NORMAL": C["green"], "RECOVERY": C["orange"], "DEFENSIVE": C["red"]}.get(mode, C["text"])
-        if self.ref_active.current:
-            self.ref_active.current.value = str(m.get("active", f"{len(self.brain.get('active_trades', {}))}/5"))
+        if self.ref_active_sub.current:
+            self.ref_active_sub.current.value = f"Pos: {m.get('active', '0/5')} | Exp: {m.get('exposure_pct', 0.0):.1f}%"
+
         if self.ref_price.current:
-            p = m.get("price", 0)
-            self.ref_price.current.value = f"\( {p:,.1f}" if p else " \)—"
-        if self.ref_ovr.current:
-            o = m.get("ovr", "OFF")
-            self.ref_ovr.current.value = o
-            self.ref_ovr.current.color = C["green"] if o == "BULL" else (C["red"] if o == "BEAR" else C["dim"])
+            self.ref_price.current.value = f"${p:,.1f}" if p else "$—"
+        if self.ref_ovr_sub.current:
+            self.ref_ovr_sub.current.value = f"OVR: {ovr}"
+            self.ref_ovr_sub.current.color = C["green"] if ovr == "BULL" else (C["red"] if ovr == "BEAR" else C["dim"])
+
         if self.ref_state.current:
             self.ref_state.current.value = str(m.get("state", "—"))[:42]
-        if self.ref_peak.current:
-            self.ref_peak.current.value = f"{m.get('peak', 0):,} sats"
-        if self.ref_floor.current:
-            self.ref_floor.current.value = f"{m.get('floor', 0):,} sats"
         if self.ref_target.current:
-            self.ref_target.current.value = f"{m.get('target', 300000):,} sats"
+            self.ref_target.current.value = f"{target:,} sats"
         if self.ref_goal.current:
-            self.ref_goal.current.value = f"{(eq / max(m.get('target', 1), 1)) * 100:.2f}%"
+            self.ref_goal.current.value = f"{goal_pct:.2f}% ({bal:,} / {target:,})"
+            self.ref_goal.current.color = C["green"]
+        if self.ref_peak.current:
+            self.ref_peak.current.value = f"Eq: {m.get('peak', 0):,} | Bal: {m.get('peak_balance', 0):,}"
+        if self.ref_floor.current:
+            self.ref_floor.current.value = f"{m.get('floor', 0):,} sats (75%/88%)"
+        if self.ref_exposure.current:
+            exp_pct = float(m.get("exposure_pct", 0.0))
+            self.ref_exposure.current.value = f"{m.get('locked_margin', 0):,} sats ({exp_pct:.1f}% / 38%)"
+            self.ref_exposure.current.color = C["red"] if exp_pct > 38.0 else (C["orange"] if exp_pct > 28.0 else C["green"])
+        if self.ref_pf_exp.current:
+            self.ref_pf_exp.current.value = f"PF: {m.get('profit_factor', 1.0):.2f} | WR: {m.get('win_rate', 0.0):.0f}%"
+        if self.ref_edge_deg.current:
+            deg = int(m.get("degraded_count", 0))
+            self.ref_edge_deg.current.value = f"{deg} en vigilancia" if deg > 0 else "0 (Óptimo)"
+            self.ref_edge_deg.current.color = C["orange"] if deg > 0 else C["green"]
         if self.ref_trained.current:
-            self.ref_trained.current.value = str(m.get("trained", 0))
-        if self.ref_online.current:
-            self.ref_online.current.value = str(m.get("online", 0))
-        if self.ref_qstates.current:
-            self.ref_qstates.current.value = str(m.get("q_states", 0))
+            self.ref_trained.current.value = f"{m.get('trained', 0)} cierres | {m.get('online', 0)} tácticos (ε={m.get('epsilon', 0):.3f})"
+        if self.ref_hft_perf.current:
+            lat = int(m.get("latency_ms", 0))
+            errs = int(m.get("api_errors", 0))
+            self.ref_hft_perf.current.value = f"{lat} ms | Errores log: {errs}"
+
         if self.ref_clock.current:
             self.ref_clock.current.value = datetime.now().strftime("%H:%M:%S")
         if self.ref_live.current:
             self.ref_live.current.color = C["green"] if mode != "DEFENSIVE" else C["red"]
         if self.ref_status.current:
             self.ref_status.current.value = (
-                f"Eq: {eq:,} sats (Bal: {m.get('balance', 0):,}) · "
-                f"Piso: {m.get('floor', 0):,} · DD: {dd:.1f}% · Modo: {mode}"
+                f"Bal Disponible: {bal:,} sats ({goal_pct:.2f}% Meta) · Eq: {eq:,} · "
+                f"Piso: {m.get('floor', 0):,} · DD: {dd:.1f}% · Modo: {mode} · {m.get('latency_ms', 0)}ms"
             )
-        if self.equity_chart_text.current and len(self.equity_hist) >= 2:
-            vals = self.equity_hist[-40:]
-            mn, mx = min(vals), max(vals)
-            span = max(mx - mn, 1)
-            bars = "▁▂▃▄▅▆▇█"
-            spark = "".join(bars[min(7, int((v - mn) / span * 7))] for v in vals)
-            self.equity_chart_text.current.value = f"{spark}\nActual: {vals[-1]:,} sats  |  Mín: {mn:,}  |  Máx: {mx:,}"
+
+        if self.equity_chart_text.current:
+            series = self.balance_hist[-40:] if len(self.balance_hist) >= 2 else self.equity_hist[-40:]
+            if len(series) >= 2:
+                mn, mx = min(series), max(series)
+                span = max(mx - mn, 1)
+                bars = "▁▂▃▄▅▆▇█"
+                spark = "".join(bars[min(7, int((v - mn) / span * 7))] for v in series)
+                self.equity_chart_text.current.value = (
+                    f"Balance Spark: {spark}\n"
+                    f"Bal Actual: {bal:,} sats (Mín:{mn:,} | Máx:{mx:,})  |  Equity Actual: {eq:,} sats"
+                )
+            else:
+                self.equity_chart_text.current.value = f"Bal Disponible: {bal:,} sats  |  Equity: {eq:,} sats"
 
         filt = self.log_filter_dd.value if self.log_filter_dd else "TODO"
         self.log_list.controls.clear()
-        for line in self.log_lines[-80:]:
+        for line in self.log_lines[-85:]:
             if filt == "TODO" or filt in line:
-                col = C["red"] if "ERROR" in line else (C["orange"] if "RECOVERY" in line else C["text"])
+                col = C["red"] if "ERROR" in line else (C["orange"] if ("DEGRADACIÓN" in line or "RECOVERY" in line) else C["text"])
                 self.log_list.controls.append(ft.Text(line, size=11, color=col, font_family="monospace"))
         try:
             self.page.update()
@@ -589,13 +743,14 @@ class SniperApp:
         top = sorted(visits.items(), key=lambda x: -x[1])[:30]
         self.q_list.controls.clear()
         self.q_list.controls.append(
-            ft.Text(f"{'Estado':<44} {'Vis':>5}  Mejor Acción", size=11, color=C["dim"], font_family="monospace")
+            ft.Text(f"{'Estado':<44} {'Vis':>5}  Mejor Acción (0..8)", size=11, color=C["dim"], font_family="monospace")
         )
         for st, vis in top:
             q = q_table.get(st, [])
             if isinstance(q, list) and len(q) >= 9:
-                best_idx = max(range(1, 9), key=lambda i: q[i])
-                best_str = f"a{best_idx}:{ACTION_NAMES.get(best_idx, '')} ({q[best_idx]:+.2f})"
+                # Incluir Acción 0 (NO_TRADE) en la evaluación de la mejor política aprendida
+                best_idx = max(range(0, 9), key=lambda i: float(q[i]))
+                best_str = f"a{best_idx}:{ACTION_NAMES.get(best_idx, '')} ({float(q[best_idx]):+.3f})"
             else:
                 best_str = "-"
             self.q_list.controls.append(
@@ -624,7 +779,7 @@ class SniperApp:
         if not active:
             self.pos_table.rows.append(ft.DataRow(
                 cells=[ft.DataCell(ft.Text("Sin posiciones", color=C["dim"]))] +
-                      [ft.DataCell(ft.Text("—", color=C["dim"])) for _ in range(5)]
+                      [ft.DataCell(ft.Text("—", color=C["dim"])) for _ in range(6)]
             ))
         else:
             for tid, meta in active.items():
@@ -635,9 +790,14 @@ class SniperApp:
                 strat_label = ACTION_NAMES.get(act_id, str(meta.get("style", "—")))
                 pnl_atr = meta.get("last_pnl_atr", 0.0)
                 pnl_str = f"{float(pnl_atr):+.2f} ATR" if isinstance(pnl_atr, (int, float)) else str(pnl_atr)
-                cells = [str(tid)[:8], str(side).upper(), strat_label,
-                         f"{int(meta.get('margin', 0)):,} sats", pnl_str,
-                         str(meta.get("last_guardian_mode", "—"))]
+                edge_val = float(meta.get("last_edge_score", 0.0))
+                sl_lock = "🔒SL" if meta.get("sl_locked") else "⏳SL"
+                edge_str = f"{edge_val:+.2f} | {sl_lock}"
+                cells = [
+                    str(tid)[:8], str(side).upper(), strat_label,
+                    f"{int(meta.get('margin', 0)):,} sats", pnl_str,
+                    edge_str, str(meta.get("last_guardian_mode", "—"))
+                ]
                 self.pos_table.rows.append(ft.DataRow(
                     cells=[ft.DataCell(ft.Text(c, size=11, color=C["text"])) for c in cells]
                 ))
@@ -658,11 +818,11 @@ class SniperApp:
     def _reset_overrides(self):
         defaults = {
             "MAX_CONCURRENT_TRADES": "5", "RISK_NORMAL": "0.12", "RISK_WARMUP": "0.06",
-            "SOFT_EXPOSURE_LIMIT": "0.38", "ENTRY_COOLDOWN_SEC": "40",
-            "RECOVERY_ENTER_DD": "0.095", "RECOVERY_EXIT_DD": "0.065", "RECOVERY_RISK_MULT": "0.50",
-            "MAX_DRAWDOWN_PCT": "0.16", "CONSECUTIVE_LOSS_LIMIT": "4",
+            "SOFT_EXPOSURE_LIMIT": "0.38", "ENTRY_COOLDOWN_SEC": "35",
+            "RECOVERY_ENTER_DD": "0.095", "RECOVERY_EXIT_DD": "0.065",
+            "MAX_DAILY_LOSS_PCT": "0.11", "MAX_DRAWDOWN_PCT": "0.16", "CONSECUTIVE_LOSS_LIMIT": "4",
             "MIN_LEVERAGE": "15", "MAX_LEVERAGE": "95", "TAKER_FEE": "0.001",
-            "ALPHA_INTERMEDIATE": "0.020", "WARMUP_TRADES": "20",
+            "ALPHA_INTERMEDIATE": "0.018", "WARMUP_TRADES": "20",
         }
         for k, v in defaults.items():
             if k in self.strat_fields:
@@ -688,6 +848,6 @@ if __name__ == "__main__":
     port = int(os.environ.get("SNIPER_UI_PORT", "8550"))
     if is_termux:
         print(f"LNM Sniper Command Center -> http://127.0.0.1:{port}")
-        ft.app(main)
+        ft.app(main, view=ft.AppView.WEB_BROWSER, port=port, host="127.0.0.1")
     else:
         ft.app(target=main)
