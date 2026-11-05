@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
 sniper_perception_sats_core.py
-Motor de Percepción en Tiempo Real (Proxies OHLCV 5m/15m + Spread API opcional),
-Detector de Giro en V / Micro-Breakouts, Compuerta de Acumulación de Sats Netos
-y Controlador Anti-Parálisis para LNM Sniper.
+Motor de Percepción en Tiempo Real (Proxies OHLCV 5m/15m + Confirmación Continua),
+Detector de Giro en V con Decaimiento e Histéresis, Compuerta de Expectativa de Sats Netos
+con Jerarquía de Seguridad Estricta (P0) y Verificador de Exposición Proyectada.
 """
 import time
 import math
@@ -12,21 +12,24 @@ import math
 class ShortTermPerceptionEngine:
     """
     Detecta aceleraciones de corto plazo (5m/15m), giros en V y micro-breakouts
-    usando datos realmente disponibles en MultiTimeframeCache y ticker REST.
+    con validación continua de momentum, decaimiento gradual e histéresis.
     """
 
     def __init__(self):
         self.price_history = []
         self.override_side = None
+        self.override_since = 0.0
         self.override_until = 0.0
         self.override_strength = 0.0
         self.override_reason = "OFF"
+        self.last_flip_time = 0.0
 
     def _record_sample(self, now, price, atr):
-        if not self.price_history or (now - self.price_history[-1][0]) >= 45.0:
-            self.price_history.append((now, float(price), float(atr)))
-            if len(self.price_history) > 40:
-                self.price_history = self.price_history[-40:]
+        # Muestreo adaptativo (cada 15s) para alta frecuencia de análisis sin inflar RAM
+        if not self.price_history or (now - self.price_history[-1][0]) >= 15.0:
+            self.price_history.append((float(now), float(price), float(atr)))
+            if len(self.price_history) > 60:
+                self.price_history = self.price_history[-60:]
 
     def _extract_candle_proxies(self, ind_5m, ind_15m):
         price = float(ind_5m.get("price", 0.0))
@@ -47,7 +50,7 @@ class ShortTermPerceptionEngine:
         micro_high = price
         micro_low = price
         if len(self.price_history) >= 3:
-            recent_prices = [p[1] for p in self.price_history[-20:]]
+            recent_prices = [p[1] for p in self.price_history[-25:]]
             ref_idx = max(0, len(self.price_history) - 15)
             ref_price = self.price_history[ref_idx][1]
             vel_window_atr = (price - ref_price) / atr
@@ -110,43 +113,61 @@ class ShortTermPerceptionEngine:
         rsi_15m = px["rsi_15m"]
         rsi_1h = float(ind_1h.get("rsi", 50.0))
 
-        # 1. Evaluar activación de Giro en V Alcista (BULL OVERRIDE) con sensibilidad calibrada
         v_bull_trigger = (
             (vel_ema >= 1.35 and rsi_5m >= 55.5 and px["clv"] >= 0.20)
             or (px["breakout_bull"] and rsi_15m >= 52.0 and comp_v >= 1.05)
             or (rsi_5m >= 60.0 and rsi_15m >= 54.5 and rsi_1h >= 51.0 and vel_ema >= 1.00)
         )
 
-        # 2. Evaluar activación de Desplome Bajista (BEAR OVERRIDE) con sensibilidad calibrada
         v_bear_trigger = (
             (vel_ema <= -1.35 and rsi_5m <= 44.5 and px["clv"] <= -0.20)
             or (px["breakout_bear"] and rsi_15m <= 48.0 and comp_v <= -1.05)
             or (rsi_5m <= 40.0 and rsi_15m <= 45.5 and rsi_1h <= 49.0 and vel_ema <= -1.00)
         )
 
+        # Histéresis para evitar oscilaciones rápidas BULL <-> BEAR (mínimo 90s salvo reversión extrema > 1.85 ATR)
+        can_flip_side = (now - self.last_flip_time) >= 90.0 or abs(vel_ema) >= 1.85
+
         if v_bull_trigger and not v_bear_trigger:
-            self.override_side = "BULL"
-            self.override_until = now + 900.0
-            self.override_strength = min(2.5, max(1.0, abs(vel_ema)))
-            self.override_reason = f"V_BULL(v={vel_ema:+.2f}ATR|rsi5={rsi_5m:.0f}|brk={int(px['breakout_bull'])})"
+            if self.override_side != "BULL":
+                if self.override_side is None or can_flip_side:
+                    self.override_side = "BULL"
+                    self.override_since = now
+                    self.last_flip_time = now
+            if self.override_side == "BULL":
+                # Ventana máxima reducida a 480s con exigencia de confirmación continua
+                self.override_until = now + 480.0
+                self.override_strength = min(2.5, max(1.0, abs(vel_ema)))
+                self.override_reason = f"V_BULL(v={vel_ema:+.2f}ATR|rsi5={rsi_5m:.0f}|brk={int(px['breakout_bull'])})"
         elif v_bear_trigger and not v_bull_trigger:
-            self.override_side = "BEAR"
-            self.override_until = now + 900.0
-            self.override_strength = min(2.5, max(1.0, abs(vel_ema)))
-            self.override_reason = f"V_BEAR(v={vel_ema:+.2f}ATR|rsi5={rsi_5m:.0f}|brk={int(px['breakout_bear'])})"
+            if self.override_side != "BEAR":
+                if self.override_side is None or can_flip_side:
+                    self.override_side = "BEAR"
+                    self.override_since = now
+                    self.last_flip_time = now
+            if self.override_side == "BEAR":
+                self.override_until = now + 480.0
+                self.override_strength = min(2.5, max(1.0, abs(vel_ema)))
+                self.override_reason = f"V_BEAR(v={vel_ema:+.2f}ATR|rsi5={rsi_5m:.0f}|brk={int(px['breakout_bear'])})"
         else:
-            if now >= self.override_until:
-                self.override_side = None
-                self.override_strength = 0.0
-                self.override_reason = "OFF"
-            elif self.override_side == "BULL" and (vel_ema < -0.40 or rsi_5m < 46.0):
-                self.override_side = None
-                self.override_strength = 0.0
-                self.override_reason = "OFF_INV"
-            elif self.override_side == "BEAR" and (vel_ema > 0.40 or rsi_5m > 54.0):
-                self.override_side = None
-                self.override_strength = 0.0
-                self.override_reason = "OFF_INV"
+            # Decaimiento gradual y cancelación anticipada si el impulso desaparece o se contradice
+            if self.override_side is not None:
+                elapsed = max(0.0, now - self.override_since)
+                decay_factor = max(0.0, 1.0 - (elapsed / 480.0))
+                self.override_strength = round(self.override_strength * decay_factor, 3)
+
+                if now >= self.override_until or self.override_strength < 0.35:
+                    self.override_side = None
+                    self.override_strength = 0.0
+                    self.override_reason = "OFF_DECAY"
+                elif self.override_side == "BULL" and (vel_ema < 0.15 or comp_v < 0.05 or rsi_5m < 49.0):
+                    self.override_side = None
+                    self.override_strength = 0.0
+                    self.override_reason = "OFF_MOMENTUM_LOST"
+                elif self.override_side == "BEAR" and (vel_ema > -0.15 or comp_v > -0.05 or rsi_5m > 51.0):
+                    self.override_side = None
+                    self.override_strength = 0.0
+                    self.override_reason = "OFF_MOMENTUM_LOST"
 
         px["override_side"] = self.override_side
         px["override_strength"] = round(self.override_strength, 2)
@@ -156,11 +177,10 @@ class ShortTermPerceptionEngine:
 
 class SatsExpectancyGate:
     """
-    Mapa oficial de estrategias en lnm_sniper_v6_advanced.py:
-    1: LONG_TREND (RUNNER)   | 5: SHORT_TREND (RUNNER)
-    2: LONG_REVERSION (LOCK) | 6: SHORT_REVERSION (LOCK)
-    3: LONG_SNIPER (HYBRID)  | 7: SHORT_SNIPER (HYBRID)
-    4: LONG_DEF_SCALP (LOCK) | 8: SHORT_DEF_SCALP (LOCK)
+    Compuerta económica y de seguridad P0:
+    1. Primero aplica bloqueos críticos de exposición y volatilidad (NINGÚN override puede saltárselos).
+    2. Luego evalúa redirecciones direccionales por Giro en V y sesgos micro/macro.
+    3. Verifica expectativa matemática neta en satoshis y exposición proyectada.
     """
 
     ROUND_TRIP_FEE_RATE = 0.0020
@@ -171,51 +191,86 @@ class SatsExpectancyGate:
         raw_action, state, q_values, strategies, perception,
         recovery_mode=False, current_dd_pct=0.0
     ):
-        override = perception.get("override_side")
+        override = perception.get("override_side") if isinstance(perception, dict) else None
         norm_s = str(state)
+
+        # =================================================================
+        # PASO 1 (P0): PROTECCIONES CRÍTICAS DE CAPITAL Y EXPOSICIÓN
+        # Ningún override direccional (BULL/BEAR) puede anular estas reglas
+        # =================================================================
+        if "RANGE_SQUEEZE" in norm_s and "HIGH_EXP" in norm_s:
+            return 0, "BLOCKED_SQUEEZE_HIGH_EXP"
+
+        if "CHOP_HIGHVOL" in norm_s and "HIGH_EXP" in norm_s:
+            return 0, "BLOCKED_CHOP_HIGHVOL_HIGH_EXP"
+
+        if current_dd_pct >= 0.16:
+            return 0, "BLOCKED_MAX_DRAWDOWN_REACHED"
 
         # En recovery_mode se excluyen los runners puros (1 y 5)
         long_actions = [2, 3, 4] if recovery_mode else [1, 2, 3, 4]
         short_actions = [6, 7, 8] if recovery_mode else [5, 6, 7, 8]
 
-        # 1. Compuerta direccional dura anti-lag (Corrección giro en V alineada con índices reales)
+        # =================================================================
+        # PASO 2: REDIRECCIÓN POR GIRO EN V (SOLO SI EXPOSICIÓN ES SEGURA)
+        # =================================================================
         if override == "BULL":
+            max_long_q = max((float(q_values[a]) for a in long_actions if a < len(q_values)), default=-1.0)
+            if raw_action == 0 and max_long_q <= -0.15 and not perception.get("breakout_bull"):
+                return 0, "RESPECT_NO_TRADE_NEGATIVE_LONG_Q"
+
             if raw_action in [5, 6, 7, 8] or raw_action == 0:
                 best_long = (4 if recovery_mode else 1) if perception.get("breakout_bull") else (4 if recovery_mode else 3)
                 best_score = -999.0
                 for a in long_actions:
                     if a < len(q_values):
-                        # Premiar LONG_TREND (1) y LONG_SNIPER (3) en normal; LONG_DEF_SCALP (4) y LONG_SNIPER (3) en recovery
                         bonus = 0.12 if a == 1 else (0.09 if a == 3 else (0.08 if a == 4 else 0.0))
                         score = float(q_values[a]) + bonus
                         if score > best_score:
                             best_score = score
                             best_long = a
                 return best_long, f"OVR_BULL_REDIRECT({raw_action}->{best_long})"
+            if recovery_mode and "RANGE_SQUEEZE" in norm_s and "BEAR_RALLY" in norm_s and raw_action == 2:
+                return 4, "OVR_BULL_RECOVERY_DEF_SCALP(2->4)"
+            if recovery_mode and raw_action == 1:
+                return 3, "OVR_BULL_RECOVERY_CAP_RUNNER(1->3)"
             return raw_action, "OVR_BULL_ALIGNED"
 
         if override == "BEAR":
+            max_short_q = max((float(q_values[a]) for a in short_actions if a < len(q_values)), default=-1.0)
+            if raw_action == 0 and max_short_q <= -0.15 and not perception.get("breakout_bear"):
+                return 0, "RESPECT_NO_TRADE_NEGATIVE_SHORT_Q"
+
             if raw_action in [1, 2, 3, 4] or raw_action == 0:
                 best_short = (8 if recovery_mode else 5) if perception.get("breakout_bear") else (8 if recovery_mode else 7)
                 best_score = -999.0
                 for a in short_actions:
                     if a < len(q_values):
-                        # Premiar SHORT_TREND (5) y SHORT_SNIPER (7) en normal; SHORT_DEF_SCALP (8) y SHORT_SNIPER (7) en recovery
                         bonus = 0.12 if a == 5 else (0.09 if a == 7 else (0.08 if a == 8 else 0.0))
                         score = float(q_values[a]) + bonus
                         if score > best_score:
                             best_score = score
                             best_short = a
                 return best_short, f"OVR_BEAR_REDIRECT({raw_action}->{best_short})"
+            if recovery_mode and "RANGE_SQUEEZE" in norm_s and "BEAR_RALLY" in norm_s and raw_action == 6:
+                return 8, "OVR_BEAR_RECOVERY_DEF_SCALP(6->8)"
+            if recovery_mode and raw_action == 5:
+                return 7, "OVR_BEAR_RECOVERY_CAP_RUNNER(5->7)"
             return raw_action, "OVR_BEAR_ALIGNED"
 
-        # 2. Protección contra sobre-exposición en RANGE_SQUEEZE sin override
-        if "RANGE_SQUEEZE" in norm_s and "HIGH_EXP" in norm_s:
-            return 0, "BLOCKED_SQUEEZE_HIGH_EXP"
+        # =================================================================
+        # PASO 3: FILTROS SIN OVERRIDE ACTIVO
+        # =================================================================
+        if recovery_mode and "RANGE_SQUEEZE" in norm_s and "BEAR_RALLY" in norm_s and raw_action in (2, 6):
+            def_act = 4 if raw_action == 2 else 8
+            q_def = float(q_values[def_act]) if def_act < len(q_values) else 0.0
+            q_zero = float(q_values[0]) if len(q_values) > 0 else 0.0
+            if q_def > max(0.005, q_zero):
+                return def_act, f"RECOVERY_SQUEEZE_DEF_REDIRECT({raw_action}->{def_act})"
+            return 0, "BLOCKED_REVERSION_IN_RECOVERY_SQUEEZE"
 
-        # 3. Sin override activo: corregir sesgo BEAR_RALLY / BULL_DIP cuando RSI 5m/15m contradice
-        rsi_5m = perception.get("rsi_5m", 50.0)
-        vel_ema = perception.get("vel_ema_atr", 0.0)
+        rsi_5m = perception.get("rsi_5m", 50.0) if isinstance(perception, dict) else 50.0
+        vel_ema = perception.get("vel_ema_atr", 0.0) if isinstance(perception, dict) else 0.0
         if raw_action in [5, 6, 7, 8] and ("BEAR_RALLY" in norm_s or "CHOP" in norm_s):
             if vel_ema > 0.55 and rsi_5m > 54.0:
                 return 0, "BLOCKED_SHORT_AGAINST_MICRO_UPTREND"
@@ -224,12 +279,13 @@ class SatsExpectancyGate:
             if vel_ema < -0.55 and rsi_5m < 46.0:
                 return 0, "BLOCKED_LONG_AGAINST_MICRO_DOWNTREND"
 
-        # 4. En CHOP o RECOVERY sin override, exigir Q-value estrictamente positivo
-        if raw_action > 0 and (recovery_mode or "CHOP" in norm_s):
+        # Exigir ventaja real frente a NO_TRADE (acción 0)
+        if raw_action > 0:
             q_act = float(q_values[raw_action]) if raw_action < len(q_values) else -1.0
             q_zero = float(q_values[0]) if len(q_values) > 0 else 0.0
-            if q_act <= max(0.005, q_zero):
-                return 0, "BLOCKED_LOW_Q_IN_CHOP_RECOVERY"
+            min_req_q = max(0.005, q_zero) if (recovery_mode or "CHOP" in norm_s) else q_zero
+            if q_act <= min_req_q:
+                return 0, "BLOCKED_LOW_Q_VS_NO_TRADE"
 
         return raw_action, "STANDARD_Q"
 
@@ -262,6 +318,25 @@ class SatsExpectancyGate:
             "net_rr": round(net_rr, 2),
         }
 
+    @staticmethod
+    def verify_projected_exposure(
+        locked_margin_sats, new_margin_sats, equity_sats, available_balance_sats,
+        max_exposure_ratio=0.38, est_entry_fee_sats=0, max_single_trade_risk_pct=0.18
+    ):
+        equity_sats = max(1, int(equity_sats))
+        projected_margin = int(locked_margin_sats) + int(new_margin_sats)
+        projected_exp_ratio = projected_margin / float(equity_sats)
+        single_trade_ratio = int(new_margin_sats) / float(equity_sats)
+        required_cash = int(new_margin_sats) + int(est_entry_fee_sats)
+
+        if available_balance_sats < required_cash:
+            return False, "INSUFFICIENT_AVAILABLE_BALANCE", round(projected_exp_ratio, 4)
+        if projected_exp_ratio > float(max_exposure_ratio):
+            return False, f"PROJECTED_EXPOSURE_EXCEEDED({projected_exp_ratio*100:.1f}%>{max_exposure_ratio*100:.1f}%)", round(projected_exp_ratio, 4)
+        if single_trade_ratio > float(max_single_trade_risk_pct):
+            return False, f"MIN_LOT_EXCEEDS_RISK_BUDGET({single_trade_ratio*100:.1f}%>{max_single_trade_risk_pct*100:.1f}%)", round(projected_exp_ratio, 4)
+        return True, "EXPOSURE_OK", round(projected_exp_ratio, 4)
+
 
 def sync_brain_floor_with_reality(brain, true_equity, floor_ratio=0.75):
     true_equity = max(1, int(true_equity))
@@ -276,7 +351,7 @@ def sync_brain_floor_with_reality(brain, true_equity, floor_ratio=0.75):
 
     if true_equity > persisted_peak:
         brain.peak_equity = true_equity
-        brain.locked_floor = int(round(true_equity * floor_ratio))
+        brain.locked_floor = max(persisted_floor, int(round(true_equity * floor_ratio)))
         brain.dirty = True
 
     return False, brain.peak_equity, brain.locked_floor

@@ -1,0 +1,21 @@
+# Entornos y credenciales
+.env
+*.env
+
+# Archivos de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs del sistema
+*.log
+
+# Backups y archivos temporales
+*.bak
+*.tmp
+*.tmp_ui
+backups_audit_*/
+MANIFEST.sha256
+
+# Archivos de recalibración (opcional, para no ensuciar el repo)
+*.recalibrated.json

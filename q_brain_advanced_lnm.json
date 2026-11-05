@@ -1,0 +1,2970 @@
+{
+  "active_trades": {},
+  "current_target": 300000,
+  "cycle_state": {
+    "1h": {
+      "action": 1,
+      "bucket": 498293,
+      "pnl": 0,
+      "start_eq": 24214,
+      "start_price": 80408.5,
+      "state": "TREND_BULL|HIGH|BULL_STRONG|FLAT",
+      "trades": 0,
+      "wins": 0
+    },
+    "4h": {
+      "action": 2,
+      "bucket": 124573,
+      "pnl": -131,
+      "start_eq": 24197,
+      "start_price": 80412.5,
+      "state": "TREND_BULL|HIGH|BEAR_BOUNCE|LOSS",
+      "trades": 2,
+      "wins": 0
+    }
+  },
+  "epsilon": 0.04,
+  "locked_floor": 18160,
+  "memory": [
+    [
+      0.5275,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|BEAR_RALLY",
+      7,
+      -0.4972,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.6039,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|BEAR_RALLY",
+      6,
+      0.5444,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|EMA_TRANS"
+    ],
+    [
+      0.5656,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|BEAR_RALLY",
+      3,
+      0.5415,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.63,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|EMA_TRANS",
+      2,
+      0.6063,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.2057,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|BEAR_RALLY",
+      3,
+      0.1722,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.5513,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|BEAR_RALLY",
+      3,
+      0.5298,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.7386,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY",
+      6,
+      0.6456,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.4677,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|BEAR_RALLY",
+      2,
+      -0.4438,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.9022,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY",
+      6,
+      0.8452,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.965,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY",
+      6,
+      0.898,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.4426,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      2,
+      -0.4136,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.5332,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|BEAR_RALLY",
+      4,
+      -0.483,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.4177,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      2,
+      -0.3947,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.4657,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      2,
+      -0.4421,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.4838,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      4,
+      -0.4419,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.5777,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      3,
+      0.5454,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.4877,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|BEAR_RALLY",
+      3,
+      -0.4623,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.427,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|BEAR_RALLY",
+      3,
+      -0.4058,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.4617,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|BEAR_RALLY",
+      3,
+      -0.4348,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.5431,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      3,
+      -0.5029,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.7244,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      3,
+      -0.5039,
+      "TREND_BEAR|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.6849,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      3,
+      -0.459,
+      "TREND_BEAR|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.7077,
+      "TREND_BEAR|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      7,
+      -0.4816,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.7275,
+      "TREND_BEAR|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      7,
+      -0.4938,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.7229,
+      "TREND_BEAR|DIP|HIGH_EXP|CHOP|BEAR_RALLY",
+      7,
+      -0.4762,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.6798,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      6,
+      -0.6416,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.8196,
+      "TREND_BEAR|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      6,
+      0.7996,
+      "TREND_BEAR|DIP|HIGH_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.9484,
+      "TREND_BEAR|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      6,
+      0.9284,
+      "TREND_BEAR|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.8988,
+      "TREND_BEAR|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      6,
+      0.8788,
+      "TREND_BEAR|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.7318,
+      "TREND_BEAR|DIP|HIGH_EXP|CHOP|BEAR_RALLY",
+      5,
+      0.5118,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.7302,
+      "TREND_BEAR|DIP|HIGH_EXP|CHOP|BEAR_RALLY",
+      5,
+      0.5102,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      1.0479,
+      "TREND_BEAR|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      6,
+      0.8279,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.7325,
+      "TREND_BEAR|DIP|HIGH_EXP|CHOP|BEAR_RALLY",
+      5,
+      0.5125,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.8439,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BEAR",
+      6,
+      0.8239,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.851,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      6,
+      0.831,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.8774,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BEAR",
+      6,
+      0.8574,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.8515,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BEAR",
+      6,
+      0.8315,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.867,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BEAR",
+      6,
+      0.847,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      1.1097,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BEAR",
+      6,
+      1.0897,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.8953,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      6,
+      0.8753,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      1.1291,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      6,
+      0.9091,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      1.1366,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      6,
+      0.9166,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.583,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      0.5135,
+      "TREND_BEAR|DIP|HIGH_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.9219,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -0.8856,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.8625,
+      "TREND_BEAR|DIP|HIGH_EXP|BEAR|FULL_BEAR",
+      5,
+      -0.8299,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.9446,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -0.8686,
+      "TREND_BEAR|MID|HIGH_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.6724,
+      "TREND_BEAR|DIP|HIGH_EXP|BEAR|FULL_BEAR",
+      7,
+      -0.6473,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.7888,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      7,
+      -0.7593,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.5853,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      7,
+      -0.5595,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.6863,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      7,
+      -0.666,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.7051,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+      2,
+      0.6597,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.8197,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -0.7992,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.9002,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+      2,
+      0.8432,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      1.0268,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+      2,
+      -0.9535,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      1.0125,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+      2,
+      -0.9651,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.6082,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+      7,
+      -0.5825,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      1.0379,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -0.8154,
+      "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      1.5533,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+      3,
+      1.3333,
+      "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      1.0216,
+      "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BEAR",
+      1,
+      1.0016,
+      "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.8819,
+      "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BEAR",
+      1,
+      0.8619,
+      "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.7735,
+      "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BEAR",
+      1,
+      0.5444,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.5415,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY",
+      6,
+      -0.5008,
+      "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.8586,
+      "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BEAR",
+      1,
+      0.6341,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.5748,
+      "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|BEAR_RALLY",
+      1,
+      -0.5448,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.5487,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY",
+      6,
+      -0.5085,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.577,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY",
+      6,
+      -0.5384,
+      "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.5154,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY",
+      6,
+      -0.4617,
+      "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.5746,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY",
+      6,
+      -0.5337,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.5226,
+      "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|BEAR_RALLY",
+      6,
+      -0.4936,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      0.1795,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|BEAR_RALLY",
+      5,
+      -0.1566,
+      "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      1.3356,
+      "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|BEAR_RALLY",
+      2,
+      0.9925,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.8036,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY",
+      2,
+      0.7572,
+      "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.7617,
+      "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY",
+      2,
+      0.7087,
+      "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.8136,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY",
+      2,
+      0.7796,
+      "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      1.6509,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY",
+      2,
+      1.5167,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      1.2739,
+      "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY",
+      2,
+      1.1469,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      1.161,
+      "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY",
+      2,
+      1.0774,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      1.2468,
+      "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY",
+      2,
+      1.1227,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      1.0845,
+      "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY",
+      2,
+      1.0045,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.9209,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY",
+      2,
+      0.8635,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.2089,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY",
+      2,
+      0.1889,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.8439,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY",
+      2,
+      0.7872,
+      "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.7469,
+      "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY",
+      2,
+      -0.7133,
+      "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.8504,
+      "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY",
+      2,
+      -0.7473,
+      "TREND_BULL|MID|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      1.3218,
+      "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY",
+      2,
+      -0.9999,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      1.1913,
+      "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY",
+      2,
+      -0.8795,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      1.141,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY",
+      2,
+      -0.8799,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      1.3605,
+      "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY",
+      2,
+      -1.0846,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.29,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BEAR_RALLY",
+      2,
+      -0.2693,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.3467,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BEAR_RALLY",
+      2,
+      -0.3232,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.4373,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|BEAR_RALLY",
+      5,
+      -0.3871,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.1505,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BEAR_RALLY",
+      7,
+      -0.1252,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.4114,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BEAR_RALLY",
+      5,
+      -0.3762,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.3825,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|BEAR_RALLY",
+      5,
+      -0.3553,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.33,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|BEAR_RALLY",
+      5,
+      -0.2986,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.2875,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|BEAR_RALLY",
+      4,
+      0.2636,
+      "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.2942,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|BEAR_RALLY",
+      4,
+      0.2704,
+      "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.366,
+      "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|BEAR_RALLY",
+      2,
+      0.3044,
+      "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|BEAR_RALLY"
+    ],
+    [
+      0.2638,
+      "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|BEAR_RALLY",
+      2,
+      -0.2225,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL"
+    ],
+    [
+      0.2668,
+      "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|BEAR_RALLY",
+      2,
+      -0.2292,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL"
+    ],
+    [
+      0.1361,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL",
+      7,
+      -0.116,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL"
+    ],
+    [
+      0.1399,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL",
+      7,
+      -0.118,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL"
+    ],
+    [
+      0.3209,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|FULL_BULL",
+      4,
+      0.2753,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|FULL_BULL"
+    ],
+    [
+      0.5942,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|FULL_BULL",
+      4,
+      -0.5597,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|FULL_BULL"
+    ],
+    [
+      0.5335,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|FULL_BULL",
+      4,
+      -0.5045,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|FULL_BULL"
+    ],
+    [
+      0.5869,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|FULL_BULL",
+      4,
+      -0.5567,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|FULL_BULL"
+    ],
+    [
+      0.2152,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL",
+      3,
+      -0.1882,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|FULL_BULL"
+    ],
+    [
+      0.2104,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL",
+      3,
+      -0.1903,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|FULL_BULL"
+    ],
+    [
+      0.2972,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|FULL_BULL",
+      7,
+      -0.2528,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL"
+    ],
+    [
+      0.4343,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|FULL_BULL",
+      8,
+      -0.388,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL"
+    ],
+    [
+      0.2691,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL",
+      3,
+      -0.2438,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|FULL_BULL"
+    ],
+    [
+      0.27,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL",
+      3,
+      -0.246,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|FULL_BULL"
+    ]
+  ],
+  "milestone_level": 1,
+  "peak_equity": 24214,
+  "q_table": {
+    "CHOP_HIGHVOL|MID|HIGH_EXP|BEAR|BEAR_RALLY": [
+      0.02,
+      0.5428,
+      0.8039,
+      0.7709,
+      0.7851,
+      -0.7141,
+      -0.7357,
+      -0.737,
+      -0.619
+    ],
+    "CHOP_HIGHVOL|MID|HIGH_EXP|BEAR|EMA_TRANS": [
+      0.02,
+      -0.3046,
+      -0.4844,
+      -0.49,
+      -0.4069,
+      0.85,
+      -0.3695,
+      -0.0075,
+      -0.3109
+    ],
+    "CHOP_HIGHVOL|MID|HIGH_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.2069,
+      -0.2393,
+      -0.2146,
+      -0.1638,
+      -0.5423,
+      -0.4822,
+      -0.4949,
+      -0.3894
+    ],
+    "CHOP_HIGHVOL|MID|LOW_EXP|BEAR|BEAR_RALLY": [
+      0.02,
+      0.5428,
+      0.8039,
+      0.7709,
+      0.7851,
+      -0.7141,
+      -0.7357,
+      -0.737,
+      -0.619
+    ],
+    "CHOP_HIGHVOL|MID|LOW_EXP|BEAR|EMA_TRANS": [
+      0.02,
+      -0.3046,
+      -0.4844,
+      -0.49,
+      -0.4069,
+      0.85,
+      -0.3695,
+      -0.0075,
+      -0.3109
+    ],
+    "CHOP_HIGHVOL|MID|LOW_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.2069,
+      -0.2393,
+      -0.2146,
+      -0.1638,
+      -0.5423,
+      -0.4822,
+      -0.4949,
+      -0.3894
+    ],
+    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|BULL_DIP": [
+      0.02,
+      -0.1769,
+      -0.4278,
+      -0.4405,
+      -0.5157,
+      0.05,
+      0.1,
+      0.04,
+      0.11
+    ],
+    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|EMA_TRANS": [
+      0.02,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      0.333,
+      0.4576,
+      0.4414,
+      0.4737
+    ],
+    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.2579,
+      -0.3162,
+      -0.2917,
+      -0.5488,
+      -0.6244,
+      -0.3264,
+      -0.2439,
+      -0.2448
+    ],
+    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.1954,
+      -0.1085,
+      -0.1031,
+      -0.0673,
+      -0.4044,
+      -0.3235,
+      -0.3401,
+      -0.4425
+    ],
+    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|BULL_DIP": [
+      0.02,
+      -0.0011,
+      -0.1645,
+      -0.1755,
+      -0.1344,
+      -0.1595,
+      -0.2375,
+      -0.2617,
+      -0.0837
+    ],
+    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|EMA_TRANS": [
+      0.02,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      0.85,
+      0.6724,
+      0.6551,
+      0.6896
+    ],
+    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.3647,
+      -0.4367,
+      -0.5436,
+      -0.3599,
+      -0.4237,
+      -0.507,
+      -0.4456,
+      -0.5453
+    ],
+    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|FULL_BULL": [
+      0.02,
+      -0.3134,
+      -0.269,
+      -0.2408,
+      -0.2468,
+      -0.6122,
+      -0.5113,
+      -0.5237,
+      -0.4799
+    ],
+    "RANGE_NORMAL|DIP|LOW_EXP|BEAR|BULL_DIP": [
+      0.02,
+      -0.1769,
+      -0.4278,
+      -0.4405,
+      -0.5157,
+      0.05,
+      0.1,
+      0.04,
+      0.11
+    ],
+    "RANGE_NORMAL|DIP|LOW_EXP|BEAR|EMA_TRANS": [
+      0.02,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      0.333,
+      0.4576,
+      0.4414,
+      0.4737
+    ],
+    "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.2579,
+      -0.3162,
+      -0.2917,
+      -0.5488,
+      -0.6244,
+      -0.3264,
+      -0.2439,
+      -0.2448
+    ],
+    "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.1954,
+      -0.1085,
+      -0.1031,
+      -0.0673,
+      -0.4044,
+      -0.3235,
+      -0.3401,
+      -0.4425
+    ],
+    "RANGE_NORMAL|DIP|LOW_EXP|BULL|BULL_DIP": [
+      0.02,
+      -0.0011,
+      -0.1645,
+      -0.1755,
+      -0.1344,
+      -0.1595,
+      -0.2375,
+      -0.2617,
+      -0.0837
+    ],
+    "RANGE_NORMAL|DIP|LOW_EXP|BULL|EMA_TRANS": [
+      0.02,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      0.85,
+      0.6724,
+      0.6551,
+      0.6896
+    ],
+    "RANGE_NORMAL|DIP|LOW_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.3647,
+      -0.4367,
+      -0.5436,
+      -0.3599,
+      -0.4237,
+      -0.507,
+      -0.4456,
+      -0.5453
+    ],
+    "RANGE_NORMAL|DIP|LOW_EXP|BULL|FULL_BULL": [
+      0.02,
+      -0.3134,
+      -0.269,
+      -0.2408,
+      -0.2468,
+      -0.6122,
+      -0.5113,
+      -0.5237,
+      -0.4799
+    ],
+    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|BEAR_RALLY": [
+      0.02,
+      -0.2583,
+      -0.2773,
+      -0.256,
+      -0.2647,
+      -0.2079,
+      -0.2574,
+      -0.2459,
+      -0.2738
+    ],
+    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|BULL_DIP": [
+      0.02,
+      -0.5478,
+      -0.5753,
+      -0.5747,
+      -0.5823,
+      0.05,
+      0.1,
+      0.04,
+      0.11
+    ],
+    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|EMA_TRANS": [
+      0.02,
+      -0.3667,
+      -0.3731,
+      -0.3621,
+      -0.3898,
+      -0.1725,
+      -0.2482,
+      -0.2004,
+      -0.252
+    ],
+    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.2883,
+      -0.2593,
+      -0.3248,
+      -0.3318,
+      -0.2652,
+      -0.257,
+      -0.3142,
+      -0.2944
+    ],
+    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.4645,
+      -0.1392,
+      -0.1564,
+      -0.2249,
+      -0.3039,
+      -0.4261,
+      -0.4178,
+      -0.3287
+    ],
+    "RANGE_NORMAL|MID|HIGH_EXP|BULL|BEAR_RALLY": [
+      0.02,
+      0.05,
+      0.1,
+      0.04,
+      0.11,
+      -0.5623,
+      -0.5664,
+      -0.5026,
+      -0.5452
+    ],
+    "RANGE_NORMAL|MID|HIGH_EXP|BULL|BULL_DIP": [
+      0.02,
+      -0.2463,
+      -0.2829,
+      -0.2252,
+      -0.315,
+      -0.3037,
+      -0.3772,
+      -0.2777,
+      -0.4373
+    ],
+    "RANGE_NORMAL|MID|HIGH_EXP|BULL|EMA_TRANS": [
+      0.02,
+      -0.1741,
+      -0.1591,
+      -0.1608,
+      -0.1388,
+      -0.3549,
+      -0.3967,
+      -0.379,
+      -0.3813
+    ],
+    "RANGE_NORMAL|MID|HIGH_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.3273,
+      -0.2582,
+      -0.3347,
+      -0.2753,
+      -0.3409,
+      -0.33,
+      -0.3639,
+      -0.3447
+    ],
+    "RANGE_NORMAL|MID|HIGH_EXP|BULL|FULL_BULL": [
+      0.02,
+      -0.3336,
+      -0.3152,
+      -0.2927,
+      -0.2981,
+      -0.355,
+      -0.3581,
+      -0.3805,
+      -0.3565
+    ],
+    "RANGE_NORMAL|MID|LOW_EXP|BEAR|BEAR_RALLY": [
+      0.02,
+      -0.2583,
+      -0.2773,
+      -0.256,
+      -0.2647,
+      -0.2079,
+      -0.2574,
+      -0.2459,
+      -0.2738
+    ],
+    "RANGE_NORMAL|MID|LOW_EXP|BEAR|BULL_DIP": [
+      0.02,
+      -0.5478,
+      -0.5753,
+      -0.5747,
+      -0.5823,
+      0.05,
+      0.1,
+      0.04,
+      0.11
+    ],
+    "RANGE_NORMAL|MID|LOW_EXP|BEAR|EMA_TRANS": [
+      0.02,
+      -0.3667,
+      -0.3731,
+      -0.3621,
+      -0.3898,
+      -0.1725,
+      -0.2482,
+      -0.2004,
+      -0.252
+    ],
+    "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.2883,
+      -0.2593,
+      -0.3248,
+      -0.3318,
+      -0.2652,
+      -0.257,
+      -0.3142,
+      -0.2944
+    ],
+    "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.4645,
+      -0.1392,
+      -0.1564,
+      -0.2249,
+      -0.3039,
+      -0.4261,
+      -0.4178,
+      -0.3287
+    ],
+    "RANGE_NORMAL|MID|LOW_EXP|BULL|BEAR_RALLY": [
+      0.02,
+      0.05,
+      0.1,
+      0.04,
+      0.11,
+      -0.5623,
+      -0.5664,
+      -0.5026,
+      -0.5452
+    ],
+    "RANGE_NORMAL|MID|LOW_EXP|BULL|BULL_DIP": [
+      0.02,
+      -0.2463,
+      -0.2829,
+      -0.2252,
+      -0.315,
+      -0.3037,
+      -0.3772,
+      -0.2777,
+      -0.4373
+    ],
+    "RANGE_NORMAL|MID|LOW_EXP|BULL|EMA_TRANS": [
+      0.02,
+      -0.1741,
+      -0.1591,
+      -0.1608,
+      -0.1388,
+      -0.3549,
+      -0.3967,
+      -0.379,
+      -0.3813
+    ],
+    "RANGE_NORMAL|MID|LOW_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.3273,
+      -0.2582,
+      -0.3347,
+      -0.2753,
+      -0.3409,
+      -0.33,
+      -0.3639,
+      -0.3447
+    ],
+    "RANGE_NORMAL|MID|LOW_EXP|BULL|FULL_BULL": [
+      0.02,
+      -0.3336,
+      -0.3152,
+      -0.2927,
+      -0.2981,
+      -0.355,
+      -0.3581,
+      -0.3805,
+      -0.3565
+    ],
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|BEAR_RALLY": [
+      0.02,
+      -0.2794,
+      -0.3625,
+      -0.3738,
+      -0.3766,
+      -0.2427,
+      -0.3881,
+      -0.2097,
+      -0.2654
+    ],
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|EMA_TRANS": [
+      0.02,
+      0.2786,
+      0.3689,
+      0.3572,
+      0.3806,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85
+    ],
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|FULL_BEAR": [
+      0.005,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      0.4031,
+      -0.0299,
+      0.5011,
+      -0.0011
+    ],
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.3803,
+      -0.5464,
+      -0.5661,
+      -0.3553,
+      -0.282,
+      -0.2438,
+      -0.2311,
+      -0.2501
+    ],
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BULL|BEAR_RALLY": [
+      0.02,
+      0.05,
+      0.1,
+      0.04,
+      0.11,
+      -0.5388,
+      -0.6731,
+      -0.6806,
+      -0.6518
+    ],
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      0.6665,
+      0.752,
+      0.7409,
+      0.7631
+    ],
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BULL|FULL_BULL": [
+      0.005,
+      -0.181,
+      0.158,
+      -0.1152,
+      0.0538,
+      -0.427,
+      -0.3632,
+      -0.3747,
+      -0.3321
+    ],
+    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|BEAR_RALLY": [
+      0.02,
+      -0.2794,
+      -0.3625,
+      -0.3738,
+      -0.3766,
+      -0.2427,
+      -0.3881,
+      -0.2097,
+      -0.2654
+    ],
+    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|EMA_TRANS": [
+      0.02,
+      0.2786,
+      0.3689,
+      0.3572,
+      0.3806,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85
+    ],
+    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|FULL_BEAR": [
+      0.005,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      0.4031,
+      -0.0299,
+      0.5011,
+      -0.0011
+    ],
+    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.3803,
+      -0.5464,
+      -0.5661,
+      -0.3553,
+      -0.282,
+      -0.2438,
+      -0.2311,
+      -0.2501
+    ],
+    "RANGE_NORMAL|PEAK|LOW_EXP|BULL|BEAR_RALLY": [
+      0.02,
+      0.05,
+      0.1,
+      0.04,
+      0.11,
+      -0.5388,
+      -0.6731,
+      -0.6806,
+      -0.6518
+    ],
+    "RANGE_NORMAL|PEAK|LOW_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      0.6665,
+      0.752,
+      0.7409,
+      0.7631
+    ],
+    "RANGE_NORMAL|PEAK|LOW_EXP|BULL|FULL_BULL": [
+      0.005,
+      -0.181,
+      0.158,
+      -0.1152,
+      0.0538,
+      -0.427,
+      -0.3632,
+      -0.3747,
+      -0.3321
+    ],
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|BULL_DIP": [
+      0.02,
+      -0.503,
+      -0.5179,
+      -0.5485,
+      -0.5181,
+      0.05,
+      0.025,
+      0.04,
+      0.095
+    ],
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|EMA_TRANS": [
+      0.02,
+      -0.4535,
+      -0.4471,
+      -0.472,
+      -0.4542,
+      -0.3305,
+      -0.3015,
+      -0.334,
+      -0.2819
+    ],
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.3673,
+      -0.3718,
+      -0.4119,
+      -0.3718,
+      -0.2939,
+      0.95,
+      -0.3905,
+      -0.2758
+    ],
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.4876,
+      -0.5067,
+      -0.5375,
+      -0.5049,
+      -0.139,
+      -0.1752,
+      -0.1642,
+      -0.1353
+    ],
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|BEAR_RALLY": [
+      0.02,
+      0.1084,
+      0.0138,
+      0.0639,
+      0.0389,
+      0.0619,
+      -0.065,
+      -0.095,
+      -0.065
+    ],
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|BULL_DIP": [
+      0.02,
+      -0.3106,
+      -0.3874,
+      -0.3422,
+      -0.3883,
+      -0.3238,
+      -0.3358,
+      -0.3623,
+      -0.3385
+    ],
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|EMA_TRANS": [
+      0.02,
+      -0.3348,
+      -0.4465,
+      -0.362,
+      -0.3822,
+      -0.2672,
+      -0.2836,
+      -0.3175,
+      -0.2376
+    ],
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.3669,
+      -0.3832,
+      -0.3629,
+      -0.3675,
+      -0.3027,
+      -0.3364,
+      -0.3673,
+      -0.3359
+    ],
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|FULL_BULL": [
+      0.02,
+      -0.4356,
+      -0.4223,
+      -0.4546,
+      -0.4188,
+      -0.1471,
+      -0.1373,
+      -0.0061,
+      -0.2544
+    ],
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|BEAR_RALLY": [
+      0.02,
+      -0.0766,
+      -0.0777,
+      -0.1095,
+      -0.1684,
+      -0.0861,
+      -0.0083,
+      -0.0472,
+      -0.0083
+    ],
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|EMA_TRANS": [
+      0.02,
+      -0.095,
+      0.8045,
+      -0.02,
+      0.005,
+      -0.095,
+      -0.035,
+      -0.065,
+      -0.035
+    ],
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|FULL_BEAR": [
+      0.02,
+      -0.095,
+      -0.035,
+      -0.065,
+      -0.035,
+      -0.04,
+      0.0,
+      -0.015,
+      -0.035
+    ],
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|BULL_DIP": [
+      0.02,
+      -0.488,
+      -0.5029,
+      -0.5035,
+      -0.5031,
+      0.05,
+      0.1,
+      0.04,
+      0.11
+    ],
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|EMA_TRANS": [
+      0.02,
+      -0.4385,
+      -0.4321,
+      -0.427,
+      -0.4392,
+      -0.3155,
+      -0.2865,
+      -0.289,
+      -0.2669
+    ],
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.3612,
+      -0.3657,
+      -0.3669,
+      -0.3657,
+      -0.2878,
+      0.95,
+      -0.3455,
+      -0.2697
+    ],
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.4726,
+      -0.4917,
+      -0.4925,
+      -0.4899,
+      -0.124,
+      -0.1602,
+      -0.1192,
+      -0.1203
+    ],
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BEAR_RALLY": [
+      0.01,
+      0.12,
+      -0.1448,
+      0.105,
+      0.13,
+      -0.045,
+      -0.17,
+      -0.093,
+      -0.17
+    ],
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BULL_DIP": [
+      0.02,
+      -0.2956,
+      -0.3724,
+      -0.2972,
+      -0.3733,
+      -0.3088,
+      -0.3208,
+      -0.3173,
+      -0.3235
+    ],
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|EMA_TRANS": [
+      0.02,
+      -0.3198,
+      -0.4315,
+      -0.317,
+      -0.3672,
+      -0.2522,
+      -0.2686,
+      -0.2725,
+      -0.2226
+    ],
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.3519,
+      -0.3682,
+      -0.3179,
+      -0.3525,
+      -0.2877,
+      -0.3214,
+      -0.3223,
+      -0.3209
+    ],
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|FULL_BULL": [
+      0.02,
+      -0.4206,
+      -0.4073,
+      -0.4096,
+      -0.4038,
+      -0.1321,
+      -0.1223,
+      -0.1908,
+      0.039
+    ],
+    "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY": [
+      0.02,
+      -0.0709,
+      -0.0765,
+      0.2594,
+      0.2762,
+      -0.0756,
+      -0.1962,
+      -0.034,
+      0.006
+    ],
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|BEAR_RALLY": [
+      0.02,
+      -0.3447,
+      -0.3527,
+      -0.381,
+      -0.3501,
+      -0.2825,
+      -0.3268,
+      -0.3505,
+      -0.3177
+    ],
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|BULL_DIP": [
+      0.02,
+      -0.492,
+      -0.5519,
+      -0.5607,
+      -0.5959,
+      0.05,
+      0.025,
+      0.04,
+      0.095
+    ],
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|EMA_TRANS": [
+      0.02,
+      -0.344,
+      -0.3487,
+      -0.3795,
+      -0.3488,
+      -0.3872,
+      -0.3831,
+      -0.3716,
+      -0.4099
+    ],
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.3406,
+      -0.345,
+      -0.3738,
+      -0.3454,
+      -0.3249,
+      -0.2901,
+      -0.3691,
+      -0.2902
+    ],
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.3536,
+      -0.3636,
+      -0.3935,
+      -0.3635,
+      -0.3163,
+      -0.3493,
+      -0.3886,
+      -0.3681
+    ],
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|BEAR_RALLY": [
+      0.02,
+      0.0534,
+      0.0138,
+      0.0439,
+      0.0989,
+      -0.4628,
+      -0.485,
+      -0.6052,
+      -0.5108
+    ],
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|BULL_DIP": [
+      0.02,
+      -0.3437,
+      -0.3205,
+      -0.3911,
+      -0.3845,
+      -0.3524,
+      -0.3575,
+      -0.3868,
+      -0.3568
+    ],
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|EMA_TRANS": [
+      0.02,
+      -0.3442,
+      -0.4255,
+      -0.4554,
+      -0.3502,
+      -0.3451,
+      -0.414,
+      -0.3869,
+      -0.415
+    ],
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.3478,
+      -0.4094,
+      -0.374,
+      -0.3874,
+      -0.3276,
+      -0.4117,
+      -0.4646,
+      -0.3894
+    ],
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|FULL_BULL": [
+      0.02,
+      -0.3528,
+      -0.3412,
+      -0.3458,
+      -0.2957,
+      -0.3329,
+      -0.3308,
+      -0.3609,
+      -0.3314
+    ],
+    "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|BEAR_RALLY": [
+      0.02,
+      -0.095,
+      -0.035,
+      0.626,
+      -0.035,
+      0.0465,
+      0.4656,
+      0.5079,
+      0.275
+    ],
+    "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|EMA_TRANS": [
+      0.02,
+      -0.095,
+      0.0,
+      -0.065,
+      0.0,
+      -0.095,
+      0.0,
+      -0.065,
+      0.0
+    ],
+    "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|FULL_BEAR": [
+      0.02,
+      -0.095,
+      -0.035,
+      -0.065,
+      -0.035,
+      -0.04,
+      0.0,
+      -0.015,
+      -0.035
+    ],
+    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|BEAR_RALLY": [
+      0.02,
+      -0.3297,
+      -0.3377,
+      -0.336,
+      -0.3351,
+      -0.2675,
+      -0.3118,
+      -0.3055,
+      -0.3027
+    ],
+    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|BULL_DIP": [
+      0.02,
+      -0.477,
+      -0.5369,
+      -0.5157,
+      -0.5809,
+      0.05,
+      0.1,
+      0.04,
+      0.11
+    ],
+    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|EMA_TRANS": [
+      0.02,
+      -0.329,
+      -0.3337,
+      -0.3345,
+      -0.3338,
+      -0.3722,
+      -0.3681,
+      -0.3266,
+      -0.3949
+    ],
+    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.3256,
+      -0.33,
+      -0.3288,
+      -0.3304,
+      -0.3099,
+      -0.2751,
+      -0.3241,
+      -0.2752
+    ],
+    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.3386,
+      -0.3486,
+      -0.3485,
+      -0.3485,
+      -0.3013,
+      -0.3343,
+      -0.3436,
+      -0.3531
+    ],
+    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|BEAR_RALLY": [
+      0.02,
+      0.075,
+      0.0166,
+      0.0693,
+      0.6975,
+      0.3671,
+      -0.47,
+      -0.5602,
+      -0.4958
+    ],
+    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|BULL_DIP": [
+      0.02,
+      -0.3287,
+      -0.3055,
+      -0.3461,
+      -0.3695,
+      -0.3374,
+      -0.3425,
+      -0.3418,
+      -0.3418
+    ],
+    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|EMA_TRANS": [
+      0.02,
+      -0.3292,
+      -0.4105,
+      -0.4104,
+      -0.3352,
+      -0.3301,
+      -0.399,
+      -0.3419,
+      -0.4
+    ],
+    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.3328,
+      -0.3944,
+      -0.329,
+      -0.3724,
+      -0.3126,
+      -0.3967,
+      -0.4196,
+      -0.3744
+    ],
+    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL": [
+      0.02,
+      -0.3378,
+      -0.3262,
+      -0.1767,
+      -0.3645,
+      -0.3179,
+      -0.3158,
+      -0.3509,
+      -0.3164
+    ],
+    "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY": [
+      0.02,
+      -0.0847,
+      -0.0041,
+      -0.0444,
+      -0.0041,
+      -0.0658,
+      0.0709,
+      0.0127,
+      0.163
+    ],
+    "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|FULL_BEAR": [
+      0.02,
+      -0.095,
+      -0.035,
+      -0.065,
+      -0.035,
+      -0.04,
+      0.0,
+      -0.015,
+      -0.035
+    ],
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|BEAR_RALLY": [
+      0.02,
+      -0.3974,
+      -0.3589,
+      -0.4232,
+      -0.3576,
+      -0.269,
+      -0.3724,
+      -0.4057,
+      -0.3446
+    ],
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|EMA_TRANS": [
+      0.02,
+      0.0608,
+      0.025,
+      -0.0306,
+      0.3409,
+      -0.603,
+      -0.5963,
+      -0.6273,
+      -0.5931
+    ],
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.3531,
+      -0.4845,
+      -0.5144,
+      -0.4303,
+      -0.4612,
+      -0.4674,
+      -0.3334,
+      -0.5037
+    ],
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.3743,
+      -0.3614,
+      -0.411,
+      -0.361,
+      -0.3538,
+      -0.3948,
+      -0.3351,
+      -0.3788
+    ],
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|BEAR_RALLY": [
+      0.02,
+      0.0534,
+      0.0138,
+      0.0439,
+      0.0989,
+      -0.5168,
+      -0.5327,
+      -0.5618,
+      -0.5328
+    ],
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|EMA_TRANS": [
+      0.02,
+      -0.2719,
+      -0.1813,
+      -0.276,
+      -0.1778,
+      -0.472,
+      -0.5037,
+      -0.5344,
+      -0.503
+    ],
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.3467,
+      -0.3502,
+      -0.224,
+      -0.2825,
+      -0.2955,
+      -0.2879,
+      -0.3081,
+      -0.2987
+    ],
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|FULL_BULL": [
+      0.02,
+      -0.3249,
+      -0.3058,
+      -0.3795,
+      -0.3068,
+      -0.3265,
+      -0.3298,
+      -0.3601,
+      -0.3295
+    ],
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|BEAR_RALLY": [
+      0.02,
+      -0.3824,
+      -0.3439,
+      -0.3782,
+      -0.3426,
+      -0.254,
+      -0.3574,
+      -0.3607,
+      -0.3296
+    ],
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|EMA_TRANS": [
+      0.005,
+      0.0758,
+      0.195,
+      0.0144,
+      0.3559,
+      -0.588,
+      -0.5813,
+      -0.5823,
+      -0.5781
+    ],
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.3381,
+      -0.4695,
+      -0.4694,
+      -0.4153,
+      -0.4462,
+      -0.4524,
+      -0.2884,
+      -0.4887
+    ],
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.3593,
+      -0.3464,
+      -0.366,
+      -0.346,
+      -0.3388,
+      -0.3798,
+      -0.2901,
+      -0.3638
+    ],
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|BEAR_RALLY": [
+      0.02,
+      0.5614,
+      0.1586,
+      0.5154,
+      0.1554,
+      -0.5018,
+      -0.5177,
+      -0.5168,
+      -0.5178
+    ],
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|EMA_TRANS": [
+      0.02,
+      -0.2569,
+      -0.1663,
+      -0.231,
+      -0.1628,
+      -0.457,
+      -0.4887,
+      -0.4894,
+      -0.488
+    ],
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.3317,
+      -0.3352,
+      -0.179,
+      -0.2675,
+      -0.2805,
+      -0.2729,
+      -0.2631,
+      -0.2837
+    ],
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|FULL_BULL": [
+      0.02,
+      -0.3099,
+      -0.2908,
+      -0.3345,
+      -0.2918,
+      -0.3115,
+      -0.3148,
+      -0.3151,
+      -0.3145
+    ],
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|BEAR_RALLY": [
+      0.02,
+      -0.3102,
+      -0.0218,
+      -0.0562,
+      -0.0218,
+      -0.1806,
+      -0.1984,
+      -0.1262,
+      0.0182
+    ],
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|FULL_BEAR": [
+      0.02,
+      -0.095,
+      -0.035,
+      -0.065,
+      -0.035,
+      -0.04,
+      0.0,
+      -0.015,
+      -0.035
+    ],
+    "TREND_BEAR|DIP|HIGH_EXP|BEAR|BULL_DIP": [
+      0.02,
+      -0.4153,
+      -0.2056,
+      -0.1575,
+      -0.3649,
+      0.05,
+      0.1,
+      0.04,
+      0.11
+    ],
+    "TREND_BEAR|DIP|HIGH_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.2876,
+      -0.282,
+      -0.2845,
+      -0.2752,
+      -0.5186,
+      -0.2764,
+      0.3011,
+      -0.2441
+    ],
+    "TREND_BEAR|DIP|HIGH_EXP|BULL|BULL_DIP": [
+      0.02,
+      -0.1786,
+      -0.3064,
+      -0.3333,
+      -0.3829,
+      0.05,
+      0.1,
+      0.04,
+      0.11
+    ],
+    "TREND_BEAR|DIP|HIGH_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.2857,
+      -0.3088,
+      -0.3038,
+      -0.3143,
+      -0.316,
+      -0.3322,
+      -0.325,
+      -0.3028
+    ],
+    "TREND_BEAR|DIP|HIGH_EXP|CHOP|BEAR_RALLY": [
+      0.01,
+      0.01,
+      0.01,
+      0.01,
+      0.01,
+      0.95,
+      0.045,
+      0.085,
+      0.01
+    ],
+    "TREND_BEAR|DIP|HIGH_EXP|CHOP|FULL_BEAR": [
+      0.01,
+      0.01,
+      0.01,
+      0.01,
+      0.01,
+      0.065,
+      0.045,
+      0.06,
+      0.01
+    ],
+    "TREND_BEAR|DIP|LOW_EXP|BEAR|BULL_DIP": [
+      0.02,
+      -0.4153,
+      -0.2056,
+      -0.1575,
+      -0.3649,
+      0.095,
+      0.18,
+      0.075,
+      0.11
+    ],
+    "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.2876,
+      -0.282,
+      -0.2845,
+      -0.2752,
+      -0.4906,
+      0.09,
+      0.1957,
+      -0.2441
+    ],
+    "TREND_BEAR|DIP|LOW_EXP|BULL|BULL_DIP": [
+      0.02,
+      -0.1786,
+      -0.3064,
+      -0.3333,
+      -0.3829,
+      0.05,
+      0.1,
+      0.04,
+      0.11
+    ],
+    "TREND_BEAR|DIP|LOW_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.2857,
+      -0.3088,
+      -0.3038,
+      -0.3143,
+      -0.316,
+      -0.3322,
+      -0.325,
+      -0.3028
+    ],
+    "TREND_BEAR|DIP|LOW_EXP|CHOP|BEAR_RALLY": [
+      0.01,
+      0.01,
+      0.01,
+      0.01,
+      0.01,
+      0.11,
+      0.95,
+      -0.0922,
+      0.01
+    ],
+    "TREND_BEAR|MID|HIGH_EXP|BEAR|BULL_DIP": [
+      0.02,
+      -0.4457,
+      -0.2916,
+      -0.4489,
+      -0.3265,
+      0.05,
+      0.1,
+      0.04,
+      0.11
+    ],
+    "TREND_BEAR|MID|HIGH_EXP|BEAR|EMA_TRANS": [
+      0.02,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      0.4169,
+      0.4367,
+      0.5424,
+      0.4586
+    ],
+    "TREND_BEAR|MID|HIGH_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.2675,
+      -0.2441,
+      -0.2478,
+      -0.2756,
+      -0.2572,
+      -0.4223,
+      -0.2674,
+      -0.4406
+    ],
+    "TREND_BEAR|MID|HIGH_EXP|BULL|BULL_DIP": [
+      0.02,
+      -0.2935,
+      -0.3926,
+      -0.3037,
+      -0.2512,
+      0.05,
+      0.1,
+      0.04,
+      0.11
+    ],
+    "TREND_BEAR|MID|HIGH_EXP|BULL|EMA_TRANS": [
+      0.02,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85
+    ],
+    "TREND_BEAR|MID|HIGH_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.1994,
+      -0.1868,
+      -0.2162,
+      -0.2287,
+      -0.3519,
+      -0.3652,
+      -0.3674,
+      -0.3744
+    ],
+    "TREND_BEAR|MID|HIGH_EXP|CHOP|BEAR_RALLY": [
+      0.01,
+      0.01,
+      0.01,
+      0.01,
+      0.01,
+      -0.025,
+      0.01,
+      -0.055,
+      0.01
+    ],
+    "TREND_BEAR|MID|LOW_EXP|BEAR|BULL_DIP": [
+      0.02,
+      -0.4457,
+      -0.2916,
+      -0.4489,
+      -0.3265,
+      0.095,
+      0.18,
+      0.075,
+      0.11
+    ],
+    "TREND_BEAR|MID|LOW_EXP|BEAR|EMA_TRANS": [
+      0.02,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      0.4619,
+      0.5167,
+      0.5774,
+      0.4586
+    ],
+    "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR": [
+      0.02,
+      -0.2675,
+      0.9271,
+      0.95,
+      -0.2756,
+      0.0614,
+      0.09,
+      0.4044,
+      -0.4406
+    ],
+    "TREND_BEAR|MID|LOW_EXP|BULL|BULL_DIP": [
+      0.02,
+      -0.2935,
+      -0.3926,
+      -0.3037,
+      -0.2512,
+      0.05,
+      0.1,
+      0.04,
+      0.11
+    ],
+    "TREND_BEAR|MID|LOW_EXP|BULL|EMA_TRANS": [
+      0.02,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85
+    ],
+    "TREND_BEAR|MID|LOW_EXP|BULL|FULL_BEAR": [
+      0.02,
+      -0.1994,
+      -0.1868,
+      -0.2162,
+      -0.2287,
+      -0.3519,
+      -0.3652,
+      -0.3674,
+      -0.3744
+    ],
+    "TREND_BULL|MID|HIGH_EXP|BEAR|BEAR_RALLY": [
+      0.02,
+      0.05,
+      0.1,
+      0.04,
+      0.11,
+      -0.4105,
+      -0.4432,
+      -0.4251,
+      -0.3655
+    ],
+    "TREND_BULL|MID|HIGH_EXP|BEAR|EMA_TRANS": [
+      0.005,
+      -0.0856,
+      -0.3704,
+      -0.3218,
+      -0.5162,
+      0.1772,
+      -0.0149,
+      -0.0133,
+      -0.0602
+    ],
+    "TREND_BULL|MID|HIGH_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.3543,
+      -0.2895,
+      -0.2669,
+      -0.335,
+      -0.2227,
+      -0.2395,
+      -0.2275,
+      -0.2846
+    ],
+    "TREND_BULL|MID|HIGH_EXP|BULL|BEAR_RALLY": [
+      0.02,
+      0.05,
+      0.1,
+      0.04,
+      0.11,
+      -0.4178,
+      -0.3605,
+      -0.3692,
+      -0.3416
+    ],
+    "TREND_BULL|MID|HIGH_EXP|BULL|EMA_TRANS": [
+      0.02,
+      -0.85,
+      -0.85,
+      -0.85,
+      -0.85,
+      0.2497,
+      0.2742,
+      0.2606,
+      0.2879
+    ],
+    "TREND_BULL|MID|HIGH_EXP|BULL|FULL_BULL": [
+      0.02,
+      -0.3791,
+      -0.3766,
+      -0.3834,
+      -0.3813,
+      -0.2089,
+      -0.2556,
+      -0.2405,
+      -0.2314
+    ],
+    "TREND_BULL|MID|LOW_EXP|BEAR|BEAR_RALLY": [
+      0.02,
+      0.05,
+      0.1,
+      0.04,
+      0.11,
+      -0.4105,
+      -0.4432,
+      -0.4251,
+      -0.3655
+    ],
+    "TREND_BULL|MID|LOW_EXP|BEAR|EMA_TRANS": [
+      0.005,
+      -0.0856,
+      -0.3704,
+      -0.3218,
+      -0.5162,
+      0.1772,
+      -0.0149,
+      -0.0133,
+      -0.0602
+    ],
+    "TREND_BULL|MID|LOW_EXP|BEAR|FULL_BEAR": [
+      0.01,
+      0.065,
+      0.045,
+      0.06,
+      0.01,
+      0.01,
+      0.01,
+      0.01,
+      0.01
+    ],
+    "TREND_BULL|MID|LOW_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.3543,
+      -0.2895,
+      -0.2669,
+      -0.335,
+      -0.2227,
+      -0.2395,
+      -0.2275,
+      -0.2846
+    ],
+    "TREND_BULL|MID|LOW_EXP|BULL|BEAR_RALLY": [
+      0.02,
+      0.095,
+      0.18,
+      0.075,
+      0.11,
+      -0.4178,
+      -0.3605,
+      -0.3692,
+      -0.3416
+    ],
+    "TREND_BULL|MID|LOW_EXP|BULL|EMA_TRANS": [
+      0.02,
+      0.055,
+      0.09,
+      0.045,
+      -0.85,
+      0.2497,
+      0.2742,
+      0.2606,
+      0.2879
+    ],
+    "TREND_BULL|MID|LOW_EXP|BULL|FULL_BULL": [
+      0.02,
+      0.055,
+      0.09,
+      0.045,
+      -0.3813,
+      -0.2089,
+      -0.2556,
+      -0.2405,
+      -0.2314
+    ],
+    "TREND_BULL|PEAK|HIGH_EXP|BEAR|BEAR_RALLY": [
+      0.02,
+      0.05,
+      0.1,
+      0.04,
+      0.11,
+      -0.4835,
+      -0.4877,
+      -0.3669,
+      -0.368
+    ],
+    "TREND_BULL|PEAK|HIGH_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.2226,
+      -0.3977,
+      -0.4015,
+      -0.2839,
+      -0.3007,
+      -0.3085,
+      -0.3207,
+      -0.3057
+    ],
+    "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY": [
+      0.02,
+      0.5225,
+      0.217,
+      0.47,
+      0.11,
+      -0.4744,
+      -0.3794,
+      -0.4957,
+      -0.5406
+    ],
+    "TREND_BULL|PEAK|HIGH_EXP|BULL|FULL_BULL": [
+      0.02,
+      -0.1674,
+      -0.2041,
+      -0.1952,
+      -0.2399,
+      -0.3244,
+      -0.3452,
+      -0.3479,
+      -0.3544
+    ],
+    "TREND_BULL|PEAK|LOW_EXP|BEAR|BEAR_RALLY": [
+      0.02,
+      0.05,
+      0.1,
+      0.04,
+      0.11,
+      -0.4835,
+      -0.4877,
+      -0.3669,
+      -0.368
+    ],
+    "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BEAR": [
+      0.01,
+      0.95,
+      0.045,
+      0.06,
+      0.01,
+      0.01,
+      0.01,
+      0.01,
+      0.01
+    ],
+    "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BULL": [
+      0.02,
+      -0.2226,
+      -0.3977,
+      -0.4015,
+      -0.2839,
+      -0.3007,
+      -0.3085,
+      -0.3207,
+      -0.3057
+    ],
+    "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY": [
+      0.02,
+      0.5675,
+      0.1872,
+      0.505,
+      0.11,
+      -0.4744,
+      -0.3794,
+      -0.4957,
+      -0.5406
+    ],
+    "TREND_BULL|PEAK|LOW_EXP|BULL|FULL_BULL": [
+      0.02,
+      0.055,
+      0.09,
+      0.045,
+      -0.2399,
+      -0.3244,
+      -0.3452,
+      -0.3479,
+      -0.3544
+    ],
+    "TREND_BULL|PEAK|LOW_EXP|CHOP|FULL_BEAR": [
+      0.01,
+      0.11,
+      0.125,
+      0.095,
+      0.01,
+      0.01,
+      0.01,
+      0.01,
+      0.01
+    ]
+  },
+  "q_table_1h": {
+    "RANGE_NORMAL|MID|BEAR_BOUNCE|WIN": [
+      0.1496,
+      0.02,
+      0.02,
+      0.02
+    ],
+    "RANGE_NORMAL|MID|BEAR_STRONG|LOSS": [
+      0.0978,
+      0.02,
+      0.0102,
+      0.02
+    ],
+    "TREND_BEAR|LOW|BEAR_STRONG|LOSS": [
+      0.02,
+      0.02,
+      0.0102,
+      0.02
+    ],
+    "TREND_BEAR|LOW|BEAR_STRONG|WIN": [
+      0.02,
+      -0.039,
+      0.08,
+      0.02
+    ],
+    "TREND_BEAR|MID|BEAR_STRONG|LOSS": [
+      0.02,
+      0.02,
+      0.1453,
+      0.02
+    ],
+    "TREND_BULL|HIGH|BEAR_BOUNCE|FLAT": [
+      0.02,
+      0.0768,
+      0.02,
+      0.02
+    ],
+    "TREND_BULL|HIGH|BEAR_BOUNCE|LOSS": [
+      0.007,
+      0.0102,
+      0.0088,
+      0.1004
+    ],
+    "TREND_BULL|HIGH|BEAR_BOUNCE|WIN": [
+      0.0198,
+      0.0068,
+      0.02,
+      0.0157
+    ],
+    "TREND_BULL|HIGH|BULL_STRONG|FLAT": [
+      0.02,
+      0.0733,
+      0.02,
+      0.02
+    ],
+    "TREND_BULL|HIGH|BULL_STRONG|LOSS": [
+      -0.0094,
+      -0.0233,
+      0.0252,
+      0.02
+    ],
+    "TREND_BULL|MID|BEAR_BOUNCE|FLAT": [
+      0.02,
+      0.0615,
+      0.02,
+      0.02
+    ],
+    "TREND_BULL|MID|BEAR_BOUNCE|LOSS": [
+      -0.0068,
+      0.0102,
+      -0.003,
+      0.02
+    ],
+    "TREND_BULL|MID|BEAR_BOUNCE|WIN": [
+      0.02,
+      0.0651,
+      0.02,
+      0.02
+    ]
+  },
+  "q_table_4h": {
+    "CHOP_HIGHVOL|MID|BEAR_BOUNCE|WIN": [
+      0.02,
+      0.02,
+      0.02,
+      0.147
+    ],
+    "CHOP_HIGHVOL|MID|BEAR_STRONG|LOSS": [
+      0.02,
+      0.02,
+      0.0794,
+      0.02
+    ],
+    "TREND_BEAR|LOW|BEAR_STRONG|LOSS": [
+      0.02,
+      0.02,
+      0.0102,
+      0.02
+    ],
+    "TREND_BEAR|MID|BEAR_STRONG|FLAT": [
+      0.02,
+      0.02,
+      0.0102,
+      0.02
+    ],
+    "TREND_BEAR|MID|BEAR_STRONG|LOSS": [
+      0.02,
+      0.02,
+      0.1319,
+      0.02
+    ],
+    "TREND_BEAR|MID|BEAR_STRONG|WIN": [
+      0.02,
+      0.02,
+      0.0102,
+      0.02
+    ],
+    "TREND_BULL|HIGH|BEAR_BOUNCE|LOSS": [
+      -0.0488,
+      0.0102,
+      0.02,
+      0.02
+    ],
+    "TREND_BULL|HIGH|BEAR_BOUNCE|WIN": [
+      0.02,
+      0.0102,
+      0.02,
+      0.02
+    ]
+  },
+  "realized_net_profit_sats": 0,
+  "state_visits": {
+    "CHOP_HIGHVOL|MID|HIGH_EXP|BEAR|BEAR_RALLY": 1,
+    "CHOP_HIGHVOL|MID|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "CHOP_HIGHVOL|MID|HIGH_EXP|BEAR|FULL_BEAR": 1,
+    "CHOP_HIGHVOL|MID|LOW_EXP|BEAR|BEAR_RALLY": 24,
+    "CHOP_HIGHVOL|MID|LOW_EXP|BEAR|EMA_TRANS": 16,
+    "CHOP_HIGHVOL|MID|LOW_EXP|BEAR|FULL_BEAR": 40,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|BULL_DIP": 1,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|FULL_BEAR": 1,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|BULL_DIP": 1,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|EMA_TRANS": 1,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|FULL_BULL": 1,
+    "RANGE_NORMAL|DIP|LOW_EXP|BEAR|BULL_DIP": 208,
+    "RANGE_NORMAL|DIP|LOW_EXP|BEAR|EMA_TRANS": 8,
+    "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BEAR": 442,
+    "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BULL": 74,
+    "RANGE_NORMAL|DIP|LOW_EXP|BULL|BULL_DIP": 168,
+    "RANGE_NORMAL|DIP|LOW_EXP|BULL|EMA_TRANS": 8,
+    "RANGE_NORMAL|DIP|LOW_EXP|BULL|FULL_BEAR": 174,
+    "RANGE_NORMAL|DIP|LOW_EXP|BULL|FULL_BULL": 34,
+    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|BEAR_RALLY": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|BULL_DIP": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|FULL_BEAR": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BULL|BEAR_RALLY": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BULL|BULL_DIP": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BULL|EMA_TRANS": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BULL|FULL_BULL": 1,
+    "RANGE_NORMAL|MID|LOW_EXP|BEAR|BEAR_RALLY": 1554,
+    "RANGE_NORMAL|MID|LOW_EXP|BEAR|BULL_DIP": 846,
+    "RANGE_NORMAL|MID|LOW_EXP|BEAR|EMA_TRANS": 830,
+    "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BEAR": 2818,
+    "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BULL": 1516,
+    "RANGE_NORMAL|MID|LOW_EXP|BULL|BEAR_RALLY": 416,
+    "RANGE_NORMAL|MID|LOW_EXP|BULL|BULL_DIP": 738,
+    "RANGE_NORMAL|MID|LOW_EXP|BULL|EMA_TRANS": 370,
+    "RANGE_NORMAL|MID|LOW_EXP|BULL|FULL_BEAR": 1020,
+    "RANGE_NORMAL|MID|LOW_EXP|BULL|FULL_BULL": 1192,
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|BEAR_RALLY": 1,
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|FULL_BEAR": 1,
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BULL|BEAR_RALLY": 1,
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BULL|FULL_BULL": 1,
+    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|BEAR_RALLY": 530,
+    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|EMA_TRANS": 8,
+    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|FULL_BEAR": 72,
+    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|FULL_BULL": 252,
+    "RANGE_NORMAL|PEAK|LOW_EXP|BULL|BEAR_RALLY": 118,
+    "RANGE_NORMAL|PEAK|LOW_EXP|BULL|FULL_BEAR": 8,
+    "RANGE_NORMAL|PEAK|LOW_EXP|BULL|FULL_BULL": 164,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|BULL_DIP": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BEAR": 6,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|BEAR_RALLY": 4,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|BULL_DIP": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|FULL_BULL": 2,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|BEAR_RALLY": 6,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|BULL_DIP": 4826,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|EMA_TRANS": 148,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR": 23006,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BULL": 428,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BEAR_RALLY": 5,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BULL_DIP": 6086,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|EMA_TRANS": 214,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|FULL_BEAR": 21634,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|FULL_BULL": 502,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY": 9,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|BEAR_RALLY": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|BULL_DIP": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|BEAR_RALLY": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|BULL_DIP": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|FULL_BULL": 2,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|BEAR_RALLY": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|BEAR_RALLY": 12372,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|BULL_DIP": 9888,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|EMA_TRANS": 6346,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BEAR": 27278,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BULL": 28034,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|BEAR_RALLY": 9817,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|BULL_DIP": 11672,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|EMA_TRANS": 6140,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BEAR": 25108,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL": 29961,
+    "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY": 10,
+    "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|BEAR_RALLY": 1,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|BEAR_RALLY": 1,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|FULL_BULL": 1,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|BEAR_RALLY": 5366,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|EMA_TRANS": 198,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|FULL_BEAR": 386,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|FULL_BULL": 22406,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|BEAR_RALLY": 4642,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|EMA_TRANS": 196,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|FULL_BEAR": 338,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|FULL_BULL": 25110,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|BEAR_RALLY": 2,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|FULL_BEAR": 1,
+    "TREND_BEAR|DIP|HIGH_EXP|BEAR|BULL_DIP": 1,
+    "TREND_BEAR|DIP|HIGH_EXP|BEAR|FULL_BEAR": 3,
+    "TREND_BEAR|DIP|HIGH_EXP|BULL|BULL_DIP": 1,
+    "TREND_BEAR|DIP|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "TREND_BEAR|DIP|HIGH_EXP|CHOP|BEAR_RALLY": 4,
+    "TREND_BEAR|DIP|HIGH_EXP|CHOP|FULL_BEAR": 1,
+    "TREND_BEAR|DIP|LOW_EXP|BEAR|BULL_DIP": 578,
+    "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR": 10450,
+    "TREND_BEAR|DIP|LOW_EXP|BULL|BULL_DIP": 562,
+    "TREND_BEAR|DIP|LOW_EXP|BULL|FULL_BEAR": 4556,
+    "TREND_BEAR|DIP|LOW_EXP|CHOP|BEAR_RALLY": 6,
+    "TREND_BEAR|MID|HIGH_EXP|BEAR|BULL_DIP": 1,
+    "TREND_BEAR|MID|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "TREND_BEAR|MID|HIGH_EXP|BEAR|FULL_BEAR": 1,
+    "TREND_BEAR|MID|HIGH_EXP|BULL|BULL_DIP": 1,
+    "TREND_BEAR|MID|HIGH_EXP|BULL|EMA_TRANS": 1,
+    "TREND_BEAR|MID|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "TREND_BEAR|MID|HIGH_EXP|CHOP|BEAR_RALLY": 1,
+    "TREND_BEAR|MID|LOW_EXP|BEAR|BULL_DIP": 484,
+    "TREND_BEAR|MID|LOW_EXP|BEAR|EMA_TRANS": 18,
+    "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR": 4398,
+    "TREND_BEAR|MID|LOW_EXP|BULL|BULL_DIP": 502,
+    "TREND_BEAR|MID|LOW_EXP|BULL|EMA_TRANS": 8,
+    "TREND_BEAR|MID|LOW_EXP|BULL|FULL_BEAR": 1596,
+    "TREND_BULL|MID|HIGH_EXP|BEAR|BEAR_RALLY": 1,
+    "TREND_BULL|MID|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "TREND_BULL|MID|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "TREND_BULL|MID|HIGH_EXP|BULL|BEAR_RALLY": 1,
+    "TREND_BULL|MID|HIGH_EXP|BULL|EMA_TRANS": 1,
+    "TREND_BULL|MID|HIGH_EXP|BULL|FULL_BULL": 1,
+    "TREND_BULL|MID|LOW_EXP|BEAR|BEAR_RALLY": 1064,
+    "TREND_BULL|MID|LOW_EXP|BEAR|EMA_TRANS": 70,
+    "TREND_BULL|MID|LOW_EXP|BEAR|FULL_BEAR": 1,
+    "TREND_BULL|MID|LOW_EXP|BEAR|FULL_BULL": 2756,
+    "TREND_BULL|MID|LOW_EXP|BULL|BEAR_RALLY": 314,
+    "TREND_BULL|MID|LOW_EXP|BULL|EMA_TRANS": 8,
+    "TREND_BULL|MID|LOW_EXP|BULL|FULL_BULL": 1874,
+    "TREND_BULL|PEAK|HIGH_EXP|BEAR|BEAR_RALLY": 1,
+    "TREND_BULL|PEAK|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY": 10,
+    "TREND_BULL|PEAK|HIGH_EXP|BULL|FULL_BULL": 1,
+    "TREND_BULL|PEAK|LOW_EXP|BEAR|BEAR_RALLY": 874,
+    "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BEAR": 4,
+    "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BULL": 6198,
+    "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY": 246,
+    "TREND_BULL|PEAK|LOW_EXP|BULL|FULL_BULL": 5782,
+    "TREND_BULL|PEAK|LOW_EXP|CHOP|FULL_BEAR": 1
+  },
+  "total_fees_paid_sats": 0,
+  "total_intermediate_updates": 763,
+  "total_trained": 259
+}

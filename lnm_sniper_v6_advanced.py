@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from sniper_perception_sats_core import (
     ShortTermPerceptionEngine,
     SatsExpectancyGate,
@@ -6,7 +7,7 @@ from sniper_perception_sats_core import (
 PERCEPTION_ENGINE = ShortTermPerceptionEngine()
 import os
 import re
-import glob
+import sys
 import time
 from guardian_execution_core import AtomicBrainStore, ResilientLNMClient, HardFloorGuardian
 import json
@@ -31,9 +32,10 @@ class Config:
     BRAIN_FILE = "q_brain_advanced_lnm.json"
     BRAIN_SAVE_INTERVAL = 90.0
 
-    # Meta dinámica e interés compuesto con piso protegido
+    # Meta dinámica basada EXCLUSIVAMENTE en Balance Disponible (Sats Netos)
     INITIAL_TARGET_SATS = 300000
     TARGET_STEP_MULTIPLIER = 1.50
+    INITIAL_FLOOR_RATIO = 0.75
     MILESTONE_FLOOR_RATIO = 0.88
 
     # Gestión de apalancamiento, riesgo y concurrencia estricta
@@ -43,23 +45,37 @@ class Config:
     WARMUP_TRADES = 20
     RISK_WARMUP = 0.06
     RISK_NORMAL = 0.12
+    MAX_SINGLE_TRADE_MARGIN_PCT = 0.22
     MIN_EFFECTIVE_RISK_WARMUP = 0.025
     MIN_EFFECTIVE_RISK_NORMAL = 0.032
     MAX_CONCURRENT_TRADES = 5
     SOFT_EXPOSURE_LIMIT = 0.38
-    ENTRY_COOLDOWN_SEC = 40.0
+    ENTRY_COOLDOWN_SEC = 35.0
 
-    # Aprendizaje intermedio online selectivo (bajo ruido)
+    # Frecuencia de análisis adaptativa (alta frecuencia de evaluación sin saturar API)
+    FAST_ANALYZE_INTERVAL_SEC = 5.0
+    ACTIVE_ANALYZE_INTERVAL_SEC = 7.0
+    IDLE_ANALYZE_INTERVAL_SEC = 11.0
+    USER_SYNC_TTL_SEC = 10.0
+
+    # Aprendizaje intermedio táctico (separado del aprendizaje económico realizado)
     ENABLE_INTERMEDIATE_LEARNING = True
-    INTERMEDIATE_EVAL_INTERVAL_SEC = 240.0
-    ALPHA_INTERMEDIATE = 0.020
+    INTERMEDIATE_EVAL_INTERVAL_SEC = 180.0
+    ALPHA_INTERMEDIATE = 0.018
     INTERMEDIATE_DECAY_PER_EVAL = 0.82
-    MAX_INTERMEDIATE_REWARD_CLIP = 0.12
+    MAX_INTERMEDIATE_REWARD_CLIP = 0.10
     MIN_INTERMEDIATE_DELTA_ATR = 0.18
 
-    # Umbrales de seguridad y recuperación auditable (escala decimal)
+    # Controlador de degradación de Edge en el Guardian
+    EDGE_DEGRADATION_WARN = -0.25
+    EDGE_DEGRADATION_TIGHTEN = -0.42
+    EDGE_DEGRADATION_EXIT = -0.65
+    EDGE_DEGRADATION_PERSISTENCE = 3
+
+    # Umbrales de seguridad y recuperación auditable (conectados al flujo operativo)
     MAX_DAILY_LOSS_PCT = 0.11
     MAX_DRAWDOWN_PCT = 0.16
+    KILL_SWITCH_DD_PCT = 0.22
     CONSECUTIVE_LOSS_LIMIT = 4
     CONSECUTIVE_LOSS_PAUSE_SEC = 6 * 60
 
@@ -80,17 +96,17 @@ class Config:
     API_CB_ERROR_THRESHOLD = 4
     API_CB_MAX_COOLDOWN_SEC = 180
     CANDLE_LIMIT = 210
-    TTL_5M = 45.0
-    TTL_15M = 120.0
-    TTL_1H = 360.0
-    TTL_4H = 720.0
+    TTL_5M = 30.0
+    TTL_15M = 90.0
+    TTL_1H = 300.0
+    TTL_4H = 600.0
 
     NUM_ACTIONS = 9
     NUM_MACRO_ACTIONS = 4
 
 
 # =====================================================================
-# 2. CARGADOR SEGURO DE CREDENCIALES
+# 2. CARGADOR SEGURO DE CREDENCIALES (SIN ESCANEO DE ARCHIVOS .PY)
 # =====================================================================
 def load_saved_credentials():
     k = os.getenv("LNM_API_KEY") or os.getenv("API_KEY") or ""
@@ -99,12 +115,12 @@ def load_saved_credentials():
     if k and s and p and "TU_API" not in k:
         return k.strip(), s.strip(), p.strip()
 
-    current_script = os.path.basename(__file__) if "__file__" in globals() else "lnm_sniper_v6_advanced.py"
+    # Exclusivamente archivos de entorno protegidos (.env / ~/.env / ~/.bashrc)
     search_files = [
         ".env",
         os.path.expanduser("~/.env"),
         os.path.expanduser("~/.bashrc"),
-    ] + [f for f in glob.glob("*.py") if f != current_script]
+    ]
 
     for filepath in search_files:
         if os.path.exists(filepath):
@@ -112,15 +128,15 @@ def load_saved_credentials():
                 with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
                 if not k or "TU_API" in k:
-                    m_k = re.search(r'(?:LNM_API_KEY|API_KEY)\s*[=:]\s*["\']([^"\']+)["\']', content)
+                    m_k = re.search(r'(?:LNM_API_KEY|API_KEY)\s*[=:]\s*["\']?([^"\'\s#]+)["\']?', content)
                     if m_k and "TU_API" not in m_k.group(1):
                         k = m_k.group(1)
                 if not s or "TU_API" in s:
-                    m_s = re.search(r'(?:LNM_API_SECRET|API_SECRET)\s*[=:]\s*["\']([^"\']+)["\']', content)
+                    m_s = re.search(r'(?:LNM_API_SECRET|API_SECRET)\s*[=:]\s*["\']?([^"\'\s#]+)["\']?', content)
                     if m_s and "TU_API" not in m_s.group(1):
                         s = m_s.group(1)
                 if not p or "TU_PASSPHRASE" in p:
-                    m_p = re.search(r'(?:LNM_PASSPHRASE|API_PASSPHRASE)\s*[=:]\s*["\']([^"\']+)["\']', content)
+                    m_p = re.search(r'(?:LNM_PASSPHRASE|API_PASSPHRASE)\s*[=:]\s*["\']?([^"\'\s#]+)["\']?', content)
                     if m_p and "TU_PASSPHRASE" not in m_p.group(1):
                         p = m_p.group(1)
             except Exception:
@@ -171,28 +187,29 @@ class APIHealthMonitor:
     def check_cooldown(self):
         remaining = self.cooldown_until - time.time()
         if remaining > 0:
-            time.sleep(min(remaining, 12.0))
+            time.sleep(min(remaining, 10.0))
             return True
         return False
 
 
 # =====================================================================
-# 4. GESTOR DE CACHÉ MULTI-TEMPORALIDAD CON CONEXIÓN PERSISTENTE
+# 4. GESTOR DE CACHÉ MULTI-TEMPORALIDAD CON CACHÉ DE INDICADORES
 # =====================================================================
 class MultiTimeframeCache:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({"Connection": "keep-alive", "User-Agent": "LNMSniper/7.3-Unified"})
         self.cache = {
-            "5m":  {"last": 0.0, "ttl": Config.TTL_5M,  "period": 300,   "data": None},
-            "15m": {"last": 0.0, "ttl": Config.TTL_15M, "period": 900,   "data": None},
-            "1h":  {"last": 0.0, "ttl": Config.TTL_1H,  "period": 3600,  "data": None},
-            "4h":  {"last": 0.0, "ttl": Config.TTL_4H,  "period": 14400, "data": None},
+            "5m":  {"last": 0.0, "ttl": Config.TTL_5M,  "period": 300,   "data": None, "ind_cache": None, "ind_price": 0.0},
+            "15m": {"last": 0.0, "ttl": Config.TTL_15M, "period": 900,   "data": None, "ind_cache": None, "ind_price": 0.0},
+            "1h":  {"last": 0.0, "ttl": Config.TTL_1H,  "period": 3600,  "data": None, "ind_cache": None, "ind_price": 0.0},
+            "4h":  {"last": 0.0, "ttl": Config.TTL_4H,  "period": 14400, "data": None, "ind_cache": None, "ind_price": 0.0},
         }
 
     def invalidate(self, tf):
         if tf in self.cache:
             self.cache[tf]["last"] = 0.0
+            self.cache[tf]["ind_cache"] = None
 
     def get_candles(self, tf, current_lnm_price=0.0):
         now = time.time()
@@ -204,6 +221,7 @@ class MultiTimeframeCache:
                 h, l, c = self._fetch_remote(tf)
                 item["data"] = (h, l, c)
                 item["last"] = now
+                item["ind_cache"] = None
             except Exception as e:
                 if item["data"] is None:
                     raise RuntimeError(f"Fallo crítico obteniendo velas TF {tf}: {e}")
@@ -221,13 +239,25 @@ class MultiTimeframeCache:
             return h_c, l_c, c_c
         return h_arr, l_arr, c_arr
 
+    def get_indicators_fast(self, tf, current_lnm_price=0.0):
+        item = self.cache[tf]
+        h, l, c = self.get_candles(tf, current_lnm_price)
+        if tf in ("1h", "4h") and item["ind_cache"] is not None:
+            return item["ind_cache"]
+        if tf in ("5m", "15m") and item["ind_cache"] is not None and abs(current_lnm_price - item["ind_price"]) < 0.5:
+            return item["ind_cache"]
+        ind = compute_indicators(h, l, c, current_lnm_price if tf in ("5m", "15m") else 0.0)
+        item["ind_cache"] = ind
+        item["ind_price"] = float(current_lnm_price)
+        return ind
+
     def _fetch_remote(self, tf):
         limit = Config.CANDLE_LIMIT
         map_binance = {"5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h"}
         interval = map_binance.get(tf, "5m")
         try:
             url = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={interval}&limit={limit}"
-            r = self.session.get(url, timeout=5)
+            r = self.session.get(url, timeout=4.5)
             r.raise_for_status()
             data = r.json()
             if len(data) < 50:
@@ -241,7 +271,7 @@ class MultiTimeframeCache:
             map_bybit = {"5m": "5", "15m": "15", "1h": "60", "4h": "240"}
             by_interval = map_bybit.get(tf, "5")
             url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval={by_interval}&limit={limit}"
-            r = self.session.get(url, timeout=5)
+            r = self.session.get(url, timeout=4.5)
             r.raise_for_status()
             rows = list(reversed(r.json()["result"]["list"]))
             if len(rows) < 50:
@@ -328,6 +358,9 @@ def compute_indicators(highs, lows, closes, lnm_price=0.0):
 
     return {
         "price": ref_price,
+        "high": float(highs[-1]),
+        "low": float(lows[-1]),
+        "open": float(closes[-2]) if len(closes) > 1 else ref_price,
         "rsi": float(rsi),
         "bb_pos": float(bb_pos),
         "bb_width_pct": float(bb_width_pct),
@@ -346,7 +379,7 @@ def compute_indicators(highs, lows, closes, lnm_price=0.0):
 
 
 # =====================================================================
-# 6. CEREBRO AUTÓNOMO Q-LEARNING CON POLÍTICA DE SALIDA INTEGRADA
+# 6. CEREBRO AUTÓNOMO Q-LEARNING CON POLÍTICA ECONÓMICA DE SATS NETOS
 # =====================================================================
 class AutonomousGoalBrain:
     def __init__(self, filename=Config.BRAIN_FILE):
@@ -356,8 +389,8 @@ class AutonomousGoalBrain:
         self.alpha_macro = 0.18
         self.gamma = 0.90
         self.epsilon = 0.40
-        self.epsilon_min = 0.05
-        self.epsilon_decay = 0.92
+        self.epsilon_min = 0.008
+        self.epsilon_decay = 0.995
         self.batch_size = 18
 
         self.total_trained = 0
@@ -365,6 +398,9 @@ class AutonomousGoalBrain:
         self.current_target = Config.INITIAL_TARGET_SATS
         self.milestone_level = 1
         self.locked_floor = 0
+        self.peak_equity = 0
+        self.realized_net_profit_sats = 0
+        self.total_fees_paid_sats = 0
 
         self.q_table = {}
         self.state_visits = {}
@@ -386,7 +422,6 @@ class AutonomousGoalBrain:
             "4h": {"bucket": 0, "start_eq": 0, "start_price": 0.0, "trades": 0, "wins": 0, "pnl": 0, "state": None, "action": 0},
         }
 
-        # Estrategias de la IA: definen TANTO la entrada COMO la política del Guardián de salida
         self.strategies = {
             1: {
                 "side": "buy", "style": "TREND", "sl_atr": 2.0, "rr": 4.2, "lev_f": 0.65, "name": "LONG_TREND",
@@ -446,6 +481,13 @@ class AutonomousGoalBrain:
             q[6], q[7], q[8] = 0.065, 0.055, 0.050
         else:
             q[2], q[4], q[6], q[8] = 0.045, 0.045, 0.045, 0.045
+        if "RANGE_SQUEEZE" in state_key and "BEAR_RALLY" in state_key:
+            c2 = q[2] * 0.45
+            q[2] -= c2
+            q[1], q[3], q[4] = q[1] + c2 * 0.30, q[3] + c2 * 0.35, q[4] + c2 * 0.35
+            c6 = q[6] * 0.45
+            q[6] -= c6
+            q[5], q[7], q[8] = q[5] + c6 * 0.30, q[7] + c6 * 0.35, q[8] + c6 * 0.35
         return [round(v, 4) for v in q]
 
     @staticmethod
@@ -484,81 +526,114 @@ class AutonomousGoalBrain:
         return "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS"
 
     def load_brain(self):
-        candidates = [self.filename, f"{self.filename}.bak"]
-        for path in candidates:
-            if os.path.exists(path):
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    raw_q = data.get("q_table", data if isinstance(data, dict) else {})
-                    raw_visits = data.get("state_visits", {})
+        # Integración real con AtomicBrainStore.load() y validación SHA-256 + fallback a .bak
+        data = None
+        if hasattr(self.store, "load"):
+            try:
+                data = self.store.load()
+            except Exception as e:
+                print(f"[AVISO STORE LOAD] {e}")
 
-                    accum_q, accum_counts, new_visits = {}, {}, {}
-                    for old_k, vec in raw_q.items():
-                        if not isinstance(vec, list):
-                            continue
-                        migrated_v = np.array(self._migrate_q_vector(vec), dtype=np.float64)
-                        norm_k = self._normalize_state_key(old_k)
-                        v_cnt = max(1, int(raw_visits.get(old_k, 1)))
-                        if norm_k not in accum_q:
-                            accum_q[norm_k] = migrated_v * v_cnt
-                            accum_counts[norm_k] = v_cnt
-                            new_visits[norm_k] = v_cnt
-                        else:
-                            accum_q[norm_k] += migrated_v * v_cnt
-                            accum_counts[norm_k] += v_cnt
-                            new_visits[norm_k] += v_cnt
+        if data is None:
+            for path in (self.filename, f"{self.filename}.bak"):
+                if os.path.exists(path):
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        break
+                    except Exception as e:
+                        print(f"[AVISO I/O] Error leyendo {path}: {e}")
 
-                    self.q_table = {
-                        k: [round(float(x), 4) for x in (accum_q[k] / accum_counts[k])]
-                        for k in accum_q
-                    }
-                    for k in self.q_table:
-                        self.q_table[k][0] = min(0.02, self.q_table[k][0])
+        if not isinstance(data, dict):
+            return
 
-                    self.state_visits = new_visits
-                    self.q_table_1h = data.get("q_table_1h", {})
-                    self.q_table_4h = data.get("q_table_4h", {})
+        try:
+            raw_q = data.get("q_table", data if isinstance(data, dict) else {})
+            raw_visits = data.get("state_visits", {})
 
-                    saved_cycles = data.get("cycle_state", {})
-                    for tf in ("1h", "4h"):
-                        if tf in saved_cycles and isinstance(saved_cycles[tf], dict):
-                            for k in self.cycle_state[tf]:
-                                if k in saved_cycles[tf]:
-                                    self.cycle_state[tf][k] = saved_cycles[tf][k]
+            accum_q, accum_counts, new_visits = {}, {}, {}
+            for old_k, vec in raw_q.items():
+                if not isinstance(vec, list):
+                    continue
+                migrated_v = np.array(self._migrate_q_vector(vec), dtype=np.float64)
+                norm_k = self._normalize_state_key(old_k)
+                v_cnt = max(1, int(raw_visits.get(old_k, 1)))
+                if norm_k not in accum_q:
+                    accum_q[norm_k] = migrated_v * v_cnt
+                    accum_counts[norm_k] = v_cnt
+                    new_visits[norm_k] = v_cnt
+                else:
+                    accum_q[norm_k] += migrated_v * v_cnt
+                    accum_counts[norm_k] += v_cnt
+                    new_visits[norm_k] += v_cnt
 
-                    self.epsilon = float(data.get("epsilon", self.epsilon))
-                    self.total_trained = int(data.get("total_trained", 0))
-                    self.total_intermediate_updates = int(data.get("total_intermediate_updates", 0))
-                    self.current_target = int(data.get("current_target", Config.INITIAL_TARGET_SATS))
-                    self.milestone_level = int(data.get("milestone_level", 1))
-                    self.locked_floor = int(data.get("locked_floor", 0))
-                    self.active_trades = data.get("active_trades", {})
+            self.q_table = {
+                k: [round(float(x), 4) for x in (accum_q[k] / accum_counts[k])]
+                for k in accum_q
+            }
+            for k in self.q_table:
+                self.q_table[k][0] = max(0.0, min(0.025, self.q_table[k][0]))
+                if "RANGE_SQUEEZE" in k and "BEAR_RALLY" in k:
+                    if self.q_table[k][2] > 0.02:
+                        t2 = self.q_table[k][2] * 0.45
+                        self.q_table[k][2] = round(self.q_table[k][2] - t2, 4)
+                        self.q_table[k][1] = round(min(0.85, self.q_table[k][1] + t2 * 0.30), 4)
+                        self.q_table[k][3] = round(min(0.85, self.q_table[k][3] + t2 * 0.35), 4)
+                        self.q_table[k][4] = round(min(0.85, self.q_table[k][4] + t2 * 0.35), 4)
+                    if self.q_table[k][6] > 0.02:
+                        t6 = self.q_table[k][6] * 0.45
+                        self.q_table[k][6] = round(self.q_table[k][6] - t6, 4)
+                        self.q_table[k][5] = round(min(0.85, self.q_table[k][5] + t6 * 0.30), 4)
+                        self.q_table[k][7] = round(min(0.85, self.q_table[k][7] + t6 * 0.35), 4)
+                        self.q_table[k][8] = round(min(0.85, self.q_table[k][8] + t6 * 0.35), 4)
 
-                    for item in data.get("memory", []):
-                        if isinstance(item, (list, tuple)) and len(item) == 5:
-                            p, s, a, r, ns = item
-                            self.memory.append((
-                                float(p),
-                                self._normalize_state_key(s),
-                                int(a) % Config.NUM_ACTIONS,
-                                float(r),
-                                self._normalize_state_key(ns),
-                            ))
-                    print(
-                        f"[CEREBRO CARGADO] Estados: {len(self.q_table)} | "
-                        f"1h:{len(self.q_table_1h)} | 4h:{len(self.q_table_4h)} | "
-                        f"Cierres: {self.total_trained} | Online: {self.total_intermediate_updates}"
-                    )
-                    return
-                except Exception as e:
-                    print(f"[AVISO I/O] Error leyendo {path}: {e}")
+            self.state_visits = new_visits
+            self.q_table_1h = data.get("q_table_1h", {})
+            self.q_table_4h = data.get("q_table_4h", {})
+
+            saved_cycles = data.get("cycle_state", {})
+            for tf in ("1h", "4h"):
+                if tf in saved_cycles and isinstance(saved_cycles[tf], dict):
+                    for k in self.cycle_state[tf]:
+                        if k in saved_cycles[tf]:
+                            self.cycle_state[tf][k] = saved_cycles[tf][k]
+
+            self.epsilon = float(data.get("epsilon", self.epsilon))
+            self.total_trained = int(data.get("total_trained", 0))
+            self.total_intermediate_updates = int(data.get("total_intermediate_updates", 0))
+            self.current_target = int(data.get("current_target", Config.INITIAL_TARGET_SATS))
+            self.milestone_level = int(data.get("milestone_level", 1))
+            self.locked_floor = int(data.get("locked_floor", 0))
+            self.peak_equity = int(data.get("peak_equity", 0))
+            self.realized_net_profit_sats = int(data.get("realized_net_profit_sats", 0))
+            self.total_fees_paid_sats = int(data.get("total_fees_paid_sats", 0))
+            self.active_trades = data.get("active_trades", {})
+
+            for item in data.get("memory", []):
+                if isinstance(item, (list, tuple)) and len(item) == 5:
+                    p, s, a, r, ns = item
+                    self.memory.append((
+                        float(p),
+                        self._normalize_state_key(s),
+                        int(a) % Config.NUM_ACTIONS,
+                        float(r),
+                        self._normalize_state_key(ns),
+                    ))
+            print(
+                f"[CEREBRO CARGADO SHA-256] Estados: {len(self.q_table)} | "
+                f"1h:{len(self.q_table_1h)} | 4h:{len(self.q_table_4h)} | "
+                f"Cierres: {self.total_trained} | Online: {self.total_intermediate_updates}"
+            )
+        except Exception as e:
+            print(f"[AVISO PROCESAMIENTO CEREBRO] {e}")
 
     def save_brain(self, force=False):
         now = time.time()
         if not force and not self.dirty:
             return
         if not force and (now - self.last_save_time) < Config.BRAIN_SAVE_INTERVAL:
+            return
+        if not self.q_table:
             return
         try:
             payload = {
@@ -568,6 +643,9 @@ class AutonomousGoalBrain:
                 "current_target": self.current_target,
                 "milestone_level": self.milestone_level,
                 "locked_floor": self.locked_floor,
+                "peak_equity": self.peak_equity,
+                "realized_net_profit_sats": self.realized_net_profit_sats,
+                "total_fees_paid_sats": self.total_fees_paid_sats,
                 "q_table": self.q_table,
                 "q_table_1h": self.q_table_1h,
                 "q_table_4h": self.q_table_4h,
@@ -582,21 +660,29 @@ class AutonomousGoalBrain:
         except Exception as e:
             print(f"[ERROR I/O] Fallo al guardar cerebro: {e}")
 
-    def check_and_advance_goal(self, equity):
+    def check_and_advance_goal(self, available_balance):
+        """
+        CORRECCIÓN CRÍTICA P0.1:
+        La meta avanza EXCLUSIVAMENTE cuando el balance disponible real (sats retirables)
+        alcanza o supera target_balance_sats (self.current_target).
+        """
         advanced = False
-        while equity >= self.current_target:
+        available_balance = int(available_balance)
+        while available_balance >= self.current_target:
             old_target = self.current_target
-            self.locked_floor = int(round(old_target * Config.MILESTONE_FLOOR_RATIO))
+            self.locked_floor = max(self.locked_floor, int(round(old_target * Config.MILESTONE_FLOOR_RATIO)))
             self.current_target = int(round(old_target * Config.TARGET_STEP_MULTIPLIER))
             self.milestone_level += 1
             self.dirty = True
             advanced = True
             print(
-                f"  [META CONQUISTADA] Nivel #{self.milestone_level} | "
-                f"Nueva Meta: {self.current_target:,} sats | Piso Protegido: {self.locked_floor:,} sats"
+                f"  🏆 [META DE BALANCE DISPONIBLE CONQUISTADA] Nivel #{self.milestone_level} | "
+                f"Balance Real: {available_balance:,} sats | Nueva Meta: {self.current_target:,} sats | "
+                f"Piso Protegido (88%): {self.locked_floor:,} sats"
             )
         if advanced:
             self.save_brain(force=True)
+        return advanced
 
     def is_warming_up(self):
         return self.total_trained < Config.WARMUP_TRADES
@@ -644,12 +730,12 @@ class AutonomousGoalBrain:
         perf = "WIN" if cycle_roi_pct > 0.004 else ("LOSS" if cycle_roi_pct < -0.008 else "FLAT")
         return f"{reg}|{osc}|{ema_st}|{perf}"
 
-    def record_trade_in_cycles(self, pl_sats):
+    def record_trade_in_cycles(self, net_pl_sats):
         for tf in ("1h", "4h"):
             self.cycle_state[tf]["trades"] = int(self.cycle_state[tf].get("trades", 0)) + 1
-            if pl_sats > 0:
+            if net_pl_sats > 0:
                 self.cycle_state[tf]["wins"] = int(self.cycle_state[tf].get("wins", 0)) + 1
-            self.cycle_state[tf]["pnl"] = int(self.cycle_state[tf].get("pnl", 0)) + int(pl_sats)
+            self.cycle_state[tf]["pnl"] = int(self.cycle_state[tf].get("pnl", 0)) + int(net_pl_sats)
         self.dirty = True
 
     def get_parallel_modifiers(self, ind_5m=None, ind_15m=None, ind_1h=None, ind_4h=None):
@@ -710,7 +796,9 @@ class AutonomousGoalBrain:
         prev_action = int(c_info.get("action", 0)) % Config.NUM_MACRO_ACTIONS
 
         eq_delta = equity - start_eq
-        cycle_roi_pct = eq_delta / start_eq
+        # Ponderar principalmente el PnL neto realizado y secundariamente el cambio de equity
+        effective_delta = realized_pnl if trades_cnt > 0 else eq_delta
+        cycle_roi_pct = effective_delta / start_eq
         btc_move_pct = (current_price - start_price) / start_price
         winrate_pct = (wins_cnt / trades_cnt * 100.0) if trades_cnt > 0 else 0.0
 
@@ -759,7 +847,7 @@ class AutonomousGoalBrain:
         print("--------------------------------------------------------------------")
         print(f"[CIERRE VELA {tf.upper()} & CONSOLIDACIÓN MACRO] Estado: {next_macro_state}")
         print(f"  → Mercado {tf.upper()}: ΔBTC {btc_move_pct*100:+.2f}% | RSI:{ind_tf['rsi']:.1f} | EMA50/200:{ind_tf['ema_state']}")
-        print(f"  → Performance Ciclo: ΔEq {eq_delta:+,} sats ({cycle_roi_pct*100:+.2f}%) | Cierres:{trades_cnt} (WR:{winrate_pct:.0f}% | PnL:{realized_pnl:+,}) | Activos:{len(running_trades)}")
+        print(f"  → Performance Ciclo: PnL Neto Realizado:{realized_pnl:+,} sats | ΔEq:{eq_delta:+,} sats | Cierres:{trades_cnt} (WR:{winrate_pct:.0f}%) | Activos:{len(running_trades)}")
         print(f"  → Estrategia Macro {tf.upper()}: {prev_strat_name} (R:{macro_reward:+.3f}) ➔ {new_strat_name}")
         print(f"  → Modificadores Activos: RR_x{mods['rr_mult']:.2f} | Risk_x{mods['risk_mult']:.2f}")
         print("--------------------------------------------------------------------")
@@ -773,6 +861,11 @@ class AutonomousGoalBrain:
         return self.q_table[norm_s]
 
     def choose_action(self, state, ind_5m, ind_15m, ind_1h, ind_4h, recovery_mode=False, current_dd_pct=0.0):
+        """
+        CORRECCIÓN CRÍTICA P0.2:
+        NO_TRADE (acción 0) es ciudadano de primera clase en allowed_actions y compite
+        directamente en la selección greedy: a* = argmax_{a in {0..8}} biased_q(s, a).
+        """
         norm_s = self._normalize_state_key(state)
         q_vals = self.get_state_q_values(norm_s)
         self.state_visits[norm_s] = self.state_visits.get(norm_s, 0) + 1
@@ -780,26 +873,41 @@ class AutonomousGoalBrain:
         self.dirty = True
 
         if recovery_mode and current_dd_pct >= 0.12:
-            allowed_actions = [2, 3, 4, 6, 7, 8]
+            allowed_actions = [0, 2, 3, 4, 6, 7, 8]
         else:
-            allowed_actions = [1, 2, 3, 4, 5, 6, 7, 8]
+            allowed_actions = [0, 1, 2, 3, 4, 5, 6, 7, 8]
 
-        visit_bonus = 0.0 if (recovery_mode or current_dd_pct > 0.04) else (0.01 if visits < 4 else 0.0)
-        effective_eps = 0.0 if (recovery_mode or "CHOP" in norm_s) else min(0.02, self.epsilon + visit_bonus)
+        if recovery_mode:
+            self.alpha = 0.28
+            effective_eps = max(0.04, self.epsilon)
+        else:
+            self.alpha = 0.18
+            self.epsilon = max(0.008, round(self.epsilon * 0.995, 4))
+            effective_eps = max(0.07, self.epsilon) if visits < 30 else (0.0 if "CHOP" in norm_s else min(0.035, self.epsilon))
 
         if effective_eps > 0.0 and random.uniform(0, 1) < effective_eps:
+            if visits < 30 and not recovery_mode:
+                non_rev = [a for a in allowed_actions if a not in (0, 2, 6)]
+                return int(random.choice(non_rev if non_rev else allowed_actions))
             return 0
 
         mods = self.get_parallel_modifiers(ind_5m, ind_15m, ind_1h, ind_4h)
+        lcb_penalty = (0.12 / float(np.sqrt(visits + 1.0))) if visits < 80 else 0.0
 
         def biased_q(a):
             if a == 0:
-                return q_vals[0]
+                return float(q_vals[0])
             strat = self.strategies[a]
+            q_val = float(q_vals[a]) - lcb_penalty
+            if mods["name_1h"] == "BULL_EXPANSION" and a in (5, 6, 7, 8):
+                q_val = (q_val * 0.65) if q_val >= 0 else (q_val - 0.04)
+            elif mods["name_1h"] == "BEAR_EXPANSION" and a in (1, 2, 3, 4):
+                q_val = (q_val * 0.65) if q_val >= 0 else (q_val - 0.04)
+
             b = mods["long_bias"] if strat["side"] == "buy" else mods["short_bias"]
             if strat["style"] in ("REVERSION", "DEF_SCALP"):
                 b += mods["rev_bias"]
-            return q_vals[a] + b
+            return q_val + b
 
         return int(max(allowed_actions, key=biased_q))
 
@@ -812,10 +920,26 @@ class AutonomousGoalBrain:
             self.q_table[norm_ns] = self._init_q_vector(norm_ns)
         a = int(a) % Config.NUM_ACTIONS
         lr = custom_alpha if custom_alpha is not None else self.alpha
-        current_q = self.q_table[norm_s][a]
-        max_future_q = max(self.q_table[norm_ns][1:])
+        current_q = float(self.q_table[norm_s][a])
+        # Incluir acción 0 (NO_TRADE) en la evaluación del valor futuro máximo
+        max_future_q = max(self.q_table[norm_ns])
         new_q = float(np.clip(current_q + lr * (r + self.gamma * max_future_q - current_q), -0.95, 0.95))
+        self._last_delta_q = abs(new_q - current_q)
         self.q_table[norm_s][a] = round(new_q, 4)
+        return self._last_delta_q
+
+    def _compact_memory(self):
+        if len(self.memory) <= 400:
+            return
+        mem_list = list(self.memory)
+        by_reward = sorted(mem_list, key=lambda m: abs(float(m[3])), reverse=True)
+        top_400_set = {id(x) for x in by_reward[:400]}
+        cutoff_idx = max(0, len(mem_list) - 250)
+        compacted = [
+            m for idx, m in enumerate(mem_list)
+            if (id(m) in top_400_set) or (idx >= cutoff_idx) or (abs(float(m[3])) >= 0.08)
+        ]
+        self.memory = deque(compacted[-1600:], maxlen=2200)
 
     def _experience_replay(self, sample_count, custom_alpha=None):
         if len(self.memory) < 6:
@@ -824,31 +948,41 @@ class AutonomousGoalBrain:
         weights = np.array([max(float(m[0]), 0.01) for m in mem_list], dtype=np.float64)
         weights /= weights.sum()
         sz = min(len(mem_list), sample_count)
-        for idx in np.random.choice(len(mem_list), size=sz, p=weights, replace=False):
+        chosen_indices = np.random.choice(len(mem_list), size=sz, p=weights, replace=False)
+        for idx in chosen_indices:
             _, s, a, r, ns = mem_list[idx]
-            self._update_q(s, a, r, ns, custom_alpha=custom_alpha)
+            dq = self._update_q(s, a, r, ns, custom_alpha=custom_alpha)
+            reg_change = 1.0 if str(s).split("|")[0] != str(ns).split("|")[0] else 0.0
+            new_prio = round(abs(float(r)) + (0.30 * dq) + (0.20 * reg_change) + 0.02, 4)
+            self.memory[idx] = (new_prio, s, a, r, ns)
 
     def remember_intermediate(
         self, origin_state, action, current_state, side,
-        delta_atr, guardian_mode, sl_locked, eval_count
+        delta_atr, guardian_mode, sl_locked_confirmed, eval_count
     ):
-        if abs(delta_atr) < Config.MIN_INTERMEDIATE_DELTA_ATR and not (sl_locked and eval_count <= 2):
+        """
+        Canal de Aprendizaje Táctico (Posiciones Abiertas):
+        Limitado a micro-ajustes tácticos y exige que sl_locked esté confirmado por el servidor.
+        No sustituye ni domina al canal de aprendizaje económico realizado.
+        """
+        if abs(delta_atr) < Config.MIN_INTERMEDIATE_DELTA_ATR and not (sl_locked_confirmed and eval_count <= 2):
             return 0.0
 
         parts = current_state.split("|")
         ema_ctx = parts[4] if len(parts) > 4 else "EMA_TRANS"
-        delta_score = float(np.clip(delta_atr * 0.075, -0.09, 0.10))
+        net_delta_atr = delta_atr - 0.045 if delta_atr > 0 else delta_atr - 0.025
+        delta_score = float(np.clip(net_delta_atr * 0.070, -0.08, 0.08))
 
         ema_aligned = (
             (side == "buy" and ema_ctx in ("FULL_BULL", "BULL_DIP")) or
             (side == "sell" and ema_ctx in ("FULL_BEAR", "BEAR_RALLY"))
         )
-        if delta_atr > 0:
-            ema_bonus = 0.018 if ema_aligned else 0.014
+        if net_delta_atr > 0:
+            ema_bonus = 0.015 if ema_aligned else 0.008
         else:
-            ema_bonus = -0.005 if ema_aligned else -0.014
+            ema_bonus = -0.008 if ema_aligned else -0.015
 
-        guardian_score = 0.025 if (sl_locked and "RUNNER" in guardian_mode) else (0.015 if sl_locked else 0.0)
+        guardian_score = 0.025 if (sl_locked_confirmed and "RUNNER" in guardian_mode) else (0.018 if sl_locked_confirmed else -0.005)
         decay = Config.INTERMEDIATE_DECAY_PER_EVAL ** min(eval_count, 10)
         raw_shaping = (delta_score + ema_bonus + guardian_score) * decay
 
@@ -860,45 +994,79 @@ class AutonomousGoalBrain:
 
     def remember_and_train(
         self, state, action, reward_sats, margin_used, next_state,
-        equity_after, hit_tp=False, harvested=False, is_no_trade=False
+        equity_after=0, available_balance_after=None, real_balance_delta_sats=None,
+        hit_tp=False, harvested=False, is_no_trade=False,
+        recovery_mode=False, exited_recovery_bonus=False, lev_used=35.0,
+        exact_fee_sats=0, pl_includes_fees=False
     ):
+        """
+        Canal de Aprendizaje Económico Definitivo (Operaciones Cerradas):
+        Calcula la recompensa sobre el beneficio neto real acreditado en el balance disponible,
+        evitando doble deducción de comisiones.
+        """
         norm_s = self._normalize_state_key(state)
         norm_ns = self._normalize_state_key(next_state)
 
         if is_no_trade:
             self.q_table.setdefault(norm_s, self._init_q_vector(norm_s))
-            self.q_table[norm_s][0] = min(0.012, round(self.q_table[norm_s][0] * 0.90, 4))
+            self.q_table[norm_s][0] = max(0.005, min(0.020, round(self.q_table[norm_s][0] * 0.96, 4)))
             return
 
-        self.record_trade_in_cycles(reward_sats)
-        roi = reward_sats / max(margin_used, 1)
-        gap_to_goal = max(self.current_target - (equity_after - reward_sats), 10000)
-        goal_velocity = reward_sats / gap_to_goal
-        shaped = (roi * 1.15) + (goal_velocity * 4.8)
+        fee_sats = int(exact_fee_sats) if exact_fee_sats > 0 else max(2, int(round(float(margin_used) * float(lev_used) * (2.0 * Config.TAKER_FEE))))
 
-        if roi < 0:
-            shaped *= 1.65
+        # Determinar el cambio neto real en satoshis sin descontar comisiones dos veces
+        if real_balance_delta_sats is not None:
+            net_balance_delta = int(real_balance_delta_sats)
+        elif pl_includes_fees:
+            net_balance_delta = int(reward_sats)
+        else:
+            net_balance_delta = (int(reward_sats) - fee_sats) if reward_sats >= 0 else (int(reward_sats) - int(round(fee_sats * 0.5)))
+
+        self.realized_net_profit_sats += net_balance_delta
+        self.total_fees_paid_sats += fee_sats
+        self.record_trade_in_cycles(net_balance_delta)
+
+        ref_balance = int(available_balance_after if available_balance_after is not None else equity_after)
+        net_balance_roi = net_balance_delta / max(float(margin_used), 1.0)
+
+        gap_to_goal = max(self.current_target - max(1, ref_balance - net_balance_delta), 10000)
+        goal_velocity = net_balance_delta / gap_to_goal
+        shaped = (net_balance_roi * 1.25) + (goal_velocity * 5.0)
+
+        if net_balance_roi < 0:
+            shaped = (shaped * 1.65) - (0.065 if recovery_mode else 0.030)
         else:
             if hit_tp:
                 shaped += 0.28
             if harvested:
-                shaped += 0.18
-            if equity_after >= self.current_target:
+                shaped += 0.22
+            if exited_recovery_bonus:
+                shaped += 0.25
+            if ref_balance >= self.current_target:
                 shaped += 0.65
 
-        self._update_q(norm_s, action, shaped, norm_ns)
-        self.memory.append((abs(shaped) + 2.2, norm_s, int(action), round(shaped, 4), norm_ns))
+        self.alpha = 0.28 if recovery_mode else 0.18
+        dq = self._update_q(norm_s, action, shaped, norm_ns, custom_alpha=self.alpha)
+
+        reg_change = 1.0 if norm_s.split("|")[0] != norm_ns.split("|")[0] else 0.0
+        priority = round(abs(shaped) + (0.30 * dq) + (0.20 * reg_change) + 0.02, 4)
+        self.memory.append((priority, norm_s, int(action), round(shaped, 4), norm_ns))
+
         self.total_trained += 1
+        if self.total_trained % 400 == 0:
+            self._compact_memory()
         self.dirty = True
 
-        self._experience_replay(self.batch_size)
-        if self.epsilon > self.epsilon_min:
-            self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+        self._experience_replay(self.batch_size, custom_alpha=self.alpha * 0.85)
+        if recovery_mode:
+            self.epsilon = max(0.04, round(self.epsilon, 4))
+        else:
+            self.epsilon = max(self.epsilon_min, round(self.epsilon * self.epsilon_decay, 4))
         self.save_brain(force=True)
 
 
 # =====================================================================
-# 7. CLIENTE HTTP IDEMPOTENTE LN MARKETS
+# 7. CLIENTE HTTP IDEMPOTENTE LN MARKETS CON CACHÉ DE CUENTA
 # =====================================================================
 def _clean_numbers(obj):
     if isinstance(obj, dict):
@@ -917,6 +1085,8 @@ class LNMarketsClient:
         self.passphrase = passphrase
         self.session = requests.Session()
         self.session.headers.update({"Connection": "keep-alive", "User-Agent": "LNMSniper/7.3-Unified"})
+        self._user_cache = None
+        self._user_cache_ts = 0.0
 
     def _request(self, method, path, params=None, max_retries=3):
         method_up = method.upper()
@@ -947,10 +1117,10 @@ class LNMarketsClient:
                     url,
                     headers=headers,
                     data=data_str if method_up in ("POST", "PUT") and data_str else None,
-                    timeout=(6.0, 15.0),
+                    timeout=(5.0, 12.0),
                 )
                 if resp.status_code in (429, 500, 502, 503, 504) and max_retries > 1:
-                    time.sleep((1.5 ** attempt) + random.uniform(0.2, 0.6))
+                    time.sleep((1.5 ** attempt) + random.uniform(0.2, 0.5))
                     continue
                 if not resp.ok:
                     raise RuntimeError(f"HTTP {resp.status_code} ({path}): {resp.text[:140]}")
@@ -958,14 +1128,21 @@ class LNMarketsClient:
             except Exception as e:
                 if attempt == max_retries - 1:
                     raise RuntimeError(f"Fallo en {path}: {e}")
-                time.sleep((1.5 ** attempt) + 0.3)
+                time.sleep((1.5 ** attempt) + 0.25)
 
     def get_ticker_price(self):
         t = self._request("GET", "/futures/ticker")
         return float(t.get("lastPrice") or t.get("index") or 0.0) if isinstance(t, dict) else 0.0
 
-    def get_user(self):
-        return self._request("GET", "/account")
+    def get_user(self, force_refresh=False):
+        now = time.time()
+        if not force_refresh and self._user_cache is not None and (now - self._user_cache_ts) < Config.USER_SYNC_TTL_SEC:
+            return self._user_cache
+        u = self._request("GET", "/account")
+        if isinstance(u, dict):
+            self._user_cache = u
+            self._user_cache_ts = now
+        return u
 
     def get_running_trades(self):
         r = self._request("GET", "/futures/isolated/trades/running")
@@ -986,6 +1163,7 @@ class LNMarketsClient:
         return [row for row in rows if isinstance(row, dict) and "id" in row][:limit]
 
     def open_trade(self, side, margin, leverage, stoploss, takeprofit):
+        self._user_cache_ts = 0.0
         return self._request(
             "POST",
             "/futures/isolated/trade",
@@ -1009,6 +1187,7 @@ class LNMarketsClient:
         )
 
     def close_trade(self, trade_id):
+        self._user_cache_ts = 0.0
         try:
             return self._request("POST", "/futures/isolated/trade/close", {"id": str(trade_id)}, max_retries=2)
         except Exception:
@@ -1016,7 +1195,7 @@ class LNMarketsClient:
 
 
 # =====================================================================
-# 8. PATRIMONIO, RIESGO Y GUARDIÁN UNIFICADO BAJO LA ESTRATEGIA IA
+# 8. PATRIMONIO, RIESGO Y GUARDIÁN UNIFICADO CON CONFIRMACIÓN Y EDGE
 # =====================================================================
 def compute_account_equity(available_balance, running_trades):
     locked_margin = sum(int(t.get("margin") or 0) for t in running_trades)
@@ -1025,7 +1204,7 @@ def compute_account_equity(available_balance, running_trades):
         int(round(int(t.get("margin") or 0) * float(t.get("leverage") or 20.0) * Config.TAKER_FEE))
         for t in running_trades
     )
-    true_equity = max(1, available_balance + locked_margin + floating_pl - est_exit_fees)
+    true_equity = max(1, int(available_balance) + locked_margin + floating_pl - est_exit_fees)
     return true_equity, locked_margin, floating_pl
 
 
@@ -1051,7 +1230,6 @@ def infer_adopted_trade(trade, ind_5m, state, now, existing_meta=None, forced_ac
     entry = float(trade.get("price") or trade.get("entryPrice") or ind_5m["price"])
     atr = max(ind_5m["atr"], 1.0)
     pnl_dist = (ind_5m["price"] - entry) if side == "buy" else (entry - ind_5m["price"])
-    regime = ind_5m["regime"]
 
     if forced_action in (1, 2, 3, 4, 5, 6, 7, 8):
         action = int(forced_action)
@@ -1062,33 +1240,36 @@ def infer_adopted_trade(trade, ind_5m, state, now, existing_meta=None, forced_ac
         style_map = {1: "TREND", 2: "REVERSION", 3: "SNIPER", 4: "DEF_SCALP", 5: "TREND", 6: "REVERSION", 7: "SNIPER", 8: "DEF_SCALP"}
         style = style_map[action]
     else:
-        # Huérfano real sin metadata previa: asignar perfil conservador DEF_SCALP (LOCK)
         style, action = "DEF_SCALP", (4 if side == "buy" else 8)
 
     base = {
         "state": state,
         "action": action,
         "style": style,
+        "side": side,
         "margin": margin,
+        "leverage": lev,
         "entry_time": now,
         "risk": Config.RISK_NORMAL,
         "last_eval_time": now,
         "last_pnl_atr": round(pnl_dist / atr, 4),
         "last_guardian_mode": f"{style}_INIT",
         "sl_locked": False,
+        "sl_pending_target": 0,
         "eval_count": 0,
         "ai_closed": False,
+        "close_order_sent": False,
+        "edge_deg_streak": 0,
+        "last_edge_score": 0.0,
     }
     if isinstance(existing_meta, dict):
-        base["state"] = existing_meta.get("state", state)
-        base["action"] = int(existing_meta.get("action", action))
-        base["style"] = existing_meta.get("style", style)
-        base["entry_time"] = existing_meta.get("entry_time", now)
-        base["last_eval_time"] = existing_meta.get("last_eval_time", now)
-        base["last_pnl_atr"] = existing_meta.get("last_pnl_atr", base["last_pnl_atr"])
-        base["eval_count"] = int(existing_meta.get("eval_count", 0))
-        base["sl_locked"] = bool(existing_meta.get("sl_locked", False))
-        base["ai_closed"] = bool(existing_meta.get("ai_closed", False))
+        for k in (
+            "state", "action", "style", "entry_time", "last_eval_time",
+            "last_pnl_atr", "eval_count", "sl_locked", "sl_pending_target",
+            "ai_closed", "close_order_sent", "edge_deg_streak", "last_edge_score"
+        ):
+            if k in existing_meta:
+                base[k] = existing_meta[k]
     return base
 
 
@@ -1106,6 +1287,56 @@ def calculate_strategy_order_params(strategy, price, atr, rr_mult=1.0):
     return leverage, sl_price, tp_price
 
 
+def confirm_and_close_trade(client, brain, tid, trade_meta, reason_label):
+    """
+    CORRECCIÓN P0.5:
+    Envía orden de cierre, evita duplicados concurrentes y verifica la confirmación
+    de cierre antes de marcar ai_closed=True.
+    """
+    if trade_meta.get("close_order_sent") and (time.time() - float(trade_meta.get("close_sent_ts", 0))) < 15.0:
+        return False
+    trade_meta["close_order_sent"] = True
+    trade_meta["close_sent_ts"] = time.time()
+    resp = client.close_trade(tid)
+    confirmed = False
+    if isinstance(resp, dict) and (resp.get("closed") is True or str(resp.get("id", "")) == str(tid)):
+        confirmed = True
+    else:
+        try:
+            live_ids = {str(x["id"]) for x in client.get_running_trades()}
+            confirmed = str(tid) not in live_ids
+        except Exception:
+            confirmed = False
+
+    if confirmed:
+        trade_meta["ai_closed"] = True
+        trade_meta["close_reason"] = reason_label
+        brain.dirty = True
+    return confirmed
+
+
+def confirm_and_update_stoploss(client, brain, tid, target_sl, side, entry, fee_offset, trade_meta):
+    """
+    CORRECCIÓN P0.5:
+    Verifica explícitamente la respuesta de LN Markets antes de establecer sl_locked=True.
+    """
+    resp = client.update_stoploss(tid, target_sl)
+    applied_sl = float(resp.get("stoploss") or 0.0) if isinstance(resp, dict) else 0.0
+    if applied_sl <= 0.0:
+        # Guardar como pendiente de reconciliación en el siguiente ciclo
+        trade_meta["sl_pending_target"] = int(target_sl)
+        return False
+
+    is_locked = (
+        (side == "buy" and applied_sl > (entry + fee_offset * 0.8)) or
+        (side == "sell" and applied_sl > 0 and applied_sl < (entry - fee_offset * 0.8))
+    )
+    trade_meta["sl_locked"] = bool(is_locked)
+    trade_meta["sl_pending_target"] = 0
+    brain.dirty = True
+    return bool(is_locked)
+
+
 def enforce_concurrency_cap(client, brain, running_trades):
     if len(running_trades) <= Config.MAX_CONCURRENT_TRADES:
         return running_trades
@@ -1116,23 +1347,25 @@ def enforce_concurrency_cap(client, brain, running_trades):
     for trade in sorted_by_pl[:excess_count]:
         tid = str(trade["id"])
         pl_sats = int(trade.get("pl") or 0)
+        t_meta = brain.active_trades.setdefault(tid, {})
         try:
-            client.close_trade(tid)
-            closed_ids.add(tid)
-            if tid in brain.active_trades and isinstance(brain.active_trades[tid], dict):
-                brain.active_trades[tid]["ai_closed"] = (pl_sats > 0)
-                brain.dirty = True
-            print(f"  [REDUCCIÓN CONCURRENCIA] Cerrada {tid[:6]} (PnL: {pl_sats:+,} sats).")
+            if confirm_and_close_trade(client, brain, tid, t_meta, "CONCURRENCY_CAP"):
+                closed_ids.add(tid)
+                print(f"  [REDUCCIÓN CONCURRENCIA CONFIRMADA] Cerrada {tid[:6]} (PnL: {pl_sats:+,} sats).")
         except Exception as e:
             print(f"  [AVISO REDUCCIÓN] {tid[:6]}: {e}")
     return [t for t in running_trades if str(t["id"]) not in closed_ids]
 
 
-def execute_strategy_guardian(client, brain, trade, ind_5m, ind_15m, trade_meta, system_mode):
+def execute_strategy_guardian(
+    client, brain, trade, ind_5m, ind_15m, trade_meta, system_mode,
+    edge_score=0.0, perception=None
+):
     try:
         tid = str(trade["id"])
         side = trade.get("side", "buy")
         margin = int(trade.get("margin") or 1000)
+        lev = float(trade.get("leverage") or 30.0)
         pl_sats = int(trade.get("pl") or 0)
         lnm_price = ind_5m["price"]
         atr = max(ind_5m["atr"], 1.0)
@@ -1145,6 +1378,7 @@ def execute_strategy_guardian(client, brain, trade, ind_5m, ind_15m, trade_meta,
         current_sl = float(trade.get("stoploss") or 0.0)
         liq = float(trade.get("liquidation") or 0.0)
         fee_offset = entry * (2.4 * Config.TAKER_FEE)
+        est_round_fee_sats = max(2, int(round(margin * lev * 2.0 * Config.TAKER_FEE)))
 
         action_id = int(trade_meta.get("action", 2 if side == "buy" else 6))
         strat = brain.strategies.get(action_id, brain.strategies[2 if side == "buy" else 6])
@@ -1159,21 +1393,62 @@ def execute_strategy_guardian(client, brain, trade, ind_5m, ind_15m, trade_meta,
         trade_meta["prev_loop_pnl_atr"] = round(pnl_atr, 4)
         eval_count = int(trade_meta.get("eval_count", 0))
 
-        sl_locked = (
+        # Reconciliar el estado real del Stop Loss reportado por el servidor LN Markets
+        sl_locked_server = (
             (side == "buy" and current_sl > (entry + fee_offset * 0.8)) or
             (side == "sell" and current_sl > 0 and current_sl < (entry - fee_offset * 0.8))
         )
         mode_label = f"{style}_{exit_mode}"
-        trade_meta.update({"last_guardian_mode": mode_label, "sl_locked": bool(sl_locked)})
+        trade_meta.update({
+            "last_guardian_mode": mode_label,
+            "sl_locked": bool(sl_locked_server),
+            "last_edge_score": round(float(edge_score), 4),
+        })
+
+        # =================================================================
+        # CONTROLADOR DE DEGRADACIÓN DE EDGE (CORRECCIÓN P0.4)
+        # =================================================================
+        if edge_score <= Config.EDGE_DEGRADATION_WARN:
+            trade_meta["edge_deg_streak"] = int(trade_meta.get("edge_deg_streak", 0)) + 1
+        else:
+            trade_meta["edge_deg_streak"] = 0
+
+        deg_streak = int(trade_meta["edge_deg_streak"])
+        vel_ema = float(perception.get("vel_ema_atr", 0.0)) if isinstance(perception, dict) else 0.0
+        ovr_side = perception.get("override_side") if isinstance(perception, dict) else None
+        contrary_momentum = (
+            (side == "buy" and (vel_ema < -0.35 or rsi < 44.0 or ovr_side == "BEAR")) or
+            (side == "sell" and (vel_ema > 0.35 or rsi > 56.0 or ovr_side == "BULL"))
+        )
+
+        if deg_streak >= Config.EDGE_DEGRADATION_PERSISTENCE and contrary_momentum:
+            # Caso A: La posición tiene beneficio neto disponible -> Cosechar para proteger sats
+            if pl_sats > (est_round_fee_sats + 10) and pnl_dist > (fee_offset * 1.15):
+                if confirm_and_close_trade(client, brain, tid, trade_meta, "EDGE_DEGRADATION_PROFIT_PROTECT"):
+                    print(
+                        f"  🛡️ [GUARDIÁN EDGE PROTECT] Cosecha defensiva en {tid[:6]} tras {deg_streak} ciclos "
+                        f"de degradación (Edge:{edge_score:+.3f} | +{pl_sats} sats)"
+                    )
+                    return True
+            # Caso B: La posición está en pérdida con expectativa muy deteriorada y momentum en contra
+            elif edge_score <= Config.EDGE_DEGRADATION_EXIT and pnl_atr <= -1.10:
+                if confirm_and_close_trade(client, brain, tid, trade_meta, "EDGE_DEGRADATION_DEFENSIVE_EXIT"):
+                    print(
+                        f"  🛑 [GUARDIÁN EDGE CUT] Cierre defensivo en {tid[:6]} (Streak:{deg_streak} | "
+                        f"Edge:{edge_score:+.3f} | PnL:{pnl_atr:+.2f}ATR | PnL:{pl_sats:+,} sats)"
+                    )
+                    return True
 
         vol_scale = 1.12 if atr_pct < 0.0025 else (0.88 if atr_pct > 0.0068 else 1.00)
         sys_scale = 0.72 if (system_mode in ("DEFENSIVE", "RECOVERY") and regime == "RANGE_SQUEEZE") else (0.86 if system_mode in ("DEFENSIVE", "RECOVERY") else 1.00)
+        if deg_streak >= 2 and edge_score <= Config.EDGE_DEGRADATION_TIGHTEN:
+            sys_scale *= 0.80  # Acelerar cosecha y ceñir trailing stop ante deterioro persistente
 
         harvest_target_atr = strat["harvest_atr"] * sys_scale
         min_profit_ok = pnl_dist > (fee_offset * 1.35) and pl_sats >= max(12, int(margin * 0.030))
 
         if min_profit_ok and pnl_atr >= harvest_target_atr:
-            can_check_harvest = not (exit_mode == "RUNNER" and sl_locked)
+            can_check_harvest = not (exit_mode == "RUNNER" and sl_locked_server)
             if can_check_harvest:
                 if exhaust_sens == "MAX":
                     is_exhausted = (
@@ -1198,20 +1473,18 @@ def execute_strategy_guardian(client, brain, trade, ind_5m, ind_15m, trade_meta,
                     )
 
                 if is_exhausted:
-                    client.close_trade(tid)
-                    trade_meta["ai_closed"] = True
-                    brain.dirty = True
-                    print(
-                        f"  [GUARDIÁN {mode_label}] Cosecha de estrategia en {tid[:6]} → "
-                        f"+{pnl_atr:.2f}ATR (+{pl_sats} sats | Sens:{exhaust_sens})"
-                    )
-                    return True
+                    if confirm_and_close_trade(client, brain, tid, trade_meta, f"HARVEST_{mode_label}"):
+                        print(
+                            f"  [GUARDIÁN {mode_label}] Cosecha confirmada en {tid[:6]} → "
+                            f"+{pnl_atr:.2f}ATR (+{pl_sats} sats | Sens:{exhaust_sens})"
+                        )
+                        return True
 
         min_trig = max(strat["trail_trig_atr"] * atr * vol_scale * sys_scale, fee_offset * 1.30)
         slack = strat["trail_slack_atr"] * atr * vol_scale * sys_scale
 
-        if (side == "buy" and rsi > 72) or (side == "sell" and rsi < 28):
-            slack *= 0.82
+        if (side == "buy" and rsi > 72) or (side == "sell" and rsi < 28) or deg_streak >= 2:
+            slack *= 0.78
 
         if pnl_dist <= min_trig:
             return False
@@ -1222,18 +1495,14 @@ def execute_strategy_guardian(client, brain, trade, ind_5m, ind_15m, trade_meta,
             raw_sl = max(be_floor, lnm_price - slack)
             target_sl = int(round(min(raw_sl, lnm_price - 18.0)))
             if target_sl >= int(round(be_floor * 0.9995)) and target_sl > (liq + 15.0) and target_sl > int(round(current_sl + step_min)):
-                client.update_stoploss(tid, target_sl)
-                trade_meta["sl_locked"] = True
-                brain.dirty = True
+                confirm_and_update_stoploss(client, brain, tid, target_sl, side, entry, fee_offset, trade_meta)
         elif side == "sell":
             be_ceil = entry - fee_offset
             raw_sl = min(be_ceil, lnm_price + slack)
             target_sl = int(round(max(raw_sl, lnm_price + 18.0)))
             liq_ok = (liq <= 0.0) or (target_sl < (liq - 15.0))
             if target_sl <= int(round(be_ceil * 1.0005)) and liq_ok and (current_sl == 0.0 or target_sl < int(round(current_sl - step_min))):
-                client.update_stoploss(tid, target_sl)
-                trade_meta["sl_locked"] = True
-                brain.dirty = True
+                confirm_and_update_stoploss(client, brain, tid, target_sl, side, entry, fee_offset, trade_meta)
     except Exception as e:
         print(f"[GUARDIÁN AVISO] {trade.get('id','')[:6]}: {e}")
     return False
@@ -1256,6 +1525,15 @@ def evaluate_open_trades_online(brain, running, ind_5m, current_state, now):
 
         side = trade.get("side", "buy")
         entry = float(trade.get("price") or trade.get("entryPrice") or lnm_price)
+        current_sl = float(trade.get("stoploss") or 0.0)
+        fee_offset = entry * (2.4 * Config.TAKER_FEE)
+        sl_confirmed = (
+            bool(meta.get("sl_locked", False)) and (
+                (side == "buy" and current_sl > (entry + fee_offset * 0.8)) or
+                (side == "sell" and current_sl > 0 and current_sl < (entry - fee_offset * 0.8))
+            )
+        )
+
         current_pnl_atr = round(((lnm_price - entry) if side == "buy" else (entry - lnm_price)) / atr, 4)
         delta_atr = round(current_pnl_atr - float(meta.get("last_pnl_atr", 0.0)), 4)
         style_str = str(meta.get("style") or "REVERSION")
@@ -1267,7 +1545,7 @@ def evaluate_open_trades_online(brain, running, ind_5m, current_state, now):
             side=side,
             delta_atr=delta_atr,
             guardian_mode=str(meta.get("last_guardian_mode", f"{style_str}_INIT")),
-            sl_locked=bool(meta.get("sl_locked", False)),
+            sl_locked_confirmed=sl_confirmed,
             eval_count=int(meta.get("eval_count", 0)),
         )
         meta.update({
@@ -1288,6 +1566,11 @@ def compute_situational_order_params(
     mods, brain, action, recovery_mode, current_dd_pct, consecutive_losses,
     combined_rr, perception=None
 ):
+    """
+    CORRECCIÓN P0.6:
+    Garantiza matemáticamente que sl_dist NUNCA supere max_safe_sl_dist reduciendo
+    el apalancamiento dinámico si min_sl_dist requiere más espacio respecto a liquidación.
+    """
     price = float(ind_5m["price"])
     atr = max(float(ind_5m["atr"]), price * 0.0012)
     side = strat.get("side", "buy")
@@ -1297,7 +1580,6 @@ def compute_situational_order_params(
     visits = int(brain.state_visits.get(norm_s, 0))
     override_side = perception.get("override_side") if isinstance(perception, dict) else None
 
-    # 1. Factor de Régimen y Momentum Override
     is_long = (side == "buy")
     aligned_override = (is_long and override_side == "BULL") or ((not is_long) and override_side == "BEAR")
 
@@ -1314,14 +1596,13 @@ def compute_situational_order_params(
     else:
         regime_mult = 0.72
 
-    # 2. Factor de Alineación Multi-Timeframe (con exención si hay Giro en V confirmado)
     bull_1h = "BULL" in mods.get("name_1h", "") or float(ind_1h.get("rsi", 50.0)) >= 54.0
     bear_1h = "BEAR" in mods.get("name_1h", "") or float(ind_1h.get("rsi", 50.0)) <= 46.0
     bull_4h = "BULL" in mods.get("name_4h", "")
     bear_4h = "BEAR" in mods.get("name_4h", "")
 
     if aligned_override:
-        mtf_mult = 1.05  # No penalizar por lag de 4h cuando el Giro en V está activo
+        mtf_mult = 1.05
     elif (is_long and bull_1h and bull_4h) or (not is_long and bear_1h and bear_4h):
         mtf_mult = 1.10
     elif (is_long and bear_1h) or (not is_long and bull_1h):
@@ -1329,7 +1610,6 @@ def compute_situational_order_params(
     else:
         mtf_mult = 0.82
 
-    # 3. Factor de Convicción IA
     if q_val >= 0.08 and visits >= 5:
         conv_mult = 1.12
     elif q_val >= 0.03 and visits >= 3:
@@ -1339,22 +1619,27 @@ def compute_situational_order_params(
     else:
         conv_mult = 0.65
 
-    # 4. Factor de Defensa de Cuenta
     dd_mult = max(0.50, 1.0 - (current_dd_pct * 2.0))
     rec_mult = 0.58 if recovery_mode else 1.0
     streak_mult = 0.84 ** min(4, max(0, consecutive_losses))
 
     situational_mult = regime_mult * mtf_mult * conv_mult * dd_mult * rec_mult * streak_mult
     dynamic_lev = int(round(float(raw_lev) * situational_mult))
-    dynamic_lev = max(15, min(85 if not aligned_override else 90, dynamic_lev))
+    dynamic_lev = max(Config.MIN_LEVERAGE, min(85 if not aligned_override else 90, dynamic_lev))
     if recovery_mode:
         dynamic_lev = min(38, dynamic_lev)
 
-    # Distancias de SL y TP garantizando ratio Neto de Sats post-fees (>= 3.2x fee round-trip)
     min_sl_dist = max(atr * 1.18, price * 0.0040)
-    max_safe_sl_dist = price * (0.70 / max(dynamic_lev, 15))
     orig_sl_dist = abs(price - float(raw_sl)) if raw_sl else (atr * 1.35)
-    sl_dist = max(min_sl_dist, min(orig_sl_dist, max_safe_sl_dist))
+    desired_sl_dist = max(min_sl_dist, orig_sl_dist)
+
+    # Ajustar apalancamiento hacia abajo si desired_sl_dist supera la distancia segura de liquidación (0.68 / lev)
+    safe_lev_cap = int(math.floor((price * 0.68) / max(desired_sl_dist, 1.0)))
+    dynamic_lev = max(Config.MIN_LEVERAGE, min(dynamic_lev, safe_lev_cap))
+    max_safe_sl_dist = price * (0.70 / max(dynamic_lev, Config.MIN_LEVERAGE))
+
+    # Garantía matemática: sl_dist jamás excede max_safe_sl_dist
+    sl_dist = min(desired_sl_dist, max_safe_sl_dist)
 
     min_tp_dist = max(sl_dist * max(1.22, combined_rr), price * 0.0075)
     orig_tp_dist = abs(float(raw_tp) - price) if raw_tp else (sl_dist * 1.55)
@@ -1374,33 +1659,54 @@ def evaluate_system_mode(
     now, pause_until, ind_5m, daily_pnl_pct, current_dd_pct,
     floor_threat, equity, recovery_anchor_equity
 ):
-    if ind_5m["atr_pct"] > Config.ATR_EXTREME_PCT or floor_threat:
+    """
+    CORRECCIÓN CRÍTICA P0.6:
+    Conecta efectivamente MAX_DAILY_LOSS_PCT, MAX_DRAWDOWN_PCT, RECOVERY_ENTER_DAILY
+    y RECOVERY_EXIT_DAILY al control de modos del sistema.
+    """
+    if (
+        ind_5m["atr_pct"] > Config.ATR_EXTREME_PCT
+        or floor_threat
+        or current_dd_pct >= Config.MAX_DRAWDOWN_PCT
+        or daily_pnl_pct <= -abs(Config.MAX_DAILY_LOSS_PCT)
+    ):
         return "DEFENSIVE", False, False, recovery_anchor_equity, False
 
     if now < pause_until:
-        # Desbloqueo táctico controlado: si hay Momentum Override fuerte y no hay amenaza de piso,
-        # pasar a RECOVERY táctico en vez de parálisis DEFENSIVE eterna
         if getattr(PERCEPTION_ENGINE, "override_side", None) is not None and (pause_until - now) < 300:
             return "RECOVERY", True, True, recovery_anchor_equity or equity, False
         return "DEFENSIVE", False, False, recovery_anchor_equity, False
 
-    enter_recovery = (current_dd_pct >= Config.RECOVERY_ENTER_DD)
+    enter_recovery = (
+        current_dd_pct >= Config.RECOVERY_ENTER_DD
+        or daily_pnl_pct <= Config.RECOVERY_ENTER_DAILY
+    )
 
     if recovery_anchor_equity is not None or enter_recovery:
         if recovery_anchor_equity is None:
             recovery_anchor_equity = equity
-            print(f"  [MODO RECOVERY ACTIVADO] Ancla de capital: {recovery_anchor_equity:,} sats (DD Real: {current_dd_pct*100:.1f}%)")
+            print(
+                f"  [MODO RECOVERY ACTIVADO] Ancla: {recovery_anchor_equity:,} sats "
+                f"(DD: {current_dd_pct*100:.1f}% | Diario: {daily_pnl_pct*100:+.1f}%)"
+            )
         else:
             recovery_anchor_equity = min(recovery_anchor_equity, equity)
 
         bounced_from_anchor = (
-            equity >= int(round(recovery_anchor_equity * 1.05)) and
-            current_dd_pct <= (Config.RECOVERY_ENTER_DD * 0.85)
+            (equity >= int(round(recovery_anchor_equity * 1.05)) and
+             current_dd_pct <= (Config.RECOVERY_ENTER_DD * 0.85)) or
+            (equity >= int(round(recovery_anchor_equity * 1.03)) and daily_pnl_pct > Config.RECOVERY_ENTER_DAILY)
         )
-        metrics_recovered = (current_dd_pct <= Config.RECOVERY_EXIT_DD)
+        metrics_recovered = (
+            current_dd_pct <= Config.RECOVERY_EXIT_DD
+            and daily_pnl_pct >= Config.RECOVERY_EXIT_DAILY
+        )
 
         if metrics_recovered or bounced_from_anchor:
-            print(f"  [SALIDA DE RECOVERY ➔ NORMAL] Capital actual: {equity:,} sats (Ancla: {recovery_anchor_equity:,} sats | DD Real: {current_dd_pct*100:.1f}%)")
+            print(
+                f"  [SALIDA DE RECOVERY ➔ NORMAL] Capital actual: {equity:,} sats "
+                f"(Ancla: {recovery_anchor_equity:,} sats | DD Real: {current_dd_pct*100:.1f}%)"
+            )
             return "NORMAL", True, False, None, True
 
         return "RECOVERY", True, True, recovery_anchor_equity, False
@@ -1409,29 +1715,41 @@ def evaluate_system_mode(
 
 
 def main():
+    safe_mode = ("--safe-mode" in sys.argv) or (os.getenv("SNIPER_SAFE_MODE", "0") == "1")
+    once_mode = ("--once" in sys.argv)
+
     api_key, api_secret, api_passphrase = load_saved_credentials()
     if not api_key or not api_secret or not api_passphrase:
-        print("[ERROR CRÍTICO] Faltan credenciales de LN Markets.")
+        print("[ERROR CRÍTICO] Faltan credenciales de LN Markets en variables de entorno o .env.")
         return
 
     brain = AutonomousGoalBrain()
     client = LNMarketsClient(api_key, api_secret, api_passphrase)
     mtf_cache = MultiTimeframeCache()
     api_health = APIHealthMonitor()
+    floor_guardian = HardFloorGuardian(
+        initial_floor_ratio=Config.INITIAL_FLOOR_RATIO,
+        milestone_floor_ratio=Config.MILESTONE_FLOOR_RATIO,
+        max_dd_pct=Config.MAX_DRAWDOWN_PCT,
+        max_daily_loss_pct=Config.MAX_DAILY_LOSS_PCT,
+    )
 
     daily_start_equity, daily_start_date, peak_equity = None, None, None
     recovery_anchor_equity = None
     consecutive_losses, last_entry_time, risk_multiplier, pause_until = 0, 0.0, 1.0, 0.0
     current_mode = "NORMAL"
+    last_known_balance = None
 
     print("====================================================================")
-    print("  LNM SNIPER v7.3 CONSOLIDADO – GUARDIÁN UNIFICADO BAJO LA IA")
-    print(f"  Meta Activa: {brain.current_target:,} sats | Límite Estricto: {Config.MAX_CONCURRENT_TRADES} pos")
+    print("  LNM SNIPER v7.3 CONSOLIDADO – ARQUITECTURA DE SATS NETOS REALIZADOS")
+    print(f"  Meta Balance Disponible: {brain.current_target:,} sats | Máx Pos: {Config.MAX_CONCURRENT_TRADES}")
+    if safe_mode:
+        print("  🛡️ [MODO SEGURO ACTIVO] Solo reconciliación, Guardian y análisis (sin nuevas órdenes reales).")
     print("====================================================================")
 
     while True:
+        cycle_t0 = time.time()
         warmup = brain.is_warming_up()
-        loop_wait = 14 if warmup else 18
         if api_health.check_cooldown():
             continue
 
@@ -1445,38 +1763,36 @@ def main():
             if bucket_4h > int(brain.cycle_state["4h"].get("bucket", 0)):
                 mtf_cache.invalidate("4h")
 
-            user = client.get_user()
-            balance = int(user.get("balance", 0))
             running = client.get_running_trades()
+            running_id_set = {str(x["id"]) for x in running}
+            closed_ids = [tid for tid in list(brain.active_trades.keys()) if str(tid) not in running_id_set]
+
+            user = client.get_user(force_refresh=bool(closed_ids) or (last_known_balance is None))
+            balance = int(user.get("balance", 0))
+            if last_known_balance is None:
+                last_known_balance = balance
 
             if len(running) > Config.MAX_CONCURRENT_TRADES:
                 running = enforce_concurrency_cap(client, brain, running)
-                user = client.get_user()
+                user = client.get_user(force_refresh=True)
                 balance = int(user.get("balance", 0))
 
-            equity, locked_margin, _ = compute_account_equity(balance, running)
+            equity, locked_margin, floating_pl = compute_account_equity(balance, running)
             if equity <= 0:
-                time.sleep(loop_wait)
+                time.sleep(Config.IDLE_ANALYZE_INTERVAL_SEC)
                 continue
 
-            brain.check_and_advance_goal(equity)
+            # CORRECCIÓN P0.1: Evaluar avance de meta EXCLUSIVAMENTE con el balance disponible real
+            brain.check_and_advance_goal(balance)
             lnm_price = client.get_ticker_price()
 
-            h_5m, l_5m, c_5m = mtf_cache.get_candles("5m", lnm_price)
-            h_15m, l_15m, c_15m = mtf_cache.get_candles("15m", lnm_price)
-            h_1h, l_1h, c_1h = mtf_cache.get_candles("1h")
-            h_4h, l_4h, c_4h = mtf_cache.get_candles("4h")
-
-            ind_5m = compute_indicators(h_5m, l_5m, c_5m, lnm_price)
-            ind_15m = compute_indicators(h_15m, l_15m, c_15m, lnm_price)
-            ind_1h = compute_indicators(h_1h, l_1h, c_1h)
-            ind_4h = compute_indicators(h_4h, l_4h, c_4h)
+            ind_5m = mtf_cache.get_indicators_fast("5m", lnm_price)
+            ind_15m = mtf_cache.get_indicators_fast("15m", lnm_price)
+            ind_1h = mtf_cache.get_indicators_fast("1h")
+            ind_4h = mtf_cache.get_indicators_fast("4h")
 
             api_health.record_success()
             state = brain.discretize_state(ind_5m, ind_15m, ind_1h, ind_4h, len(running))
-
-            running_id_set = {str(x["id"]) for x in running}
-            closed_ids = [tid for tid in list(brain.active_trades.keys()) if str(tid) not in running_id_set]
 
             if closed_ids:
                 closed_map = {str(ct["id"]): ct for ct in client.get_closed_trades(limit=25)}
@@ -1484,15 +1800,26 @@ def main():
                     info = brain.active_trades.pop(cid, None)
                     brain.dirty = True
                     if info and cid in closed_map:
-                        pl = int(closed_map[cid].get("pl", 0))
-                        m_used = int(info.get("margin", 1000))
+                        ct_obj = closed_map[cid]
+                        pl = int(ct_obj.get("pl", 0))
+                        m_used = int(info.get("margin", ct_obj.get("margin", 1000)))
+                        lev_used = float(ct_obj.get("leverage") or info.get("leverage", 35.0))
+                        exact_fee = int(ct_obj.get("opening_fee", 0) or 0) + int(ct_obj.get("closing_fee", 0) or 0)
                         was_harvested = bool(info.get("ai_closed", False))
                         orig_st = info.get("state", state)
                         act_taken = int(info.get("action", 2))
+                        in_rec = (current_mode == "RECOVERY") or (recovery_anchor_equity is not None)
+                        beat_anchor = (recovery_anchor_equity is not None and balance >= int(round(recovery_anchor_equity * 1.03)))
+
+                        # Detección real de TP / SL a partir del objeto cerrado de LN Markets
+                        hit_tp_real = bool(ct_obj.get("takeprofit_wi")) or (pl > m_used * 0.16 and not bool(ct_obj.get("stoploss_wi")))
 
                         brain.remember_and_train(
                             orig_st, act_taken, pl, m_used, state,
-                            equity_after=equity, hit_tp=(pl > m_used * 0.16), harvested=was_harvested
+                            equity_after=balance, available_balance_after=balance,
+                            hit_tp=hit_tp_real, harvested=was_harvested,
+                            recovery_mode=in_rec, exited_recovery_bonus=beat_anchor,
+                            lev_used=lev_used, exact_fee_sats=exact_fee
                         )
                         if pl < 0:
                             consecutive_losses += 1
@@ -1503,6 +1830,7 @@ def main():
                         else:
                             consecutive_losses = 0
                             risk_multiplier = min(1.0, risk_multiplier + 0.15)
+                last_known_balance = balance
 
             for t in running:
                 tid = str(t["id"])
@@ -1518,9 +1846,8 @@ def main():
             if daily_start_date != today or daily_start_equity is None:
                 daily_start_date, daily_start_equity = today, equity
 
-            # Sincronizar Peak y Piso Duro (75%) con el capital real de LN Markets en el primer ciclo
             if peak_equity is None:
-                resynced, synced_peak, synced_floor = sync_brain_floor_with_reality(brain, equity, floor_ratio=0.75)
+                resynced, synced_peak, synced_floor = sync_brain_floor_with_reality(brain, equity, floor_ratio=Config.INITIAL_FLOOR_RATIO)
                 peak_equity = synced_peak
                 if resynced:
                     brain.save_brain(force=True)
@@ -1528,10 +1855,9 @@ def main():
             elif equity > peak_equity:
                 peak_equity = equity
                 brain.peak_equity = peak_equity
-                brain.locked_floor = int(round(peak_equity * 0.75))
+                brain.locked_floor = max(brain.locked_floor, int(round(peak_equity * Config.INITIAL_FLOOR_RATIO)))
                 brain.dirty = True
 
-            # Detectar cierres por Stop-Loss en servidor (Cooldown graduado anti-venganza)
             prev_eq = getattr(brain, "_last_loop_equity", equity)
             prev_cnt = getattr(brain, "_last_loop_count", len(running))
             if len(running) < prev_cnt and equity < prev_eq - 35:
@@ -1545,21 +1871,37 @@ def main():
             brain._last_loop_count = len(running)
 
             daily_pnl_pct = (equity - daily_start_equity) / max(daily_start_equity, 1)
-            current_dd_pct = (peak_equity - equity) / max(peak_equity, 1)
-            goal_pct = (equity / max(brain.current_target, 1)) * 100.0
+            prot = floor_guardian.evaluate_protection(equity, balance, peak_equity, brain.locked_floor, daily_pnl_pct)
+            current_dd_pct = prot["current_dd_pct"]
+            floor_threat = prot["should_liquidate"]
+
+            # CORRECCIÓN P0.1: El porcentaje hacia la meta se mide respecto al BALANCE DISPONIBLE real
+            goal_pct = (balance / max(brain.current_target, 1)) * 100.0
             sprint_mode = goal_pct >= 88.0
 
-            # Evaluar Percepción de Corto Plazo (Giro en V / Micro-Breakout)
             perception = PERCEPTION_ENGINE.evaluate(state, ind_5m, ind_15m, ind_1h, ind_4h, now=now)
             ovr_tag = perception["override_side"] or "OFF"
+            q_vec = brain.get_state_q_values(state)
 
-            # Kill Switch Duro al 15% de Drawdown real verificado
-            floor_threat = (brain.locked_floor > 0 and equity <= brain.locked_floor) or (current_dd_pct >= 0.25)
+            edge_scores_by_tid = {}
+            for _t in running:
+                _tid = str(_t["id"])
+                _meta = brain.active_trades.get(_tid, {})
+                _act = int(_meta.get("action", 2 if _t.get("side", "buy") == "buy" else 6))
+                _pnl_atr = float(_meta.get("last_pnl_atr", 0.0))
+                _q_act = float(q_vec[_act]) if _act < len(q_vec) else 0.0
+                _ovr = perception.get("override_side")
+                _ovr_bias = -0.35 if ((_act <= 4 and _ovr == "BEAR") or (_act >= 5 and _ovr == "BULL")) else (0.15 if ((_act <= 4 and _ovr == "BULL") or (_act >= 5 and _ovr == "BEAR")) else 0.0)
+                edge_score = round(_q_act + (0.20 * _pnl_atr) + _ovr_bias, 4)
+                edge_scores_by_tid[_tid] = edge_score
+                if edge_score < 0.0:
+                    print(f"  ⚠️ [DEGRADACIÓN DE EDGE] ID:{_tid[:6]} | Act:{_act} | Edge:{edge_score:+.3f} (Q:{_q_act:+.3f} | PnL:{_pnl_atr:+.2f}ATR | OVR:{ovr_tag})")
+
             if floor_threat and (now >= pause_until):
-                print(f"  🚨 [GUARDIÁN PISO DURO ACTIVADO] Equity ({equity:,}) <= Piso ({brain.locked_floor:,}) | DD: {current_dd_pct*100:.1f}%. Liquidando y pausando 45m.")
+                print(f"  🚨 [GUARDIÁN PISO DURO UNIFICADO] {prot['reason']} | Eq:{equity:,} <= Piso:{brain.locked_floor:,}. Liquidando y pausando 45m.")
                 for t_kill in list(running):
                     try:
-                        client.close_trade(str(t_kill["id"]))
+                        confirm_and_close_trade(client, brain, str(t_kill["id"]), brain.active_trades.get(str(t_kill["id"]), {}), "HARD_FLOOR_KILL_SWITCH")
                     except Exception:
                         pass
                 running = []
@@ -1567,7 +1909,7 @@ def main():
                 pause_until = now + 2700
                 peak_equity = equity
                 brain.peak_equity = equity
-                brain.locked_floor = int(round(equity * 0.75))
+                brain.locked_floor = int(round(equity * Config.INITIAL_FLOOR_RATIO))
                 brain.dirty = True
                 brain.save_brain(force=True)
                 current_dd_pct = 0.0
@@ -1579,11 +1921,12 @@ def main():
             )
 
             mods = brain.get_parallel_modifiers(ind_5m, ind_15m, ind_1h, ind_4h)
+            latency_ms = int(round((time.time() - cycle_t0) * 1000.0))
             print(
                 f"[{datetime.now().strftime('%H:%M:%S')}][{current_mode}][{state}]"
                 f"[1h:{mods['name_1h'][:4]}|4h:{mods['name_4h'][:4]}|OVR:{ovr_tag}] "
-                f"${ind_5m['price']:.1f} | Eq:{equity:,} (Bal:{balance:,}) | "
-                f"Act:{len(running)}/{Config.MAX_CONCURRENT_TRADES} | DD:{current_dd_pct*100:.1f}%"
+                f"${ind_5m['price']:.1f} | Bal:{balance:,} ({goal_pct:.1f}% Meta) | Eq:{equity:,} | "
+                f"Act:{len(running)}/{Config.MAX_CONCURRENT_TRADES} | DD:{current_dd_pct*100:.1f}% | {latency_ms}ms"
             )
 
             still_running = []
@@ -1592,14 +1935,14 @@ def main():
                     tid = str(trade["id"])
                     t_meta = brain.active_trades.setdefault(tid, infer_adopted_trade(trade, ind_5m, state, now))
                     closed_by_guardian = execute_strategy_guardian(
-                        client, brain, trade, ind_5m, ind_15m, t_meta, current_mode
+                        client, brain, trade, ind_5m, ind_15m, t_meta, current_mode,
+                        edge_score=edge_scores_by_tid.get(tid, 0.0), perception=perception
                     )
                     if not closed_by_guardian:
                         still_running.append(trade)
                 evaluate_open_trades_online(brain, still_running, ind_5m, state, now)
 
             active_count = max(len(still_running), len(brain.active_trades))
-            # Límite dinámico de posiciones concurrentes (nunca excede MAX_CONCURRENT_TRADES = 5)
             capital_max_pos = max(1, min(Config.MAX_CONCURRENT_TRADES, int((equity * 0.60) // 1000)))
             if recovery_mode:
                 dynamic_max_pos = min(capital_max_pos, 1 if equity < 5000 else 2)
@@ -1609,8 +1952,8 @@ def main():
                 dynamic_max_pos = capital_max_pos
 
             effective_cooldown = Config.ENTRY_COOLDOWN_SEC * (
-                0.85 if perception.get("override_side") is not None
-                else (2.0 if (recovery_mode or "CHOP" in state) else 1.0)
+                0.80 if perception.get("override_side") is not None
+                else (1.8 if (recovery_mode or "CHOP" in state) else 1.0)
             )
             if new_entries_allowed and active_count < dynamic_max_pos:
                 if (locked_margin / max(equity, 1)) < Config.SOFT_EXPOSURE_LIMIT and (now - last_entry_time) >= effective_cooldown:
@@ -1624,42 +1967,64 @@ def main():
                         recovery_mode=recovery_mode, current_dd_pct=current_dd_pct
                     )
                     if action == 0 and raw_action > 0:
-                        print(f"  ⏸️ [FILTRO SATS/IMPULSO] Entrada bloqueada ({gate_reason} | OVR:{perception.get('override_reason')})")
+                        brain.remember_and_train(state, 0, 0, 1000, state, is_no_trade=True)
+                        print(f"  ⏸️ [FILTRO SATS/SEGURIDAD] Entrada bloqueada ({gate_reason} | OVR:{perception.get('override_reason')})")
                     if action > 0:
-                        live_running = client.get_running_trades()
-                        if len(live_running) < min(dynamic_max_pos, Config.MAX_CONCURRENT_TRADES):
-                            strat = brain.strategies[action]
-                            combined_rr = mods["rr_mult"] * (Config.RECOVERY_RR_MULT if recovery_mode else 1.0)
-                            raw_lev, raw_sl, raw_tp = calculate_strategy_order_params(
-                                strat, ind_5m["price"], ind_5m["atr"], rr_mult=combined_rr
+                        strat = brain.strategies[action]
+                        combined_rr = mods["rr_mult"] * (Config.RECOVERY_RR_MULT if recovery_mode else 1.0)
+                        raw_lev, raw_sl, raw_tp = calculate_strategy_order_params(
+                            strat, ind_5m["price"], ind_5m["atr"], rr_mult=combined_rr
+                        )
+                        lev, sl, tp = compute_situational_order_params(
+                            raw_lev, raw_sl, raw_tp, strat, state, ind_5m, ind_15m, ind_1h, ind_4h,
+                            mods, brain, action, recovery_mode, current_dd_pct, consecutive_losses,
+                            combined_rr, perception=perception
+                        )
+                        base_risk = compute_effective_risk(
+                            warmup, risk_multiplier, recovery_mode, sprint_mode,
+                            current_dd_pct, parallel_risk_mult=mods["risk_mult"]
+                        )
+                        q_val = float(q_vec[action]) if action < len(q_vec) else 0.0
+                        kelly_mult = 1.45 if q_val >= 0.08 else (1.15 if q_val >= 0.03 else 0.85)
+                        if perception.get("override_side") is not None:
+                            kelly_mult *= 1.15
+                        if recovery_mode:
+                            kelly_mult = min(kelly_mult, 0.80)
+
+                        adj_risk = min(0.12, max(0.03, base_risk * kelly_mult))
+                        margin_sats = max(1000, int(round(equity * adj_risk)))
+
+                        # CORRECCIÓN P0.6: Verificar exposición proyectada (incluyendo el margen nuevo y el mínimo de 1000 sats)
+                        est_entry_fee = max(1, int(round(margin_sats * lev * Config.TAKER_FEE)))
+                        exp_ok, exp_reason, proj_exp = SatsExpectancyGate.verify_projected_exposure(
+                            locked_margin, margin_sats, equity, balance,
+                            max_exposure_ratio=Config.SOFT_EXPOSURE_LIMIT,
+                            est_entry_fee_sats=est_entry_fee,
+                            max_single_trade_risk_pct=Config.MAX_SINGLE_TRADE_MARGIN_PCT,
+                        )
+                        viable_sats, sats_meta = SatsExpectancyGate.verify_net_sats_expectancy(
+                            ind_5m["price"], margin_sats, lev, sl, tp
+                        )
+                        if viable_sats and (recovery_mode or "RANGE_SQUEEZE" in state):
+                            min_strict_tp = max(38 if recovery_mode else 32, int(round(sats_meta["fee_sats"] * (2.8 + current_dd_pct * 3.0 if recovery_mode else 2.5))))
+                            if sats_meta["net_tp_sats"] < min_strict_tp:
+                                viable_sats = False
+
+                        if not exp_ok:
+                            print(f"  ⏸️ [EXPOSICIÓN PROYECTADA BLOQUEADA] {exp_reason} (Margen:{margin_sats} sats)")
+                        elif not viable_sats:
+                            print(
+                                f"  ⏸️ [EXPECTANCY SATS INSUFICIENTE] NetTP:+{sats_meta['net_tp_sats']} sats vs "
+                                f"Fee:{sats_meta['fee_sats']} sats (Ratio:{sats_meta['fee_ratio']}x)"
                             )
-                            lev, sl, tp = compute_situational_order_params(
-                                raw_lev, raw_sl, raw_tp, strat, state, ind_5m, ind_15m, ind_1h, ind_4h,
-                                mods, brain, action, recovery_mode, current_dd_pct, consecutive_losses,
-                                combined_rr, perception=perception
+                        elif safe_mode:
+                            print(
+                                f"  🛡️ [MODO SEGURO - SIMULACIÓN] Señal válida {strat['name']} "
+                                f"(Lev {lev}x | Margen {margin_sats} sats | SL:{sl} | TP:{tp} | ExpProy:{proj_exp*100:.1f}%)"
                             )
-                            base_risk = compute_effective_risk(
-                                warmup, risk_multiplier, recovery_mode, sprint_mode,
-                                current_dd_pct, parallel_risk_mult=mods["risk_mult"]
-                            )
-                            q_val = float(q_vec[action]) if action < len(q_vec) else 0.0
-                            kelly_mult = 1.45 if q_val >= 0.08 else (1.15 if q_val >= 0.03 else 0.85)
-                            if perception.get("override_side") is not None:
-                                kelly_mult *= 1.15
-                            if recovery_mode:
-                                kelly_mult = min(kelly_mult, 0.80)
-                            # Marco de riesgo disciplinado: máximo 12% del equity por operación (mínimo 1000 sats LNM)
-                            adj_risk = min(0.12, max(0.03, base_risk * kelly_mult))
-                            margin_sats = max(1000, int(round(equity * adj_risk)))
-                            viable_sats, sats_meta = SatsExpectancyGate.verify_net_sats_expectancy(
-                                ind_5m["price"], margin_sats, lev, sl, tp
-                            )
-                            if not viable_sats:
-                                print(
-                                    f"  ⏸️ [EXPECTANCY SATS INSUFICIENTE] NetTP:+{sats_meta['net_tp_sats']} sats vs "
-                                    f"Fee:{sats_meta['fee_sats']} sats (Ratio:{sats_meta['fee_ratio']}x)"
-                                )
-                            if viable_sats and balance >= margin_sats:
+                        else:
+                            live_running = client.get_running_trades()
+                            if len(live_running) < min(dynamic_max_pos, Config.MAX_CONCURRENT_TRADES):
                                 last_entry_time = now
                                 try:
                                     new_t = client.open_trade(strat["side"], margin_sats, lev, sl, tp)
@@ -1672,7 +2037,7 @@ def main():
                                         brain.save_brain(force=True)
                                         print(
                                             f"  → Abierta {strat['name']} [{len(live_running)+1}/{Config.MAX_CONCURRENT_TRADES}] "
-                                            f"(Lev {lev}x | Margen {margin_sats} sats | Salida:{strat['exit_mode']} | RR_x{combined_rr:.2f})"
+                                            f"(Lev {lev}x | Margen {margin_sats} sats | ExpProy:{proj_exp*100:.1f}% | Salida:{strat['exit_mode']})"
                                         )
                                 except Exception as open_err:
                                     print(f"  [VERIFICANDO ORDEN POST-TIMEOUT] {open_err}")
@@ -1693,10 +2058,18 @@ def main():
         except Exception as e:
             api_health.record_error(type(e).__name__, e)
 
+        if once_mode:
+            break
+
+        # Ciclo adaptativo de alta frecuencia de análisis
+        if PERCEPTION_ENGINE.override_side is not None:
+            loop_wait = Config.FAST_ANALYZE_INTERVAL_SEC
+        elif len(brain.active_trades) > 0:
+            loop_wait = Config.ACTIVE_ANALYZE_INTERVAL_SEC
+        else:
+            loop_wait = Config.IDLE_ANALYZE_INTERVAL_SEC
         time.sleep(loop_wait)
 
-
-# guardian_learner removed
 
 if __name__ == "__main__":
     main()
