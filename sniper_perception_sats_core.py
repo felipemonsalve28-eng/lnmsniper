@@ -3,7 +3,7 @@
 sniper_perception_sats_core.py
 Motor de Percepción en Tiempo Real (Proxies OHLCV 5m/15m + Confirmación Continua),
 Detector de Giro en V con Decaimiento e Histéresis, Compuerta de Expectativa de Sats Netos
-con Jerarquía de Seguridad Estricta (P0) y Verificador de Exposición Proyectada.
+con Filtro Anti-Churning de Comisiones (P0) y Soporte Dual (Mainnet Estricto / Testnet Explorador).
 """
 import time
 import math
@@ -25,7 +25,6 @@ class ShortTermPerceptionEngine:
         self.last_flip_time = 0.0
 
     def _record_sample(self, now, price, atr):
-        # Muestreo adaptativo (cada 15s) para alta frecuencia de análisis sin inflar RAM
         if not self.price_history or (now - self.price_history[-1][0]) >= 15.0:
             self.price_history.append((float(now), float(price), float(atr)))
             if len(self.price_history) > 60:
@@ -125,7 +124,6 @@ class ShortTermPerceptionEngine:
             or (rsi_5m <= 40.0 and rsi_15m <= 45.5 and rsi_1h <= 49.0 and vel_ema <= -1.00)
         )
 
-        # Histéresis para evitar oscilaciones rápidas BULL <-> BEAR (mínimo 90s salvo reversión extrema > 1.85 ATR)
         can_flip_side = (now - self.last_flip_time) >= 90.0 or abs(vel_ema) >= 1.85
 
         if v_bull_trigger and not v_bear_trigger:
@@ -135,7 +133,6 @@ class ShortTermPerceptionEngine:
                     self.override_since = now
                     self.last_flip_time = now
             if self.override_side == "BULL":
-                # Ventana máxima reducida a 480s con exigencia de confirmación continua
                 self.override_until = now + 480.0
                 self.override_strength = min(2.5, max(1.0, abs(vel_ema)))
                 self.override_reason = f"V_BULL(v={vel_ema:+.2f}ATR|rsi5={rsi_5m:.0f}|brk={int(px['breakout_bull'])})"
@@ -150,7 +147,6 @@ class ShortTermPerceptionEngine:
                 self.override_strength = min(2.5, max(1.0, abs(vel_ema)))
                 self.override_reason = f"V_BEAR(v={vel_ema:+.2f}ATR|rsi5={rsi_5m:.0f}|brk={int(px['breakout_bear'])})"
         else:
-            # Decaimiento gradual y cancelación anticipada si el impulso desaparece o se contradice
             if self.override_side is not None:
                 elapsed = max(0.0, now - self.override_since)
                 decay_factor = max(0.0, 1.0 - (elapsed / 480.0))
@@ -178,132 +174,131 @@ class ShortTermPerceptionEngine:
 class SatsExpectancyGate:
     """
     Compuerta económica y de seguridad P0:
-    1. Primero aplica bloqueos críticos de exposición y volatilidad (NINGÚN override puede saltárselos).
-    2. Luego evalúa redirecciones direccionales por Giro en V y sesgos micro/macro.
-    3. Verifica expectativa matemática neta en satoshis y exposición proyectada.
+    1. Bloqueos críticos de exposición y volatilidad (NINGÚN override puede saltárselos en Mainnet).
+    2. Prohibición de abrir contratendencia con Q negativo empujado por Override en RANGE_SQUEEZE.
+    3. Expectativa neta de satoshis reforzada contra erosión por fees (Ratio >= 3.85x en Mainnet).
     """
 
     ROUND_TRIP_FEE_RATE = 0.0020
-    MIN_NET_REWARD_TO_FEE_RATIO = 3.20
+    MIN_NET_REWARD_TO_FEE_RATIO = 3.85
 
     @staticmethod
     def filter_and_rank_action(
         raw_action, state, q_values, strategies, perception,
-        recovery_mode=False, current_dd_pct=0.0
+        recovery_mode=False, current_dd_pct=0.0, explorer_mode=False
     ):
-        # Compuerta P0 de Ventaja Estadística: Bloquear entradas en contratendencia con Q-Value degradado
-        if raw_action in (1, 2, 3, 4, 5, 6, 7, 8) and isinstance(q_values, (list, tuple)) and len(q_values) > int(raw_action):
-            _rq = float(q_values[int(raw_action)])
-            _st = str(state)
-            _is_counter = (int(raw_action) >= 5 and ("|BULL|" in _st or "BULL_DIP" in _st or "FULL_BULL" in _st)) or (
-                int(raw_action) <= 4 and ("|BEAR|" in _st or "BEAR_RALLY" in _st or "FULL_BEAR" in _st)
-            )
-            if "RANGE_SQUEEZE" in _st and "HIGH_EXP" in _st:
-                return 0, "BLOCKED_SQUEEZE_HIGH_EXP"
-            if _is_counter and "RANGE_SQUEEZE" in _st and _rq <= -0.18:
-                return 0, f"BLOCKED_NEGATIVE_Q_COUNTERTREND(Q={_rq:+.3f})"
-            if _rq <= -0.28 and (not isinstance(perception, dict) or perception.get("override_side") is None):
-                return 0, f"BLOCKED_SEVERE_NEGATIVE_Q(Q={_rq:+.3f})"
-        override = perception.get("override_side") if isinstance(perception, dict) else None
         norm_s = str(state)
+        override = perception.get("override_side") if isinstance(perception, dict) else None
 
         # =================================================================
         # PASO 1 (P0): PROTECCIONES CRÍTICAS DE CAPITAL Y EXPOSICIÓN
-        # Ningún override direccional (BULL/BEAR) puede anular estas reglas
         # =================================================================
-        if "RANGE_SQUEEZE" in norm_s and "HIGH_EXP" in norm_s:
-            return 0, "BLOCKED_SQUEEZE_HIGH_EXP"
+        if not explorer_mode:
+            if "RANGE_SQUEEZE" in norm_s and "HIGH_EXP" in norm_s:
+                return 0, "BLOCKED_SQUEEZE_HIGH_EXP"
+            if "CHOP_HIGHVOL" in norm_s and "HIGH_EXP" in norm_s:
+                return 0, "BLOCKED_CHOP_HIGHVOL_HIGH_EXP"
 
-        if "CHOP_HIGHVOL" in norm_s and "HIGH_EXP" in norm_s:
-            return 0, "BLOCKED_CHOP_HIGHVOL_HIGH_EXP"
-
-        if current_dd_pct >= 0.16:
+        if current_dd_pct >= (0.28 if explorer_mode else 0.16):
             return 0, "BLOCKED_MAX_DRAWDOWN_REACHED"
 
-        # En recovery_mode se excluyen los runners puros (1 y 5)
-        long_actions = [2, 3, 4] if recovery_mode else [1, 2, 3, 4]
-        short_actions = [6, 7, 8] if recovery_mode else [5, 6, 7, 8]
+        # Helper para verificar si una acción es contratendencia respecto a la estructura macro/EMA
+        def is_counter_trend(act_idx):
+            return (
+                (act_idx >= 5 and ("|BULL|" in norm_s or "BULL_DIP" in norm_s or "FULL_BULL" in norm_s))
+                or (1 <= act_idx <= 4 and ("|BEAR|" in norm_s or "BEAR_RALLY" in norm_s or "FULL_BEAR" in norm_s))
+            )
+
+        # En Mainnet: bloquear entradas directas con Q negativo en contratendencia o HIGH_EXP
+        if not explorer_mode and raw_action in (1, 2, 3, 4, 5, 6, 7, 8) and len(q_values) > int(raw_action):
+            rq = float(q_values[int(raw_action)])
+            if "HIGH_EXP" in norm_s and rq < 0.04:
+                return 0, f"BLOCKED_HIGH_EXP_LOW_Q(Q={rq:+.3f})"
+            if is_counter_trend(int(raw_action)) and "RANGE_SQUEEZE" in norm_s and rq < 0.01:
+                return 0, f"BLOCKED_NEGATIVE_Q_COUNTERTREND(Q={rq:+.3f})"
+            if rq <= -0.15 and override is None:
+                return 0, f"BLOCKED_SEVERE_NEGATIVE_Q(Q={rq:+.3f})"
+
+        long_actions = [2, 3, 4] if (recovery_mode and not explorer_mode) else [1, 2, 3, 4]
+        short_actions = [6, 7, 8] if (recovery_mode and not explorer_mode) else [5, 6, 7, 8]
+
+        # Umbral mínimo de Q para permitir que un Override seleccione o mantenga una acción en Mainnet
+        min_ovr_q = -0.35 if explorer_mode else (0.01 if "RANGE_SQUEEZE" in norm_s else -0.05)
 
         # =================================================================
-        # PASO 2: REDIRECCIÓN POR GIRO EN V (SOLO SI EXPOSICIÓN ES SEGURA)
+        # PASO 2: REDIRECCIÓN POR GIRO EN V (CON FILTRO DE CALIDAD Q)
         # =================================================================
         if override == "BULL":
-            max_long_q = max((float(q_values[a]) for a in long_actions if a < len(q_values)), default=-1.0)
-            if raw_action == 0 and max_long_q <= -0.15 and not perception.get("breakout_bull"):
-                return 0, "RESPECT_NO_TRADE_NEGATIVE_LONG_Q"
+            valid_longs = [a for a in long_actions if a < len(q_values) and float(q_values[a]) >= min_ovr_q]
+            if not valid_longs:
+                return 0, "BLOCKED_OVR_BULL_ALL_LONG_Q_NEGATIVE"
 
-            if raw_action in [5, 6, 7, 8] or raw_action == 0:
-                best_long = (4 if recovery_mode else 1) if perception.get("breakout_bull") else (4 if recovery_mode else 3)
+            if raw_action in [5, 6, 7, 8] or raw_action == 0 or raw_action not in valid_longs:
+                best_long = valid_longs[0]
                 best_score = -999.0
-                for a in long_actions:
-                    if a < len(q_values):
-                        bonus = 0.12 if a == 1 else (0.09 if a == 3 else (0.08 if a == 4 else 0.0))
-                        score = float(q_values[a]) + bonus
-                        if score > best_score:
-                            best_score = score
-                            best_long = a
+                for a in valid_longs:
+                    bonus = 0.10 if a == 1 else (0.08 if a == 3 else (0.07 if a == 4 else 0.0))
+                    score = float(q_values[a]) + bonus
+                    if score > best_score:
+                        best_score = score
+                        best_long = a
                 return best_long, f"OVR_BULL_REDIRECT({raw_action}->{best_long})"
-            if recovery_mode and "RANGE_SQUEEZE" in norm_s and "BEAR_RALLY" in norm_s and raw_action == 2:
-                return 4, "OVR_BULL_RECOVERY_DEF_SCALP(2->4)"
-            if recovery_mode and raw_action == 1:
-                return 3, "OVR_BULL_RECOVERY_CAP_RUNNER(1->3)"
+            if recovery_mode and not explorer_mode and raw_action == 1:
+                return (3 if 3 in valid_longs else valid_longs[0]), "OVR_BULL_RECOVERY_CAP_RUNNER"
             return raw_action, "OVR_BULL_ALIGNED"
 
         if override == "BEAR":
-            max_short_q = max((float(q_values[a]) for a in short_actions if a < len(q_values)), default=-1.0)
-            if raw_action == 0 and max_short_q <= -0.15 and not perception.get("breakout_bear"):
-                return 0, "RESPECT_NO_TRADE_NEGATIVE_SHORT_Q"
+            valid_shorts = [a for a in short_actions if a < len(q_values) and float(q_values[a]) >= min_ovr_q]
+            if not valid_shorts:
+                return 0, "BLOCKED_OVR_BEAR_ALL_SHORT_Q_NEGATIVE"
 
-            if raw_action in [1, 2, 3, 4] or raw_action == 0:
-                best_short = (8 if recovery_mode else 5) if perception.get("breakout_bear") else (8 if recovery_mode else 7)
+            if raw_action in [1, 2, 3, 4] or raw_action == 0 or raw_action not in valid_shorts:
+                best_short = valid_shorts[0]
                 best_score = -999.0
-                for a in short_actions:
-                    if a < len(q_values):
-                        bonus = 0.12 if a == 5 else (0.09 if a == 7 else (0.08 if a == 8 else 0.0))
-                        score = float(q_values[a]) + bonus
-                        if score > best_score:
-                            best_score = score
-                            best_short = a
+                for a in valid_shorts:
+                    bonus = 0.10 if a == 5 else (0.08 if a == 7 else (0.07 if a == 8 else 0.0))
+                    score = float(q_values[a]) + bonus
+                    if score > best_score:
+                        best_score = score
+                        best_short = a
                 return best_short, f"OVR_BEAR_REDIRECT({raw_action}->{best_short})"
-            if recovery_mode and "RANGE_SQUEEZE" in norm_s and "BEAR_RALLY" in norm_s and raw_action == 6:
-                return 8, "OVR_BEAR_RECOVERY_DEF_SCALP(6->8)"
-            if recovery_mode and raw_action == 5:
-                return 7, "OVR_BEAR_RECOVERY_CAP_RUNNER(5->7)"
+            if recovery_mode and not explorer_mode and raw_action == 5:
+                return (7 if 7 in valid_shorts else valid_shorts[0]), "OVR_BEAR_RECOVERY_CAP_RUNNER"
             return raw_action, "OVR_BEAR_ALIGNED"
 
         # =================================================================
         # PASO 3: FILTROS SIN OVERRIDE ACTIVO
         # =================================================================
-        if recovery_mode and "RANGE_SQUEEZE" in norm_s and "BEAR_RALLY" in norm_s and raw_action in (2, 6):
+        if recovery_mode and not explorer_mode and "RANGE_SQUEEZE" in norm_s and "BEAR_RALLY" in norm_s and raw_action in (2, 6):
             def_act = 4 if raw_action == 2 else 8
             q_def = float(q_values[def_act]) if def_act < len(q_values) else 0.0
             q_zero = float(q_values[0]) if len(q_values) > 0 else 0.0
-            if q_def > max(0.005, q_zero):
+            if q_def > max(0.01, q_zero):
                 return def_act, f"RECOVERY_SQUEEZE_DEF_REDIRECT({raw_action}->{def_act})"
             return 0, "BLOCKED_REVERSION_IN_RECOVERY_SQUEEZE"
 
         rsi_5m = perception.get("rsi_5m", 50.0) if isinstance(perception, dict) else 50.0
         vel_ema = perception.get("vel_ema_atr", 0.0) if isinstance(perception, dict) else 0.0
-        if raw_action in [5, 6, 7, 8] and ("BEAR_RALLY" in norm_s or "CHOP" in norm_s):
-            if vel_ema > 0.55 and rsi_5m > 54.0:
-                return 0, "BLOCKED_SHORT_AGAINST_MICRO_UPTREND"
+        if not explorer_mode:
+            if raw_action in [5, 6, 7, 8] and ("BEAR_RALLY" in norm_s or "CHOP" in norm_s):
+                if vel_ema > 0.50 and rsi_5m > 53.5:
+                    return 0, "BLOCKED_SHORT_AGAINST_MICRO_UPTREND"
 
-        if raw_action in [1, 2, 3, 4] and ("BULL_DIP" in norm_s or "CHOP" in norm_s):
-            if vel_ema < -0.55 and rsi_5m < 46.0:
-                return 0, "BLOCKED_LONG_AGAINST_MICRO_DOWNTREND"
+            if raw_action in [1, 2, 3, 4] and ("BULL_DIP" in norm_s or "CHOP" in norm_s):
+                if vel_ema < -0.50 and rsi_5m < 46.5:
+                    return 0, "BLOCKED_LONG_AGAINST_MICRO_DOWNTREND"
 
-        # Exigir ventaja real frente a NO_TRADE (acción 0)
-        if raw_action > 0:
+        if raw_action > 0 and not explorer_mode:
             q_act = float(q_values[raw_action]) if raw_action < len(q_values) else -1.0
             q_zero = float(q_values[0]) if len(q_values) > 0 else 0.0
-            min_req_q = max(0.005, q_zero) if (recovery_mode or "CHOP" in norm_s) else q_zero
+            min_req_q = max(0.015, q_zero) if (recovery_mode or "CHOP" in norm_s or "RANGE_SQUEEZE" in norm_s) else q_zero
             if q_act <= min_req_q:
                 return 0, "BLOCKED_LOW_Q_VS_NO_TRADE"
 
-        return raw_action, "STANDARD_Q"
+        return raw_action, ("EXPLORER_Q" if explorer_mode else "STANDARD_Q")
 
     @classmethod
-    def verify_net_sats_expectancy(cls, price, margin_sats, lev, sl_price, tp_price):
+    def verify_net_sats_expectancy(cls, price, margin_sats, lev, sl_price, tp_price, explorer_mode=False):
         price = max(float(price), 1.0)
         notional_sats = float(margin_sats) * float(lev)
         fee_sats = max(2, int(round(notional_sats * cls.ROUND_TRIP_FEE_RATE)))
@@ -318,10 +313,14 @@ class SatsExpectancyGate:
         fee_ratio = expected_gross_tp_sats / max(float(fee_sats), 1.0)
         net_rr = expected_net_tp_sats / max(float(expected_loss_sl_sats), 1.0)
 
+        min_ratio = 2.40 if explorer_mode else cls.MIN_NET_REWARD_TO_FEE_RATIO
+        min_net_sats = max(16, int(fee_sats * 1.5)) if explorer_mode else max(38, int(round(fee_sats * 2.8)))
+        min_rr = 0.72 if explorer_mode else 1.05
+
         is_viable = (
-            expected_net_tp_sats >= max(25, int(fee_sats * 2.2))
-            and fee_ratio >= cls.MIN_NET_REWARD_TO_FEE_RATIO
-            and net_rr >= 0.85
+            expected_net_tp_sats >= min_net_sats
+            and fee_ratio >= min_ratio
+            and net_rr >= min_rr
         )
         return is_viable, {
             "fee_sats": fee_sats,

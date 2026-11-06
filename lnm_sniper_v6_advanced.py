@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
-from sniper_perception_sats_core import (
-    ShortTermPerceptionEngine,
-    SatsExpectancyGate,
-    sync_brain_floor_with_reality,
-)
-PERCEPTION_ENGINE = ShortTermPerceptionEngine()
+"""
+lnm_sniper_v6_advanced.py
+Motor Principal LNM Sniper v7.3 Consolidado (Dual Mainnet & Testnet Explorer).
+Incluye Caché MTF Persistente Compartida, Telemetría por Estilo, Pool HTTP Resiliente
+y Separación Estricta de Cerebros y Credenciales.
+"""
 import os
 import re
 import sys
 import time
 import math
-from guardian_execution_core import AtomicBrainStore, ResilientLNMClient, HardFloorGuardian
 import json
 import hmac
 import shutil
@@ -24,14 +23,31 @@ from datetime import datetime, date
 import requests
 import numpy as np
 
+from guardian_execution_core import (
+    AtomicBrainStore,
+    ResilientLNMClient,
+    HardFloorGuardian,
+    FileLockContext,
+)
+from sniper_perception_sats_core import (
+    ShortTermPerceptionEngine,
+    SatsExpectancyGate,
+    sync_brain_floor_with_reality,
+)
+
+PERCEPTION_ENGINE = ShortTermPerceptionEngine()
+
 
 # =====================================================================
-# 1. CONFIGURACIÓN CENTRALIZADA Y PARÁMETROS DEL SISTEMA
+# 1. CONFIGURACIÓN CENTRALIZADA Y PERFILES DINÁMICOS (MAINNET / TESTNET)
 # =====================================================================
 class Config:
+    ENV_MODE = "mainnet"
+    EXPLORER_MODE = False
     BASE_URL = "https://api.lnmarkets.com/v3"
     BRAIN_FILE = "q_brain_advanced_lnm.json"
     BRAIN_SAVE_INTERVAL = 90.0
+    SHARED_MTF_DISK_CACHE = "/tmp/sniper_mtf_candles_v73.json"
 
     # Meta dinámica basada EXCLUSIVAMENTE en Balance Disponible (Sats Netos)
     INITIAL_TARGET_SATS = 300000
@@ -41,19 +57,19 @@ class Config:
 
     # Gestión de apalancamiento, riesgo y concurrencia estricta
     MIN_LEVERAGE = 15
-    MAX_LEVERAGE = 95
+    MAX_LEVERAGE = 85
     TAKER_FEE = 0.001
     WARMUP_TRADES = 20
-    RISK_WARMUP = 0.06
-    RISK_NORMAL = 0.12
-    MAX_SINGLE_TRADE_MARGIN_PCT = 0.22
+    RISK_WARMUP = 0.05
+    RISK_NORMAL = 0.10
+    MAX_SINGLE_TRADE_MARGIN_PCT = 0.20
     MIN_EFFECTIVE_RISK_WARMUP = 0.025
-    MIN_EFFECTIVE_RISK_NORMAL = 0.032
+    MIN_EFFECTIVE_RISK_NORMAL = 0.030
     MAX_CONCURRENT_TRADES = 5
     SOFT_EXPOSURE_LIMIT = 0.38
     ENTRY_COOLDOWN_SEC = 35.0
 
-    # Frecuencia de análisis adaptativa (alta frecuencia de evaluación sin saturar API)
+    # Frecuencia de análisis adaptativa de alta velocidad
     FAST_ANALYZE_INTERVAL_SEC = 5.0
     ACTIVE_ANALYZE_INTERVAL_SEC = 7.0
     IDLE_ANALYZE_INTERVAL_SEC = 11.0
@@ -68,12 +84,12 @@ class Config:
     MIN_INTERMEDIATE_DELTA_ATR = 0.18
 
     # Controlador de degradación de Edge en el Guardian
-    EDGE_DEGRADATION_WARN = -0.25
-    EDGE_DEGRADATION_TIGHTEN = -0.42
-    EDGE_DEGRADATION_EXIT = -0.65
+    EDGE_DEGRADATION_WARN = -0.22
+    EDGE_DEGRADATION_TIGHTEN = -0.38
+    EDGE_DEGRADATION_EXIT = -0.60
     EDGE_DEGRADATION_PERSISTENCE = 3
 
-    # Umbrales de seguridad y recuperación auditable (conectados al flujo operativo)
+    # Umbrales de seguridad y recuperación auditable
     MAX_DAILY_LOSS_PCT = 0.11
     MAX_DRAWDOWN_PCT = 0.16
     KILL_SWITCH_DD_PCT = 0.22
@@ -85,60 +101,96 @@ class Config:
     RECOVERY_ENTER_DD = 0.095
     RECOVERY_EXIT_DD = 0.065
     RECOVERY_BOUNCE_GAIN_PCT = 0.018
-    RECOVERY_RISK_MULT = 0.50
-    RECOVERY_RR_MULT = 0.88
+    RECOVERY_RISK_MULT = 0.45
+    RECOVERY_RR_MULT = 0.90
 
     ATR_EXTREME_PCT = 0.0145
     ANTI_MARTINGALE_FACTOR = 0.78
-    DRAWDOWN_RISK_REDUCTION = 0.75
-    DRAWDOWN_RISK_THRESHOLD = 0.09
+    DRAWDOWN_RISK_REDUCTION = 0.70
+    DRAWDOWN_RISK_THRESHOLD = 0.085
 
     # Salud de red y TTL de caché MTF (210 velas para EMA 200 exacta)
-    API_CB_ERROR_THRESHOLD = 4
-    API_CB_MAX_COOLDOWN_SEC = 180
+    API_CB_ERROR_THRESHOLD = 3
+    API_CB_MAX_COOLDOWN_SEC = 120
     CANDLE_LIMIT = 210
-    TTL_5M = 30.0
-    TTL_15M = 90.0
-    TTL_1H = 300.0
-    TTL_4H = 600.0
+    TTL_5M = 25.0
+    TTL_15M = 75.0
+    TTL_1H = 240.0
+    TTL_4H = 480.0
 
     NUM_ACTIONS = 9
     NUM_MACRO_ACTIONS = 4
 
+    @classmethod
+    def configure_environment(cls, env_name="mainnet"):
+        env = str(env_name or "mainnet").strip().lower()
+        if env in ("testnet", "test", "explorer"):
+            cls.ENV_MODE = "testnet"
+            cls.EXPLORER_MODE = True
+            cls.BASE_URL = os.getenv("LNM_TESTNET_BASE_URL", "https://api.signet.lnmarkets.com/v3")
+            cls.BRAIN_FILE = "q_brain_testnet_lnm.json"
+            cls.MAX_CONCURRENT_TRADES = 5
+            cls.SOFT_EXPOSURE_LIMIT = 0.45
+            cls.ENTRY_COOLDOWN_SEC = 18.0
+            cls.RISK_NORMAL = 0.08
+            cls.RISK_WARMUP = 0.06
+            cls.MAX_DRAWDOWN_PCT = 0.26
+            cls.KILL_SWITCH_DD_PCT = 0.35
+        else:
+            cls.ENV_MODE = "mainnet"
+            cls.EXPLORER_MODE = False
+            cls.BASE_URL = os.getenv("LNM_MAINNET_BASE_URL", "https://api.lnmarkets.com/v3")
+            cls.BRAIN_FILE = "q_brain_advanced_lnm.json"
+            cls.MAX_CONCURRENT_TRADES = 5
+            cls.SOFT_EXPOSURE_LIMIT = 0.38
+            cls.ENTRY_COOLDOWN_SEC = 35.0
+
 
 # =====================================================================
-# 2. CARGADOR SEGURO DE CREDENCIALES (SIN ESCANEO DE ARCHIVOS .PY)
+# 2. CARGADOR SEGURO DE CREDENCIALES SEPARADAS (MAINNET vs TESTNET)
 # =====================================================================
-def load_saved_credentials():
-    k = os.getenv("LNM_API_KEY") or os.getenv("API_KEY") or ""
-    s = os.getenv("LNM_API_SECRET") or os.getenv("API_SECRET") or ""
-    p = os.getenv("LNM_PASSPHRASE") or os.getenv("API_PASSPHRASE") or ""
-    if k and s and p and "TU_API" not in k:
+def load_saved_credentials(env_mode="mainnet"):
+    is_test = str(env_mode).lower() == "testnet"
+    if is_test:
+        key_names = ("LNM_TESTNET_API_KEY", "TESTNET_API_KEY")
+        sec_names = ("LNM_TESTNET_API_SECRET", "TESTNET_API_SECRET")
+        pas_names = ("LNM_TESTNET_PASSPHRASE", "TESTNET_PASSPHRASE")
+    else:
+        key_names = ("LNM_API_KEY", "API_KEY")
+        sec_names = ("LNM_API_SECRET", "API_SECRET")
+        pas_names = ("LNM_PASSPHRASE", "API_PASSPHRASE")
+
+    k = next((os.getenv(x) for x in key_names if os.getenv(x)), "")
+    s = next((os.getenv(x) for x in sec_names if os.getenv(x)), "")
+    p = next((os.getenv(x) for x in pas_names if os.getenv(x)), "")
+    if k and s and p and "TU_" not in k:
         return k.strip(), s.strip(), p.strip()
 
-    # Exclusivamente archivos de entorno protegidos (.env / ~/.env / ~/.bashrc)
     search_files = [
         ".env",
         os.path.expanduser("~/.env"),
         os.path.expanduser("~/.bashrc"),
     ]
+    k_pat = "|".join(key_names)
+    s_pat = "|".join(sec_names)
+    p_pat = "|".join(pas_names)
 
     for filepath in search_files:
         if os.path.exists(filepath):
             try:
                 with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
-                if not k or "TU_API" in k:
-                    m_k = re.search(r'(?:LNM_API_KEY|API_KEY)\s*[=:]\s*["\']?([^"\'\s#]+)["\']?', content)
-                    if m_k and "TU_API" not in m_k.group(1):
+                if not k or "TU_" in k:
+                    m_k = re.search(rf'(?:{k_pat})\s*[=:]\s*["\']?([^"\'\s#]+)["\']?', content)
+                    if m_k and "TU_" not in m_k.group(1):
                         k = m_k.group(1)
-                if not s or "TU_API" in s:
-                    m_s = re.search(r'(?:LNM_API_SECRET|API_SECRET)\s*[=:]\s*["\']?([^"\'\s#]+)["\']?', content)
-                    if m_s and "TU_API" not in m_s.group(1):
+                if not s or "TU_" in s:
+                    m_s = re.search(rf'(?:{s_pat})\s*[=:]\s*["\']?([^"\'\s#]+)["\']?', content)
+                    if m_s and "TU_" not in m_s.group(1):
                         s = m_s.group(1)
-                if not p or "TU_PASSPHRASE" in p:
-                    m_p = re.search(r'(?:LNM_PASSPHRASE|API_PASSPHRASE)\s*[=:]\s*["\']?([^"\'\s#]+)["\']?', content)
-                    if m_p and "TU_PASSPHRASE" not in m_p.group(1):
+                if not p or "TU_" in p:
+                    m_p = re.search(rf'(?:{p_pat})\s*[=:]\s*["\']?([^"\'\s#]+)["\']?', content)
+                    if m_p and "TU_" not in m_p.group(1):
                         p = m_p.group(1)
             except Exception:
                 continue
@@ -146,7 +198,7 @@ def load_saved_credentials():
 
 
 # =====================================================================
-# 3. MONITOR DE SALUD DE API Y CIRCUIT BREAKER DE RED
+# 3. MONITOR DE SALUD DE API Y CIRCUIT BREAKER ÁGIL
 # =====================================================================
 class APIHealthMonitor:
     def __init__(self):
@@ -180,32 +232,74 @@ class APIHealthMonitor:
             print(f"[ERROR {category}] (consec:{self.consecutive_errors} | total:{self.total_errors}) {msg}")
 
         if self.consecutive_errors >= Config.API_CB_ERROR_THRESHOLD:
-            exponent = min(3, self.consecutive_errors - Config.API_CB_ERROR_THRESHOLD)
-            pause_sec = min(Config.API_CB_MAX_COOLDOWN_SEC, int(25 * (1.7 ** exponent)))
+            exponent = min(4, self.consecutive_errors - Config.API_CB_ERROR_THRESHOLD)
+            pause_sec = min(Config.API_CB_MAX_COOLDOWN_SEC, int(12 * (1.85 ** exponent)))
             self.cooldown_until = now + pause_sec
-            print(f"[API CIRCUIT BREAKER] {self.consecutive_errors} errores seguidos → Pausa de {pause_sec}s.")
+            print(f"[API CIRCUIT BREAKER] {self.consecutive_errors} errores seguidos → Pausa defensiva de {pause_sec}s.")
 
     def check_cooldown(self):
         remaining = self.cooldown_until - time.time()
         if remaining > 0:
-            time.sleep(min(remaining, 10.0))
+            time.sleep(min(remaining, 5.0))
             return True
         return False
 
 
 # =====================================================================
-# 4. GESTOR DE CACHÉ MULTI-TEMPORALIDAD CON CACHÉ DE INDICADORES
+# 4. GESTOR DE CACHÉ MTF COMPARTIDA EN DISCO + RAM + FALLBACK
 # =====================================================================
 class MultiTimeframeCache:
     def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({"Connection": "keep-alive", "User-Agent": "LNMSniper/7.3-Unified"})
+        self.session = ResilientLNMClient.build_session("LNMSniper/7.3-MTFCache")
+        self.disk_path = Config.SHARED_MTF_DISK_CACHE
         self.cache = {
             "5m":  {"last": 0.0, "ttl": Config.TTL_5M,  "period": 300,   "data": None, "ind_cache": None, "ind_price": 0.0},
             "15m": {"last": 0.0, "ttl": Config.TTL_15M, "period": 900,   "data": None, "ind_cache": None, "ind_price": 0.0},
             "1h":  {"last": 0.0, "ttl": Config.TTL_1H,  "period": 3600,  "data": None, "ind_cache": None, "ind_price": 0.0},
             "4h":  {"last": 0.0, "ttl": Config.TTL_4H,  "period": 14400, "data": None, "ind_cache": None, "ind_price": 0.0},
         }
+        self._load_shared_disk_cache()
+
+    def _load_shared_disk_cache(self):
+        if not os.path.exists(self.disk_path):
+            return
+        try:
+            with FileLockContext(self.disk_path, exclusive=False, timeout=1.5):
+                with open(self.disk_path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+            now = time.time()
+            for tf, entry in raw.items():
+                if tf in self.cache and isinstance(entry, dict):
+                    ts = float(entry.get("last", 0.0))
+                    if (now - ts) <= 900.0 and "h" in entry and "l" in entry and "c" in entry:
+                        self.cache[tf]["data"] = (
+                            np.array(entry["h"], dtype=np.float64),
+                            np.array(entry["l"], dtype=np.float64),
+                            np.array(entry["c"], dtype=np.float64),
+                        )
+                        self.cache[tf]["last"] = ts
+        except Exception:
+            pass
+
+    def _save_shared_disk_cache(self):
+        try:
+            payload = {}
+            for tf, item in self.cache.items():
+                if item["data"] is not None:
+                    h, l, c = item["data"]
+                    payload[tf] = {
+                        "last": item["last"],
+                        "h": h.tolist(),
+                        "l": l.tolist(),
+                        "c": c.tolist(),
+                    }
+            with FileLockContext(self.disk_path, exclusive=True, timeout=1.5):
+                tmp_p = f"{self.disk_path}.tmp.{os.getpid()}"
+                with open(tmp_p, "w", encoding="utf-8") as f:
+                    json.dump(payload, f)
+                os.replace(tmp_p, self.disk_path)
+        except Exception:
+            pass
 
     def invalidate(self, tf):
         if tf in self.cache:
@@ -218,16 +312,28 @@ class MultiTimeframeCache:
         crossed_boundary = (int(now) // item["period"]) != (int(item["last"]) // item["period"])
 
         if item["data"] is None or (now - item["last"]) >= item["ttl"] or crossed_boundary:
-            try:
-                h, l, c = self._fetch_remote(tf)
-                item["data"] = (h, l, c)
-                item["last"] = now
-                item["ind_cache"] = None
-            except Exception as e:
-                if item["data"] is None:
-                    raise RuntimeError(f"Fallo crítico obteniendo velas TF {tf}: {e}")
-                if int(now) % 60 < 15:
-                    print(f"[CACHE TF {tf}] Usando respaldo en memoria por fallo de red: {e}")
+            # Verificar primero si el otro bot (Mainnet/Testnet) ya actualizó la caché en disco
+            self._load_shared_disk_cache()
+            crossed_after_disk = (int(now) // item["period"]) != (int(item["last"]) // item["period"])
+            if item["data"] is None or (now - item["last"]) >= item["ttl"] or crossed_after_disk:
+                try:
+                    h, l, c = self._fetch_remote(tf)
+                    item["data"] = (h, l, c)
+                    item["last"] = now
+                    item["ind_cache"] = None
+                    self._save_shared_disk_cache()
+                except Exception as e:
+                    if item["data"] is None:
+                        # Última instancia: sintetizar serie plana sobre el precio de LN Markets para no tumbar el bot
+                        if current_lnm_price > 0:
+                            p = float(current_lnm_price)
+                            synth_c = np.full(Config.CANDLE_LIMIT, p, dtype=np.float64)
+                            synth_h = synth_c * 1.0012
+                            synth_l = synth_c * 0.9988
+                            item["data"] = (synth_h, synth_l, synth_c)
+                            item["last"] = now - (item["ttl"] * 0.8)
+                        else:
+                            raise RuntimeError(f"Fallo crítico obteniendo velas TF {tf}: {e}")
 
         h_arr, l_arr, c_arr = item["data"]
         if tf in ("5m", "15m") and current_lnm_price > 0:
@@ -258,7 +364,7 @@ class MultiTimeframeCache:
         interval = map_binance.get(tf, "5m")
         try:
             url = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={interval}&limit={limit}"
-            r = self.session.get(url, timeout=4.5)
+            r = self.session.get(url, timeout=(2.0, 3.2))
             r.raise_for_status()
             data = r.json()
             if len(data) < 50:
@@ -272,7 +378,7 @@ class MultiTimeframeCache:
             map_bybit = {"5m": "5", "15m": "15", "1h": "60", "4h": "240"}
             by_interval = map_bybit.get(tf, "5")
             url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval={by_interval}&limit={limit}"
-            r = self.session.get(url, timeout=4.5)
+            r = self.session.get(url, timeout=(2.0, 3.5))
             r.raise_for_status()
             rows = list(reversed(r.json()["result"]["list"]))
             if len(rows) < 50:
@@ -380,18 +486,19 @@ def compute_indicators(highs, lows, closes, lnm_price=0.0):
 
 
 # =====================================================================
-# 6. CEREBRO AUTÓNOMO Q-LEARNING CON POLÍTICA ECONÓMICA DE SATS NETOS
+# 6. CEREBRO AUTÓNOMO Q-LEARNING CON MÉTRICAS POR ESTILO Y MODO EXPLORER
 # =====================================================================
 class AutonomousGoalBrain:
-    def __init__(self, filename=Config.BRAIN_FILE):
-        self.filename = filename
+    def __init__(self, filename=None, explorer_mode=None):
+        self.filename = filename or Config.BRAIN_FILE
+        self.explorer_mode = Config.EXPLORER_MODE if explorer_mode is None else bool(explorer_mode)
         self.alpha = 0.22
         self.alpha_intermediate = Config.ALPHA_INTERMEDIATE
         self.alpha_macro = 0.18
         self.gamma = 0.90
-        self.epsilon = 0.40
-        self.epsilon_min = 0.008
-        self.epsilon_decay = 0.995
+        self.epsilon = 0.22 if self.explorer_mode else 0.40
+        self.epsilon_min = 0.12 if self.explorer_mode else 0.008
+        self.epsilon_decay = 0.998 if self.explorer_mode else 0.995
         self.batch_size = 18
 
         self.total_trained = 0
@@ -410,6 +517,13 @@ class AutonomousGoalBrain:
 
         self.q_table_1h = {}
         self.q_table_4h = {}
+
+        self.style_metrics = {
+            "TREND":     {"trades": 0, "wins": 0, "net_pnl_sats": 0, "fees_sats": 0},
+            "REVERSION": {"trades": 0, "wins": 0, "net_pnl_sats": 0, "fees_sats": 0},
+            "SNIPER":    {"trades": 0, "wins": 0, "net_pnl_sats": 0, "fees_sats": 0},
+            "DEF_SCALP": {"trades": 0, "wins": 0, "net_pnl_sats": 0, "fees_sats": 0},
+        }
 
         self.macro_strategies = {
             0: {"name": "RANGE_HARVEST",  "long_bias": 0.000, "short_bias": 0.000, "rev_bias": 0.018, "rr_m": 0.90, "risk_m": 0.92},
@@ -465,7 +579,7 @@ class AutonomousGoalBrain:
 
     @staticmethod
     def _init_q_vector(state_key):
-        q = [0.01] * Config.NUM_ACTIONS
+        q = [0.015] * Config.NUM_ACTIONS
         parts = state_key.split("|")
         regime = parts[0] if len(parts) > 0 else "RANGE_NORMAL"
         osc = parts[1] if len(parts) > 1 else "MID"
@@ -506,10 +620,10 @@ class AutonomousGoalBrain:
 
     def _migrate_q_vector(self, vec):
         if not isinstance(vec, list):
-            return [0.01] * Config.NUM_ACTIONS
+            return [0.015] * Config.NUM_ACTIONS
         if len(vec) == Config.NUM_ACTIONS:
             return [float(x) for x in vec]
-        new_vec = [0.01] * Config.NUM_ACTIONS
+        new_vec = [0.015] * Config.NUM_ACTIONS
         for i in range(min(len(vec), Config.NUM_ACTIONS)):
             new_vec[i] = float(vec[i])
         return new_vec
@@ -527,7 +641,6 @@ class AutonomousGoalBrain:
         return "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS"
 
     def load_brain(self):
-        # Integración real con AtomicBrainStore.load() y validación SHA-256 + fallback a .bak
         data = None
         if hasattr(self.store, "load"):
             try:
@@ -535,21 +648,11 @@ class AutonomousGoalBrain:
             except Exception as e:
                 print(f"[AVISO STORE LOAD] {e}")
 
-        if data is None:
-            for path in (self.filename, f"{self.filename}.bak"):
-                if os.path.exists(path):
-                    try:
-                        with open(path, "r", encoding="utf-8") as f:
-                            data = json.load(f)
-                        break
-                    except Exception as e:
-                        print(f"[AVISO I/O] Error leyendo {path}: {e}")
-
         if not isinstance(data, dict):
             return
 
         try:
-            raw_q = data.get("q_table", data if isinstance(data, dict) else {})
+            raw_q = data.get("q_table", {})
             raw_visits = data.get("state_visits", {})
 
             accum_q, accum_counts, new_visits = {}, {}, {}
@@ -573,24 +676,17 @@ class AutonomousGoalBrain:
                 for k in accum_q
             }
             for k in self.q_table:
-                self.q_table[k][0] = max(0.0, min(0.025, self.q_table[k][0]))
-                if "RANGE_SQUEEZE" in k and "BEAR_RALLY" in k:
-                    if self.q_table[k][2] > 0.02:
-                        t2 = self.q_table[k][2] * 0.45
-                        self.q_table[k][2] = round(self.q_table[k][2] - t2, 4)
-                        self.q_table[k][1] = round(min(0.85, self.q_table[k][1] + t2 * 0.30), 4)
-                        self.q_table[k][3] = round(min(0.85, self.q_table[k][3] + t2 * 0.35), 4)
-                        self.q_table[k][4] = round(min(0.85, self.q_table[k][4] + t2 * 0.35), 4)
-                    if self.q_table[k][6] > 0.02:
-                        t6 = self.q_table[k][6] * 0.45
-                        self.q_table[k][6] = round(self.q_table[k][6] - t6, 4)
-                        self.q_table[k][5] = round(min(0.85, self.q_table[k][5] + t6 * 0.30), 4)
-                        self.q_table[k][7] = round(min(0.85, self.q_table[k][7] + t6 * 0.35), 4)
-                        self.q_table[k][8] = round(min(0.85, self.q_table[k][8] + t6 * 0.35), 4)
+                self.q_table[k][0] = max(0.005, min(0.025, self.q_table[k][0]))
 
             self.state_visits = new_visits
             self.q_table_1h = data.get("q_table_1h", {})
             self.q_table_4h = data.get("q_table_4h", {})
+
+            saved_styles = data.get("style_metrics", {})
+            if isinstance(saved_styles, dict):
+                for st_k, st_v in saved_styles.items():
+                    if st_k in self.style_metrics and isinstance(st_v, dict):
+                        self.style_metrics[st_k].update(st_v)
 
             saved_cycles = data.get("cycle_state", {})
             for tf in ("1h", "4h"):
@@ -599,7 +695,8 @@ class AutonomousGoalBrain:
                         if k in saved_cycles[tf]:
                             self.cycle_state[tf][k] = saved_cycles[tf][k]
 
-            self.epsilon = float(data.get("epsilon", self.epsilon))
+            loaded_eps = float(data.get("epsilon", self.epsilon))
+            self.epsilon = max(self.epsilon_min, loaded_eps)
             self.total_trained = int(data.get("total_trained", 0))
             self.total_intermediate_updates = int(data.get("total_intermediate_updates", 0))
             self.current_target = int(data.get("current_target", Config.INITIAL_TARGET_SATS))
@@ -621,9 +718,8 @@ class AutonomousGoalBrain:
                         self._normalize_state_key(ns),
                     ))
             print(
-                f"[CEREBRO CARGADO SHA-256] Estados: {len(self.q_table)} | "
-                f"1h:{len(self.q_table_1h)} | 4h:{len(self.q_table_4h)} | "
-                f"Cierres: {self.total_trained} | Online: {self.total_intermediate_updates}"
+                f"[CEREBRO CARGADO SHA-256 ({Config.ENV_MODE.upper()})] Archivo: {self.filename} | "
+                f"Estados: {len(self.q_table)} | Cierres: {self.total_trained} | Online: {self.total_intermediate_updates}"
             )
         except Exception as e:
             print(f"[AVISO PROCESAMIENTO CEREBRO] {e}")
@@ -638,6 +734,7 @@ class AutonomousGoalBrain:
             return
         try:
             payload = {
+                "env": Config.ENV_MODE,
                 "epsilon": round(self.epsilon, 4),
                 "total_trained": self.total_trained,
                 "total_intermediate_updates": self.total_intermediate_updates,
@@ -647,6 +744,7 @@ class AutonomousGoalBrain:
                 "peak_equity": self.peak_equity,
                 "realized_net_profit_sats": self.realized_net_profit_sats,
                 "total_fees_paid_sats": self.total_fees_paid_sats,
+                "style_metrics": self.style_metrics,
                 "q_table": self.q_table,
                 "q_table_1h": self.q_table_1h,
                 "q_table_4h": self.q_table_4h,
@@ -659,14 +757,9 @@ class AutonomousGoalBrain:
             self.dirty = False
             self.last_save_time = now
         except Exception as e:
-            print(f"[ERROR I/O] Fallo al guardar cerebro: {e}")
+            print(f"[ERROR I/O] Fallo al guardar cerebro ({self.filename}): {e}")
 
     def check_and_advance_goal(self, available_balance):
-        """
-        CORRECCIÓN CRÍTICA P0.1:
-        La meta avanza EXCLUSIVAMENTE cuando el balance disponible real (sats retirables)
-        alcanza o supera target_balance_sats (self.current_target).
-        """
         advanced = False
         available_balance = int(available_balance)
         while available_balance >= self.current_target:
@@ -731,12 +824,22 @@ class AutonomousGoalBrain:
         perf = "WIN" if cycle_roi_pct > 0.004 else ("LOSS" if cycle_roi_pct < -0.008 else "FLAT")
         return f"{reg}|{osc}|{ema_st}|{perf}"
 
-    def record_trade_in_cycles(self, net_pl_sats):
+    def record_trade_in_cycles(self, net_pl_sats, action=0, fee_sats=0):
         for tf in ("1h", "4h"):
             self.cycle_state[tf]["trades"] = int(self.cycle_state[tf].get("trades", 0)) + 1
             if net_pl_sats > 0:
                 self.cycle_state[tf]["wins"] = int(self.cycle_state[tf].get("wins", 0)) + 1
             self.cycle_state[tf]["pnl"] = int(self.cycle_state[tf].get("pnl", 0)) + int(net_pl_sats)
+
+        if int(action) in self.strategies:
+            st_name = self.strategies[int(action)]["style"]
+            if st_name in self.style_metrics:
+                m = self.style_metrics[st_name]
+                m["trades"] = int(m.get("trades", 0)) + 1
+                if net_pl_sats > 0:
+                    m["wins"] = int(m.get("wins", 0)) + 1
+                m["net_pnl_sats"] = int(m.get("net_pnl_sats", 0)) + int(net_pl_sats)
+                m["fees_sats"] = int(m.get("fees_sats", 0)) + int(fee_sats)
         self.dirty = True
 
     def get_parallel_modifiers(self, ind_5m=None, ind_15m=None, ind_1h=None, ind_4h=None):
@@ -797,7 +900,6 @@ class AutonomousGoalBrain:
         prev_action = int(c_info.get("action", 0)) % Config.NUM_MACRO_ACTIONS
 
         eq_delta = equity - start_eq
-        # Ponderar principalmente el PnL neto realizado y secundariamente el cambio de equity
         effective_delta = realized_pnl if trades_cnt > 0 else eq_delta
         cycle_roi_pct = effective_delta / start_eq
         btc_move_pct = (current_price - start_price) / start_price
@@ -846,7 +948,7 @@ class AutonomousGoalBrain:
 
         mods = self.get_parallel_modifiers()
         print("--------------------------------------------------------------------")
-        print(f"[CIERRE VELA {tf.upper()} & CONSOLIDACIÓN MACRO] Estado: {next_macro_state}")
+        print(f"[CIERRE VELA {tf.upper()} & CONSOLIDACIÓN MACRO ({Config.ENV_MODE.upper()})] Estado: {next_macro_state}")
         print(f"  → Mercado {tf.upper()}: ΔBTC {btc_move_pct*100:+.2f}% | RSI:{ind_tf['rsi']:.1f} | EMA50/200:{ind_tf['ema_state']}")
         print(f"  → Performance Ciclo: PnL Neto Realizado:{realized_pnl:+,} sats | ΔEq:{eq_delta:+,} sats | Cierres:{trades_cnt} (WR:{winrate_pct:.0f}%) | Activos:{len(running_trades)}")
         print(f"  → Estrategia Macro {tf.upper()}: {prev_strat_name} (R:{macro_reward:+.3f}) ➔ {new_strat_name}")
@@ -862,38 +964,40 @@ class AutonomousGoalBrain:
         return self.q_table[norm_s]
 
     def choose_action(self, state, ind_5m, ind_15m, ind_1h, ind_4h, recovery_mode=False, current_dd_pct=0.0):
-        """
-        CORRECCIÓN CRÍTICA P0.2:
-        NO_TRADE (acción 0) es ciudadano de primera clase en allowed_actions y compite
-        directamente en la selección greedy: a* = argmax_{a in {0..8}} biased_q(s, a).
-        """
         norm_s = self._normalize_state_key(state)
         q_vals = self.get_state_q_values(norm_s)
         self.state_visits[norm_s] = self.state_visits.get(norm_s, 0) + 1
         visits = self.state_visits[norm_s]
         self.dirty = True
 
-        if recovery_mode and current_dd_pct >= 0.12:
+        if recovery_mode and current_dd_pct >= 0.12 and not self.explorer_mode:
             allowed_actions = [0, 2, 3, 4, 6, 7, 8]
         else:
             allowed_actions = [0, 1, 2, 3, 4, 5, 6, 7, 8]
 
-        if recovery_mode:
-            self.alpha = 0.28
-            effective_eps = max(0.04, self.epsilon)
+        if self.explorer_mode:
+            self.alpha = 0.24
+            self.epsilon = max(self.epsilon_min, round(self.epsilon * self.epsilon_decay, 4))
+            if random.uniform(0, 1) < self.epsilon:
+                active_candidates = [a for a in allowed_actions if a != 0]
+                return int(random.choice(active_candidates))
         else:
-            self.alpha = 0.18
-            self.epsilon = max(0.008, round(self.epsilon * 0.995, 4))
-            effective_eps = max(0.07, self.epsilon) if visits < 30 else (0.0 if "CHOP" in norm_s else min(0.035, self.epsilon))
+            if recovery_mode:
+                self.alpha = 0.28
+                effective_eps = max(0.04, self.epsilon)
+            else:
+                self.alpha = 0.18
+                self.epsilon = max(self.epsilon_min, round(self.epsilon * self.epsilon_decay, 4))
+                effective_eps = max(0.06, self.epsilon) if visits < 25 else (0.0 if "CHOP" in norm_s else min(0.030, self.epsilon))
 
-        if effective_eps > 0.0 and random.uniform(0, 1) < effective_eps:
-            if visits < 30 and not recovery_mode:
-                non_rev = [a for a in allowed_actions if a not in (0, 2, 6)]
-                return int(random.choice(non_rev if non_rev else allowed_actions))
-            return 0
+            if effective_eps > 0.0 and random.uniform(0, 1) < effective_eps:
+                if visits < 25 and not recovery_mode:
+                    non_rev = [a for a in allowed_actions if a not in (0, 2, 6)]
+                    return int(random.choice(non_rev if non_rev else allowed_actions))
+                return 0
 
         mods = self.get_parallel_modifiers(ind_5m, ind_15m, ind_1h, ind_4h)
-        lcb_penalty = (0.12 / float(np.sqrt(visits + 1.0))) if visits < 80 else 0.0
+        lcb_penalty = (0.12 / float(np.sqrt(visits + 1.0))) if (visits < 80 and not self.explorer_mode) else 0.0
 
         def biased_q(a):
             if a == 0:
@@ -922,7 +1026,6 @@ class AutonomousGoalBrain:
         a = int(a) % Config.NUM_ACTIONS
         lr = custom_alpha if custom_alpha is not None else self.alpha
         current_q = float(self.q_table[norm_s][a])
-        # Incluir acción 0 (NO_TRADE) en la evaluación del valor futuro máximo
         max_future_q = max(self.q_table[norm_ns])
         new_q = float(np.clip(current_q + lr * (r + self.gamma * max_future_q - current_q), -0.95, 0.95))
         self._last_delta_q = abs(new_q - current_q)
@@ -959,13 +1062,8 @@ class AutonomousGoalBrain:
 
     def remember_intermediate(
         self, origin_state, action, current_state, side,
-        delta_atr, guardian_mode, sl_locked_confirmed, eval_count
+        delta_atr, guardian_mode, sl_locked_confirmed, eval_count, edge_score=0.0
     ):
-        """
-        Canal de Aprendizaje Táctico (Posiciones Abiertas):
-        Limitado a micro-ajustes tácticos y exige que sl_locked esté confirmado por el servidor.
-        No sustituye ni domina al canal de aprendizaje económico realizado.
-        """
         if abs(delta_atr) < Config.MIN_INTERMEDIATE_DELTA_ATR and not (sl_locked_confirmed and eval_count <= 2):
             return 0.0
 
@@ -986,6 +1084,8 @@ class AutonomousGoalBrain:
         guardian_score = 0.025 if (sl_locked_confirmed and "RUNNER" in guardian_mode) else (0.018 if sl_locked_confirmed else -0.005)
         decay = Config.INTERMEDIATE_DECAY_PER_EVAL ** min(eval_count, 10)
         raw_shaping = (delta_score + ema_bonus + guardian_score) * decay
+        if float(edge_score) <= -0.45:
+            raw_shaping = (-abs(raw_shaping) * 1.8) if raw_shaping < 0 else (raw_shaping * 1.8)
 
         shaped_partial = float(np.clip(raw_shaping, -Config.MAX_INTERMEDIATE_REWARD_CLIP, Config.MAX_INTERMEDIATE_REWARD_CLIP))
         self._update_q(origin_state, action, shaped_partial, current_state, custom_alpha=self.alpha_intermediate)
@@ -1000,22 +1100,16 @@ class AutonomousGoalBrain:
         recovery_mode=False, exited_recovery_bonus=False, lev_used=35.0,
         exact_fee_sats=0, pl_includes_fees=False
     ):
-        """
-        Canal de Aprendizaje Económico Definitivo (Operaciones Cerradas):
-        Calcula la recompensa sobre el beneficio neto real acreditado en el balance disponible,
-        evitando doble deducción de comisiones.
-        """
         norm_s = self._normalize_state_key(state)
         norm_ns = self._normalize_state_key(next_state)
 
         if is_no_trade:
             self.q_table.setdefault(norm_s, self._init_q_vector(norm_s))
-            self.q_table[norm_s][0] = max(0.005, min(0.020, round(self.q_table[norm_s][0] * 0.96, 4)))
+            self.q_table[norm_s][0] = max(0.005, min(0.022, round(self.q_table[norm_s][0] * 0.96, 4)))
             return
 
         fee_sats = int(exact_fee_sats) if exact_fee_sats > 0 else max(2, int(round(float(margin_used) * float(lev_used) * (2.0 * Config.TAKER_FEE))))
 
-        # Determinar el cambio neto real en satoshis sin descontar comisiones dos veces
         if real_balance_delta_sats is not None:
             net_balance_delta = int(real_balance_delta_sats)
         elif pl_includes_fees:
@@ -1025,7 +1119,7 @@ class AutonomousGoalBrain:
 
         self.realized_net_profit_sats += net_balance_delta
         self.total_fees_paid_sats += fee_sats
-        self.record_trade_in_cycles(net_balance_delta)
+        self.record_trade_in_cycles(net_balance_delta, action=action, fee_sats=fee_sats)
 
         ref_balance = int(available_balance_after if available_balance_after is not None else equity_after)
         net_balance_roi = net_balance_delta / max(float(margin_used), 1.0)
@@ -1059,7 +1153,7 @@ class AutonomousGoalBrain:
         self.dirty = True
 
         self._experience_replay(self.batch_size, custom_alpha=self.alpha * 0.85)
-        if recovery_mode:
+        if recovery_mode and not self.explorer_mode:
             self.epsilon = max(0.04, round(self.epsilon, 4))
         else:
             self.epsilon = max(self.epsilon_min, round(self.epsilon * self.epsilon_decay, 4))
@@ -1067,7 +1161,7 @@ class AutonomousGoalBrain:
 
 
 # =====================================================================
-# 7. CLIENTE HTTP IDEMPOTENTE LN MARKETS CON CACHÉ DE CUENTA
+# 7. CLIENTE HTTP IDEMPOTENTE CON BAJA LATENCIA Y POOL PERSISTENTE
 # =====================================================================
 def _clean_numbers(obj):
     if isinstance(obj, dict):
@@ -1080,22 +1174,25 @@ def _clean_numbers(obj):
 
 
 class LNMarketsClient:
-    def __init__(self, key, secret, passphrase):
+    def __init__(self, key, secret, passphrase, base_url=None):
         self.key = key
         self.secret = secret
         self.passphrase = passphrase
-        self.session = requests.Session()
-        self.session.headers.update({"Connection": "keep-alive", "User-Agent": "LNMSniper/7.3-Unified"})
+        self.base_url = base_url or Config.BASE_URL
+        self.session = ResilientLNMClient.build_session(f"LNMSniper/7.3-{Config.ENV_MODE}")
         self._user_cache = None
         self._user_cache_ts = 0.0
+        self._last_ticker_price = 0.0
 
-    def _request(self, method, path, params=None, max_retries=3):
+    def _request(self, method, path, params=None, max_retries=2):
         method_up = method.upper()
         clean_p = _clean_numbers(params) if params else None
+        req_timeout = (2.5, 4.5) if method_up == "GET" else (3.5, 7.5)
+
         for attempt in range(max_retries):
             try:
                 ts = str(int(time.time() * 1000))
-                data_str, url = "", f"{Config.BASE_URL}{path}"
+                data_str, url = "", f"{self.base_url}{path}"
                 if clean_p:
                     if method_up in ("GET", "DELETE"):
                         url += f"?{urllib.parse.urlencode(clean_p)}"
@@ -1118,10 +1215,10 @@ class LNMarketsClient:
                     url,
                     headers=headers,
                     data=data_str if method_up in ("POST", "PUT") and data_str else None,
-                    timeout=(5.0, 12.0),
+                    timeout=req_timeout,
                 )
-                if resp.status_code in (429, 500, 502, 503, 504) and max_retries > 1:
-                    time.sleep((1.5 ** attempt) + random.uniform(0.2, 0.5))
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                    time.sleep(ResilientLNMClient.compute_backoff(attempt))
                     continue
                 if not resp.ok:
                     raise RuntimeError(f"HTTP {resp.status_code} ({path}): {resp.text[:140]}")
@@ -1129,24 +1226,32 @@ class LNMarketsClient:
             except Exception as e:
                 if attempt == max_retries - 1:
                     raise RuntimeError(f"Fallo en {path}: {e}")
-                time.sleep((1.5 ** attempt) + 0.25)
+                time.sleep(ResilientLNMClient.compute_backoff(attempt))
 
     def get_ticker_price(self):
-        t = self._request("GET", "/futures/ticker")
-        return float(t.get("lastPrice") or t.get("index") or 0.0) if isinstance(t, dict) else 0.0
+        try:
+            t = self._request("GET", "/futures/ticker", max_retries=2)
+            p = float(t.get("lastPrice") or t.get("index") or 0.0) if isinstance(t, dict) else 0.0
+            if p > 0:
+                self._last_ticker_price = p
+            return p
+        except Exception:
+            if self._last_ticker_price > 0:
+                return self._last_ticker_price
+            raise
 
     def get_user(self, force_refresh=False):
         now = time.time()
         if not force_refresh and self._user_cache is not None and (now - self._user_cache_ts) < Config.USER_SYNC_TTL_SEC:
             return self._user_cache
-        u = self._request("GET", "/account")
+        u = self._request("GET", "/account", max_retries=2)
         if isinstance(u, dict):
             self._user_cache = u
             self._user_cache_ts = now
         return u
 
     def get_running_trades(self):
-        r = self._request("GET", "/futures/isolated/trades/running")
+        r = self._request("GET", "/futures/isolated/trades/running", max_retries=2)
         rows = r.get("data", []) if isinstance(r, dict) else r
         if not isinstance(rows, list):
             return []
@@ -1157,7 +1262,7 @@ class LNMarketsClient:
         return list(unique.values())
 
     def get_closed_trades(self, limit=25):
-        r = self._request("GET", "/futures/isolated/trades/closed")
+        r = self._request("GET", "/futures/isolated/trades/closed", max_retries=2)
         rows = r.get("data", []) if isinstance(r, dict) else r
         if not isinstance(rows, list):
             return []
@@ -1289,11 +1394,6 @@ def calculate_strategy_order_params(strategy, price, atr, rr_mult=1.0):
 
 
 def confirm_and_close_trade(client, brain, tid, trade_meta, reason_label):
-    """
-    CORRECCIÓN P0.5:
-    Envía orden de cierre, evita duplicados concurrentes y verifica la confirmación
-    de cierre antes de marcar ai_closed=True.
-    """
     if trade_meta.get("close_order_sent") and (time.time() - float(trade_meta.get("close_sent_ts", 0))) < 15.0:
         return False
     trade_meta["close_order_sent"] = True
@@ -1317,14 +1417,9 @@ def confirm_and_close_trade(client, brain, tid, trade_meta, reason_label):
 
 
 def confirm_and_update_stoploss(client, brain, tid, target_sl, side, entry, fee_offset, trade_meta):
-    """
-    CORRECCIÓN P0.5:
-    Verifica explícitamente la respuesta de LN Markets antes de establecer sl_locked=True.
-    """
     resp = client.update_stoploss(tid, target_sl)
     applied_sl = float(resp.get("stoploss") or 0.0) if isinstance(resp, dict) else 0.0
     if applied_sl <= 0.0:
-        # Guardar como pendiente de reconciliación en el siguiente ciclo
         trade_meta["sl_pending_target"] = int(target_sl)
         return False
 
@@ -1360,7 +1455,7 @@ def enforce_concurrency_cap(client, brain, running_trades):
 
 def execute_strategy_guardian(
     client, brain, trade, ind_5m, ind_15m, trade_meta, system_mode,
-    edge_score=0.0, perception=None
+    edge_score=0.0, perception=None, current_dd_pct=0.0
 ):
     try:
         tid = str(trade["id"])
@@ -1394,7 +1489,6 @@ def execute_strategy_guardian(
         trade_meta["prev_loop_pnl_atr"] = round(pnl_atr, 4)
         eval_count = int(trade_meta.get("eval_count", 0))
 
-        # Reconciliar el estado real del Stop Loss reportado por el servidor LN Markets
         sl_locked_server = (
             (side == "buy" and current_sl > (entry + fee_offset * 0.8)) or
             (side == "sell" and current_sl > 0 and current_sl < (entry - fee_offset * 0.8))
@@ -1406,15 +1500,30 @@ def execute_strategy_guardian(
             "last_edge_score": round(float(edge_score), 4),
         })
 
-        # =================================================================
-        # CONTROLADOR DE DEGRADACIÓN DE EDGE (CORRECCIÓN P0.4)
-        # =================================================================
-        if edge_score <= Config.EDGE_DEGRADATION_WARN:
+        if edge_score <= Config.EDGE_DEGRADATION_EXIT:
             trade_meta["edge_deg_streak"] = int(trade_meta.get("edge_deg_streak", 0)) + 1
+        elif edge_score <= Config.EDGE_DEGRADATION_WARN:
+            trade_meta["edge_deg_streak"] = min(int(trade_meta.get("edge_deg_streak", 0)), Config.EDGE_DEGRADATION_PERSISTENCE - 1)
         else:
             trade_meta["edge_deg_streak"] = 0
 
         deg_streak = int(trade_meta["edge_deg_streak"])
+
+        if deg_streak >= Config.EDGE_DEGRADATION_PERSISTENCE and edge_score <= Config.EDGE_DEGRADATION_EXIT:
+            if confirm_and_close_trade(client, brain, tid, trade_meta, "FORCED_EDGE_EXIT"):
+                print(
+                    f"  🛑 [FORCED EDGE EXIT] Cierre forzado en {tid[:6]} tras {deg_streak} ciclos "
+                    f"(Edge:{edge_score:+.3f} <= {Config.EDGE_DEGRADATION_EXIT} | PnL:{pnl_atr:+.2f}ATR | {pl_sats:+,} sats)"
+                )
+                return True
+
+        if system_mode == "RECOVERY" and current_dd_pct >= 0.08 and edge_score < -0.30:
+            if confirm_and_close_trade(client, brain, tid, trade_meta, "RECOVERY_FORCED_REDUCTION"):
+                print(
+                    f"  🛑 [RECOVERY REDUCTION] Cierre forzado en {tid[:6]} por Recovery DD {current_dd_pct*100:.1f}% "
+                    f"(Edge:{edge_score:+.3f} < -0.30 | {pl_sats:+,} sats)"
+                )
+                return True
         vel_ema = float(perception.get("vel_ema_atr", 0.0)) if isinstance(perception, dict) else 0.0
         ovr_side = perception.get("override_side") if isinstance(perception, dict) else None
         st_str = str(trade_meta.get("state", ""))
@@ -1428,16 +1537,14 @@ def execute_strategy_guardian(
         )
 
         if deg_streak >= Config.EDGE_DEGRADATION_PERSISTENCE and contrary_momentum:
-            # Caso A: La posición tiene beneficio neto disponible -> Cosechar para proteger sats
-            if pl_sats > (est_round_fee_sats + 8) and pnl_dist > (fee_offset * 1.10):
+            if pl_sats > (est_round_fee_sats + 12) and pnl_dist > (fee_offset * 1.25):
                 if confirm_and_close_trade(client, brain, tid, trade_meta, "EDGE_DEGRADATION_PROFIT_PROTECT"):
                     print(
                         f"  🛡️ [GUARDIÁN EDGE PROTECT] Cosecha defensiva en {tid[:6]} tras {deg_streak} ciclos "
                         f"de degradación (Edge:{edge_score:+.3f} | +{pl_sats} sats)"
                     )
                     return True
-            # Caso B: La posición está en pérdida con expectativa muy deteriorada y momentum/macro en contra
-            elif (edge_score <= Config.EDGE_DEGRADATION_EXIT and pnl_atr <= -1.05) or (macro_counter and ovr_side is None and edge_score <= -0.52 and pnl_atr <= -0.85):
+            elif (edge_score <= Config.EDGE_DEGRADATION_EXIT and pnl_atr <= -1.00) or (macro_counter and ovr_side is None and edge_score <= -0.48 and pnl_atr <= -0.80):
                 if confirm_and_close_trade(client, brain, tid, trade_meta, "EDGE_DEGRADATION_DEFENSIVE_EXIT"):
                     print(
                         f"  🛑 [GUARDIÁN EDGE CUT] Cierre defensivo en {tid[:6]} (Streak:{deg_streak} | "
@@ -1448,10 +1555,10 @@ def execute_strategy_guardian(
         vol_scale = 1.12 if atr_pct < 0.0025 else (0.88 if atr_pct > 0.0068 else 1.00)
         sys_scale = 0.72 if (system_mode in ("DEFENSIVE", "RECOVERY") and regime == "RANGE_SQUEEZE") else (0.86 if system_mode in ("DEFENSIVE", "RECOVERY") else 1.00)
         if deg_streak >= 2 and edge_score <= Config.EDGE_DEGRADATION_TIGHTEN:
-            sys_scale *= 0.80  # Acelerar cosecha y ceñir trailing stop ante deterioro persistente
+            sys_scale *= 0.80
 
         harvest_target_atr = strat["harvest_atr"] * sys_scale
-        min_profit_ok = pnl_dist > (fee_offset * 1.35) and pl_sats >= max(12, int(margin * 0.030))
+        min_profit_ok = pnl_dist > (fee_offset * 1.45) and pl_sats >= max(16, int(est_round_fee_sats * 1.45), int(margin * 0.032))
 
         if min_profit_ok and pnl_atr >= harvest_target_atr:
             can_check_harvest = not (exit_mode == "RUNNER" and sl_locked_server)
@@ -1486,7 +1593,7 @@ def execute_strategy_guardian(
                         )
                         return True
 
-        min_trig = max(strat["trail_trig_atr"] * atr * vol_scale * sys_scale, fee_offset * 1.30)
+        min_trig = max(strat["trail_trig_atr"] * atr * vol_scale * sys_scale, fee_offset * 1.35)
         slack = strat["trail_slack_atr"] * atr * vol_scale * sys_scale
 
         if (side == "buy" and rsi > 72) or (side == "sell" and rsi < 28) or deg_streak >= 2:
@@ -1553,6 +1660,7 @@ def evaluate_open_trades_online(brain, running, ind_5m, current_state, now):
             guardian_mode=str(meta.get("last_guardian_mode", f"{style_str}_INIT")),
             sl_locked_confirmed=sl_confirmed,
             eval_count=int(meta.get("eval_count", 0)),
+            edge_score=float(meta.get("last_edge_score", 0.0)),
         )
         meta.update({
             "last_eval_time": now,
@@ -1572,11 +1680,6 @@ def compute_situational_order_params(
     mods, brain, action, recovery_mode, current_dd_pct, consecutive_losses,
     combined_rr, perception=None
 ):
-    """
-    CORRECCIÓN P0.6:
-    Garantiza matemáticamente que sl_dist NUNCA supere max_safe_sl_dist reduciendo
-    el apalancamiento dinámico si min_sl_dist requiere más espacio respecto a liquidación.
-    """
     price = float(ind_5m["price"])
     atr = max(float(ind_5m["atr"]), price * 0.0012)
     side = strat.get("side", "buy")
@@ -1590,17 +1693,17 @@ def compute_situational_order_params(
     aligned_override = (is_long and override_side == "BULL") or ((not is_long) and override_side == "BEAR")
 
     if aligned_override:
-        regime_mult = 0.78 if not recovery_mode else 0.55
+        regime_mult = 0.72 if not recovery_mode else 0.52
     elif "RANGE_SQUEEZE" in norm_s and "CHOP" in norm_s:
-        regime_mult = 0.38
+        regime_mult = 0.36
     elif "CHOP" in norm_s:
-        regime_mult = 0.48
+        regime_mult = 0.45
     elif "RANGE_SQUEEZE" in norm_s:
-        regime_mult = 0.58
+        regime_mult = 0.54
     elif "TREND" in norm_s and "LOW_EXP" in norm_s:
-        regime_mult = 0.90
+        regime_mult = 0.88
     else:
-        regime_mult = 0.72
+        regime_mult = 0.68
 
     bull_1h = "BULL" in mods.get("name_1h", "") or float(ind_1h.get("rsi", 50.0)) >= 54.0
     bear_1h = "BEAR" in mods.get("name_1h", "") or float(ind_1h.get("rsi", 50.0)) <= 46.0
@@ -1608,60 +1711,56 @@ def compute_situational_order_params(
     bear_4h = "BEAR" in mods.get("name_4h", "")
 
     if aligned_override:
-        mtf_mult = 1.05
+        mtf_mult = 1.00
     elif (is_long and bull_1h and bull_4h) or (not is_long and bear_1h and bear_4h):
-        mtf_mult = 1.10
+        mtf_mult = 1.08
     elif (is_long and bear_1h) or (not is_long and bull_1h):
-        mtf_mult = 0.52
+        mtf_mult = 0.50
     else:
-        mtf_mult = 0.82
+        mtf_mult = 0.80
 
     if q_val >= 0.08 and visits >= 5:
-        conv_mult = 1.12
+        conv_mult = 1.10
     elif q_val >= 0.03 and visits >= 3:
-        conv_mult = 0.98
+        conv_mult = 0.95
     elif q_val >= 0.0:
-        conv_mult = 0.78
+        conv_mult = 0.75
     else:
-        conv_mult = 0.65
+        conv_mult = 0.45
 
-    dd_mult = max(0.50, 1.0 - (current_dd_pct * 2.0))
-    rec_mult = 0.58 if recovery_mode else 1.0
-    streak_mult = 0.84 ** min(4, max(0, consecutive_losses))
+    dd_mult = max(0.45, 1.0 - (current_dd_pct * 2.2))
+    rec_mult = 0.52 if recovery_mode else 1.0
+    streak_mult = 0.82 ** min(4, max(0, consecutive_losses))
 
     macro_counter_trend = (
         (is_long and ("|BEAR|" in norm_s or "FULL_BEAR" in norm_s or "BEAR_RALLY" in norm_s)) or
         ((not is_long) and ("|BULL|" in norm_s or "FULL_BULL" in norm_s or "BULL_DIP" in norm_s))
     )
     if macro_counter_trend and "RANGE_SQUEEZE" in norm_s:
-        mtf_mult = min(mtf_mult, 0.50)
-    if q_val < 0.0:
-        conv_mult = min(conv_mult, 0.48)
+        mtf_mult = min(mtf_mult, 0.45)
 
     situational_mult = regime_mult * mtf_mult * conv_mult * dd_mult * rec_mult * streak_mult
     dynamic_lev = int(round(float(raw_lev) * situational_mult))
-    dynamic_lev = max(Config.MIN_LEVERAGE, min(85 if not aligned_override else 90, dynamic_lev))
+    dynamic_lev = max(Config.MIN_LEVERAGE, min(75 if not aligned_override else 80, dynamic_lev))
     if "RANGE_SQUEEZE" in norm_s:
-        dynamic_lev = min(28 if macro_counter_trend else 35, dynamic_lev)
+        dynamic_lev = min(25 if macro_counter_trend else 32, dynamic_lev)
     elif macro_counter_trend:
-        dynamic_lev = min(35, dynamic_lev)
+        dynamic_lev = min(32, dynamic_lev)
     if recovery_mode:
-        dynamic_lev = min(25 if "RANGE_SQUEEZE" in norm_s else 35, dynamic_lev)
+        dynamic_lev = min(22 if "RANGE_SQUEEZE" in norm_s else 30, dynamic_lev)
 
-    min_sl_dist = max(atr * 1.18, price * 0.0040)
-    orig_sl_dist = abs(price - float(raw_sl)) if raw_sl else (atr * 1.35)
+    min_sl_dist = max(atr * 1.20, price * 0.0042)
+    orig_sl_dist = abs(price - float(raw_sl)) if raw_sl else (atr * 1.38)
     desired_sl_dist = max(min_sl_dist, orig_sl_dist)
 
-    # Ajustar apalancamiento hacia abajo si desired_sl_dist supera la distancia segura de liquidación (0.68 / lev)
     safe_lev_cap = int(math.floor((price * 0.68) / max(desired_sl_dist, 1.0)))
     dynamic_lev = max(Config.MIN_LEVERAGE, min(dynamic_lev, safe_lev_cap))
     max_safe_sl_dist = price * (0.70 / max(dynamic_lev, Config.MIN_LEVERAGE))
 
-    # Garantía matemática: sl_dist jamás excede max_safe_sl_dist
     sl_dist = min(desired_sl_dist, max_safe_sl_dist)
 
-    min_tp_dist = max(sl_dist * max(1.22, combined_rr), price * 0.0075)
-    orig_tp_dist = abs(float(raw_tp) - price) if raw_tp else (sl_dist * 1.55)
+    min_tp_dist = max(sl_dist * max(1.30, combined_rr), price * 0.0080)
+    orig_tp_dist = abs(float(raw_tp) - price) if raw_tp else (sl_dist * 1.65)
     tp_dist = max(min_tp_dist, orig_tp_dist)
 
     if is_long:
@@ -1678,11 +1777,6 @@ def evaluate_system_mode(
     now, pause_until, ind_5m, daily_pnl_pct, current_dd_pct,
     floor_threat, equity, recovery_anchor_equity
 ):
-    """
-    CORRECCIÓN CRÍTICA P0.6:
-    Conecta efectivamente MAX_DAILY_LOSS_PCT, MAX_DRAWDOWN_PCT, RECOVERY_ENTER_DAILY
-    y RECOVERY_EXIT_DAILY al control de modos del sistema.
-    """
     if (
         ind_5m["atr_pct"] > Config.ATR_EXTREME_PCT
         or floor_threat
@@ -1733,17 +1827,32 @@ def evaluate_system_mode(
     return "NORMAL", True, False, None, False
 
 
+def _parse_cli_env():
+    env_val = os.getenv("SNIPER_ENV", "mainnet")
+    for idx, arg in enumerate(sys.argv):
+        if arg == "--env" and idx + 1 < len(sys.argv):
+            env_val = sys.argv[idx + 1]
+        elif arg.startswith("--env="):
+            env_val = arg.split("=", 1)[1]
+        elif arg == "--testnet":
+            env_val = "testnet"
+    return env_val
+
+
 def main():
+    env_selected = _parse_cli_env()
+    Config.configure_environment(env_selected)
+
     safe_mode = ("--safe-mode" in sys.argv) or (os.getenv("SNIPER_SAFE_MODE", "0") == "1")
     once_mode = ("--once" in sys.argv)
 
-    api_key, api_secret, api_passphrase = load_saved_credentials()
+    api_key, api_secret, api_passphrase = load_saved_credentials(Config.ENV_MODE)
     if not api_key or not api_secret or not api_passphrase:
-        print("[ERROR CRÍTICO] Faltan credenciales de LN Markets en variables de entorno o .env.")
+        print(f"[ERROR CRÍTICO] Faltan credenciales de LN Markets para el entorno '{Config.ENV_MODE}' en variables o .env.")
         return
 
-    brain = AutonomousGoalBrain()
-    client = LNMarketsClient(api_key, api_secret, api_passphrase)
+    brain = AutonomousGoalBrain(filename=Config.BRAIN_FILE, explorer_mode=Config.EXPLORER_MODE)
+    client = LNMarketsClient(api_key, api_secret, api_passphrase, base_url=Config.BASE_URL)
     mtf_cache = MultiTimeframeCache()
     api_health = APIHealthMonitor()
     floor_guardian = HardFloorGuardian(
@@ -1760,8 +1869,9 @@ def main():
     last_known_balance = None
 
     print("====================================================================")
-    print("  LNM SNIPER v7.3 CONSOLIDADO – ARQUITECTURA DE SATS NETOS REALIZADOS")
-    print(f"  Meta Balance Disponible: {brain.current_target:,} sats | Máx Pos: {Config.MAX_CONCURRENT_TRADES}")
+    print(f"  LNM SNIPER v7.3 DUAL [{Config.ENV_MODE.upper()}] – ARQUITECTURA DE SATS NETOS")
+    print(f"  Endpoint: {Config.BASE_URL} | Cerebro: {Config.BRAIN_FILE}")
+    print(f"  Meta Balance: {brain.current_target:,} sats | Máx Pos: {Config.MAX_CONCURRENT_TRADES} | Explorer: {Config.EXPLORER_MODE}")
     if safe_mode:
         print("  🛡️ [MODO SEGURO ACTIVO] Solo reconciliación, Guardian y análisis (sin nuevas órdenes reales).")
     print("====================================================================")
@@ -1801,7 +1911,6 @@ def main():
                 time.sleep(Config.IDLE_ANALYZE_INTERVAL_SEC)
                 continue
 
-            # CORRECCIÓN P0.1: Evaluar avance de meta EXCLUSIVAMENTE con el balance disponible real
             brain.check_and_advance_goal(balance)
             lnm_price = client.get_ticker_price()
 
@@ -1830,7 +1939,6 @@ def main():
                         in_rec = (current_mode == "RECOVERY") or (recovery_anchor_equity is not None)
                         beat_anchor = (recovery_anchor_equity is not None and balance >= int(round(recovery_anchor_equity * 1.03)))
 
-                        # Detección real de TP / SL a partir del objeto cerrado de LN Markets
                         hit_tp_real = bool(ct_obj.get("takeprofit_wi")) or (pl > m_used * 0.16 and not bool(ct_obj.get("stoploss_wi")))
 
                         brain.remember_and_train(
@@ -1843,7 +1951,7 @@ def main():
                         if pl < 0:
                             consecutive_losses += 1
                             risk_multiplier = max(0.55, risk_multiplier * Config.ANTI_MARTINGALE_FACTOR)
-                            if consecutive_losses >= Config.CONSECUTIVE_LOSS_LIMIT:
+                            if consecutive_losses >= Config.CONSECUTIVE_LOSS_LIMIT and not Config.EXPLORER_MODE:
                                 pause_until = now + Config.CONSECUTIVE_LOSS_PAUSE_SEC
                                 consecutive_losses = 0
                         else:
@@ -1879,7 +1987,7 @@ def main():
 
             prev_eq = getattr(brain, "_last_loop_equity", equity)
             prev_cnt = getattr(brain, "_last_loop_count", len(running))
-            if len(running) < prev_cnt and equity < prev_eq - 35:
+            if len(running) < prev_cnt and equity < prev_eq - 35 and not Config.EXPLORER_MODE:
                 consecutive_losses += 1
                 pause_until = max(pause_until, now + min(600, 120 * consecutive_losses))
                 last_entry_time = now
@@ -1892,9 +2000,8 @@ def main():
             daily_pnl_pct = (equity - daily_start_equity) / max(daily_start_equity, 1)
             prot = floor_guardian.evaluate_protection(equity, balance, peak_equity, brain.locked_floor, daily_pnl_pct)
             current_dd_pct = prot["current_dd_pct"]
-            floor_threat = prot["should_liquidate"]
+            floor_threat = prot["should_liquidate"] and not Config.EXPLORER_MODE
 
-            # CORRECCIÓN P0.1: El porcentaje hacia la meta se mide respecto al BALANCE DISPONIBLE real
             goal_pct = (balance / max(brain.current_target, 1)) * 100.0
             sprint_mode = goal_pct >= 88.0
 
@@ -1940,11 +2047,13 @@ def main():
                 now, pause_until, ind_5m, daily_pnl_pct, current_dd_pct,
                 floor_threat, equity, recovery_anchor_equity
             )
+            if Config.EXPLORER_MODE:
+                new_entries_allowed = True
 
             mods = brain.get_parallel_modifiers(ind_5m, ind_15m, ind_1h, ind_4h)
             latency_ms = int(round((time.time() - cycle_t0) * 1000.0))
             print(
-                f"[{datetime.now().strftime('%H:%M:%S')}][{current_mode}][{state}]"
+                f"[{datetime.now().strftime('%H:%M:%S')}][{Config.ENV_MODE[:4].upper()}:{current_mode}][{state}]"
                 f"[1h:{mods['name_1h'][:4]}|4h:{mods['name_4h'][:4]}|OVR:{ovr_tag}] "
                 f"${ind_5m['price']:.1f} | Bal:{balance:,} ({goal_pct:.1f}% Meta) | Eq:{equity:,} | "
                 f"Act:{len(running)}/{Config.MAX_CONCURRENT_TRADES} | DD:{current_dd_pct*100:.1f}% | {latency_ms}ms"
@@ -1957,24 +2066,33 @@ def main():
                     t_meta = brain.active_trades.setdefault(tid, infer_adopted_trade(trade, ind_5m, state, now))
                     closed_by_guardian = execute_strategy_guardian(
                         client, brain, trade, ind_5m, ind_15m, t_meta, current_mode,
-                        edge_score=edge_scores_by_tid.get(tid, 0.0), perception=perception
+                        edge_score=edge_scores_by_tid.get(tid, 0.0), perception=perception,
+                        current_dd_pct=current_dd_pct
                     )
                     if not closed_by_guardian:
                         still_running.append(trade)
                 evaluate_open_trades_online(brain, still_running, ind_5m, state, now)
 
             active_count = max(len(still_running), len(brain.active_trades))
-            capital_max_pos = max(1, min(Config.MAX_CONCURRENT_TRADES, int((equity * 0.60) // 1000)))
-            if recovery_mode:
-                dynamic_max_pos = min(capital_max_pos, 1 if equity < 5000 else 2)
-            elif "CHOP" in state and perception.get("override_side") is None:
-                dynamic_max_pos = min(capital_max_pos, 1 if equity < 4500 else 2)
+            if recovery_mode and current_dd_pct >= 0.08:
+                dynamic_max_pos = 1
+            elif Config.EXPLORER_MODE:
+                dynamic_max_pos = min(Config.MAX_CONCURRENT_TRADES, max(1, int((equity * 0.85) // 1000)))
             else:
-                dynamic_max_pos = capital_max_pos
+                capital_max_pos = max(1, min(Config.MAX_CONCURRENT_TRADES, int((equity * 0.60) // 1000)))
+                floor_headroom_pct = (equity - brain.locked_floor) / max(equity, 1) if brain.locked_floor > 0 else 1.0
+                if floor_headroom_pct <= 0.06:
+                    dynamic_max_pos = 1
+                elif recovery_mode:
+                    dynamic_max_pos = min(capital_max_pos, 1 if (equity < 10000 or current_dd_pct >= 0.08) else 2)
+                elif "CHOP" in state and perception.get("override_side") is None:
+                    dynamic_max_pos = min(capital_max_pos, 1 if equity < 6000 else 2)
+                else:
+                    dynamic_max_pos = capital_max_pos
 
             effective_cooldown = Config.ENTRY_COOLDOWN_SEC * (
-                0.80 if perception.get("override_side") is not None
-                else (1.8 if (recovery_mode or "CHOP" in state) else 1.0)
+                0.75 if Config.EXPLORER_MODE
+                else (0.85 if perception.get("override_side") is not None else (1.8 if (recovery_mode or "CHOP" in state) else 1.0))
             )
             if new_entries_allowed and active_count < dynamic_max_pos:
                 if (locked_margin / max(equity, 1)) < Config.SOFT_EXPOSURE_LIMIT and (now - last_entry_time) >= effective_cooldown:
@@ -1985,7 +2103,8 @@ def main():
                     q_vec = brain.get_state_q_values(state)
                     action, gate_reason = SatsExpectancyGate.filter_and_rank_action(
                         raw_action, state, q_vec, brain.strategies, perception,
-                        recovery_mode=recovery_mode, current_dd_pct=current_dd_pct
+                        recovery_mode=recovery_mode, current_dd_pct=current_dd_pct,
+                        explorer_mode=Config.EXPLORER_MODE
                     )
                     if action == 0 and raw_action > 0:
                         brain.remember_and_train(state, 0, 0, 1000, state, is_no_trade=True)
@@ -2006,16 +2125,13 @@ def main():
                             current_dd_pct, parallel_risk_mult=mods["risk_mult"]
                         )
                         q_val = float(q_vec[action]) if action < len(q_vec) else 0.0
-                        kelly_mult = 1.45 if q_val >= 0.08 else (1.15 if q_val >= 0.03 else 0.85)
-                        if perception.get("override_side") is not None:
-                            kelly_mult *= 1.15
-                        if recovery_mode:
-                            kelly_mult = min(kelly_mult, 0.80)
+                        kelly_mult = 1.35 if q_val >= 0.08 else (1.10 if q_val >= 0.03 else 0.78)
+                        if recovery_mode and not Config.EXPLORER_MODE:
+                            kelly_mult = min(kelly_mult, 0.72)
 
-                        adj_risk = min(0.12, max(0.03, base_risk * kelly_mult))
+                        adj_risk = min(0.11, max(0.03, base_risk * kelly_mult))
                         margin_sats = max(1000, int(round(equity * adj_risk)))
 
-                        # CORRECCIÓN P0.6: Verificar exposición proyectada (incluyendo el margen nuevo y el mínimo de 1000 sats)
                         est_entry_fee = max(1, int(round(margin_sats * lev * Config.TAKER_FEE)))
                         exp_ok, exp_reason, proj_exp = SatsExpectancyGate.verify_projected_exposure(
                             locked_margin, margin_sats, equity, balance,
@@ -2024,10 +2140,11 @@ def main():
                             max_single_trade_risk_pct=Config.MAX_SINGLE_TRADE_MARGIN_PCT,
                         )
                         viable_sats, sats_meta = SatsExpectancyGate.verify_net_sats_expectancy(
-                            ind_5m["price"], margin_sats, lev, sl, tp
+                            ind_5m["price"], margin_sats, lev, sl, tp,
+                            explorer_mode=Config.EXPLORER_MODE
                         )
-                        if viable_sats and (recovery_mode or "RANGE_SQUEEZE" in state):
-                            min_strict_tp = max(38 if recovery_mode else 32, int(round(sats_meta["fee_sats"] * (2.8 + current_dd_pct * 3.0 if recovery_mode else 2.5))))
+                        if viable_sats and not Config.EXPLORER_MODE and (recovery_mode or "RANGE_SQUEEZE" in state):
+                            min_strict_tp = max(44 if recovery_mode else 38, int(round(sats_meta["fee_sats"] * (3.2 + current_dd_pct * 3.0 if recovery_mode else 2.9))))
                             if sats_meta["net_tp_sats"] < min_strict_tp:
                                 viable_sats = False
 
@@ -2062,7 +2179,7 @@ def main():
                                         )
                                 except Exception as open_err:
                                     print(f"  [VERIFICANDO ORDEN POST-TIMEOUT] {open_err}")
-                                    time.sleep(1.5)
+                                    time.sleep(1.2)
                                     verify_running = client.get_running_trades()
                                     for vt in verify_running:
                                         vtid = str(vt["id"])
@@ -2082,7 +2199,6 @@ def main():
         if once_mode:
             break
 
-        # Ciclo adaptativo de alta frecuencia de análisis
         if PERCEPTION_ENGINE.override_side is not None:
             loop_wait = Config.FAST_ANALYZE_INTERVAL_SEC
         elif len(brain.active_trades) > 0:
