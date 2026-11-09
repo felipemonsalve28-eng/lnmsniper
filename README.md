@@ -251,7 +251,23 @@ tail -f sniper_brain_sync.log
 
 | `retrain_sats_offline.py` | Recalibración offline orientada a sats netos |
 
-| `test_protocolo_v_reversal.py` | Suite de 15 escenarios de certificación |
+| `hedge_state_store.py` | Persistencia atómica SHA-256 y Q-table de 7 acciones de cobertura |
+
+| `edge_monitor.py` | Monitor en tiempo real de deterioro de edge y excursión adversa |
+
+| `predictive_hedge.py` | Motor predictivo de riesgo adverso y ratio óptimo de cobertura |
+
+| `portfolio_hedge.py` | Coordinador de cartera y exposición neta firmada (API v3) |
+
+| `hedge_risk_manager.py` | Gestor de riesgo de coberturas subordinado al HardFloorGuardian |
+
+| `dynamic_hedge.py` | Ejecutor dinámico de coberturas parciales/totales en LN Markets API v3 |
+
+| `adaptive_controller.py` | Máquina de 7 estados con histéresis y Q-learning de coberturas |
+
+| `validate_walk_forward_oos.py` | Validación Walk-Forward Out-of-Sample (5 variantes / 6 regímenes) |
+
+| `test_protocolo_v_reversal.py` | Suite de 23 escenarios de certificación cuantitativa |
 
 | `setup_dual_sniper.sh` | Orquestador Termux / Linux |
 

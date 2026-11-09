@@ -16,8 +16,11 @@ __pycache__/
 *.tmp
 *.tmp.*
 *.sha256
+*.pid
 backups_audit*/
 backups_audit_*/
+wf_oos_temp_hedge_state*
+test_hedge_*
 
 # Archivos de recalibración opcionales
 recalibrated.json

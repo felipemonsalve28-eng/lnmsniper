@@ -12,28 +12,40 @@ import time
 import math
 import json
 import hmac
+import signal
 import shutil
 import random
 import hashlib
 import base64
+import tempfile
 import urllib.parse
 from collections import deque
 from datetime import datetime, date
 
 import requests
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    from guardian_execution_core import compat_np as np
 
 from guardian_execution_core import (
     AtomicBrainStore,
     ResilientLNMClient,
     HardFloorGuardian,
     FileLockContext,
+    LatencyTelemetry,
+    InFlightOrderGuard,
+    rotate_log_file_if_needed,
 )
 from sniper_perception_sats_core import (
+    MarketRegimeClassifier,
     ShortTermPerceptionEngine,
     SatsExpectancyGate,
     sync_brain_floor_with_reality,
 )
+from hedge_state_store import HedgeStateStore
+from portfolio_hedge import PortfolioHedgeCoordinator
+from adaptive_controller import AdaptiveHedgeController
 
 PERCEPTION_ENGINE = ShortTermPerceptionEngine()
 
@@ -46,8 +58,11 @@ class Config:
     EXPLORER_MODE = False
     BASE_URL = "https://api.lnmarkets.com/v3"
     BRAIN_FILE = "q_brain_advanced_lnm.json"
+    HEDGE_STATE_FILE = "hedge_state_mainnet.json"
+    ENABLE_HYBRID_HEDGE = True
     BRAIN_SAVE_INTERVAL = 90.0
-    SHARED_MTF_DISK_CACHE = "/tmp/sniper_mtf_candles_v73.json"
+    SHARED_MTF_DISK_CACHE = os.path.join(tempfile.gettempdir(), "sniper_mtf_candles_v73.json")
+    MIN_MARGIN_SATS = 1000
 
     # Meta dinámica basada EXCLUSIVAMENTE en Balance Disponible (Sats Netos)
     INITIAL_TARGET_SATS = 300000
@@ -129,7 +144,8 @@ class Config:
             cls.EXPLORER_MODE = True
             cls.BASE_URL = os.getenv("LNM_TESTNET_BASE_URL", "https://api.signet.lnmarkets.com/v3")
             cls.BRAIN_FILE = "q_brain_testnet_lnm.json"
-            cls.MAX_CONCURRENT_TRADES = 5
+            cls.HEDGE_STATE_FILE = "hedge_state_testnet.json"
+            cls.MAX_CONCURRENT_TRADES = 10
             cls.SOFT_EXPOSURE_LIMIT = 0.45
             cls.ENTRY_COOLDOWN_SEC = 18.0
             cls.RISK_NORMAL = 0.08
@@ -141,6 +157,7 @@ class Config:
             cls.EXPLORER_MODE = False
             cls.BASE_URL = os.getenv("LNM_MAINNET_BASE_URL", "https://api.lnmarkets.com/v3")
             cls.BRAIN_FILE = "q_brain_advanced_lnm.json"
+            cls.HEDGE_STATE_FILE = "hedge_state_mainnet.json"
             cls.MAX_CONCURRENT_TRADES = 5
             cls.SOFT_EXPOSURE_LIMIT = 0.38
             cls.ENTRY_COOLDOWN_SEC = 35.0
@@ -253,10 +270,10 @@ class MultiTimeframeCache:
         self.session = ResilientLNMClient.build_session("LNMSniper/7.3-MTFCache")
         self.disk_path = Config.SHARED_MTF_DISK_CACHE
         self.cache = {
-            "5m":  {"last": 0.0, "ttl": Config.TTL_5M,  "period": 300,   "data": None, "ind_cache": None, "ind_price": 0.0},
-            "15m": {"last": 0.0, "ttl": Config.TTL_15M, "period": 900,   "data": None, "ind_cache": None, "ind_price": 0.0},
-            "1h":  {"last": 0.0, "ttl": Config.TTL_1H,  "period": 3600,  "data": None, "ind_cache": None, "ind_price": 0.0},
-            "4h":  {"last": 0.0, "ttl": Config.TTL_4H,  "period": 14400, "data": None, "ind_cache": None, "ind_price": 0.0},
+            "5m":  {"last": 0.0, "ttl": Config.TTL_5M,  "period": 300,   "data": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
+            "15m": {"last": 0.0, "ttl": Config.TTL_15M, "period": 900,   "data": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
+            "1h":  {"last": 0.0, "ttl": Config.TTL_1H,  "period": 3600,  "data": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
+            "4h":  {"last": 0.0, "ttl": Config.TTL_4H,  "period": 14400, "data": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
         }
         self._load_shared_disk_cache()
 
@@ -278,6 +295,8 @@ class MultiTimeframeCache:
                             np.array(entry["c"], dtype=np.float64),
                         )
                         self.cache[tf]["last"] = ts
+                        self.cache[tf]["prefix"] = None
+                        self.cache[tf]["ind_cache"] = None
         except Exception:
             pass
 
@@ -304,15 +323,15 @@ class MultiTimeframeCache:
     def invalidate(self, tf):
         if tf in self.cache:
             self.cache[tf]["last"] = 0.0
+            self.cache[tf]["prefix"] = None
             self.cache[tf]["ind_cache"] = None
 
-    def get_candles(self, tf, current_lnm_price=0.0):
+    def _ensure_raw_candles(self, tf, current_lnm_price=0.0):
         now = time.time()
         item = self.cache[tf]
         crossed_boundary = (int(now) // item["period"]) != (int(item["last"]) // item["period"])
 
         if item["data"] is None or (now - item["last"]) >= item["ttl"] or crossed_boundary:
-            # Verificar primero si el otro bot (Mainnet/Testnet) ya actualizó la caché en disco
             self._load_shared_disk_cache()
             crossed_after_disk = (int(now) // item["period"]) != (int(item["last"]) // item["period"])
             if item["data"] is None or (now - item["last"]) >= item["ttl"] or crossed_after_disk:
@@ -320,11 +339,11 @@ class MultiTimeframeCache:
                     h, l, c = self._fetch_remote(tf)
                     item["data"] = (h, l, c)
                     item["last"] = now
+                    item["prefix"] = None
                     item["ind_cache"] = None
                     self._save_shared_disk_cache()
                 except Exception as e:
                     if item["data"] is None:
-                        # Última instancia: sintetizar serie plana sobre el precio de LN Markets para no tumbar el bot
                         if current_lnm_price > 0:
                             p = float(current_lnm_price)
                             synth_c = np.full(Config.CANDLE_LIMIT, p, dtype=np.float64)
@@ -332,10 +351,14 @@ class MultiTimeframeCache:
                             synth_l = synth_c * 0.9988
                             item["data"] = (synth_h, synth_l, synth_c)
                             item["last"] = now - (item["ttl"] * 0.8)
+                            item["prefix"] = None
+                            item["ind_cache"] = None
                         else:
                             raise RuntimeError(f"Fallo crítico obteniendo velas TF {tf}: {e}")
+        return item["data"]
 
-        h_arr, l_arr, c_arr = item["data"]
+    def get_candles(self, tf, current_lnm_price=0.0):
+        h_arr, l_arr, c_arr = self._ensure_raw_candles(tf, current_lnm_price)
         if tf in ("5m", "15m") and current_lnm_price > 0:
             h_c, l_c, c_c = h_arr.copy(), l_arr.copy(), c_arr.copy()
             c_c[-1] = current_lnm_price
@@ -348,12 +371,19 @@ class MultiTimeframeCache:
 
     def get_indicators_fast(self, tf, current_lnm_price=0.0):
         item = self.cache[tf]
-        h, l, c = self.get_candles(tf, current_lnm_price)
+        h_arr, l_arr, c_arr = self._ensure_raw_candles(tf, current_lnm_price)
         if tf in ("1h", "4h") and item["ind_cache"] is not None:
             return item["ind_cache"]
         if tf in ("5m", "15m") and item["ind_cache"] is not None and abs(current_lnm_price - item["ind_price"]) < 0.5:
             return item["ind_cache"]
-        ind = compute_indicators(h, l, c, current_lnm_price if tf in ("5m", "15m") else 0.0)
+
+        # Actualización O(1) incremental sin copia de arrays para 5m/15m (Fase 6 Termux)
+        if tf in ("5m", "15m") and len(c_arr) >= 26:
+            if item.get("prefix") is None:
+                item["prefix"] = _build_indicator_prefix_state(h_arr, l_arr, c_arr)
+            ind = compute_indicators_from_prefix(item["prefix"], current_lnm_price)
+        else:
+            ind = compute_indicators(h_arr, l_arr, c_arr, current_lnm_price if tf in ("5m", "15m") else 0.0)
         item["ind_cache"] = ind
         item["ind_price"] = float(current_lnm_price)
         return ind
@@ -425,11 +455,21 @@ def compute_indicators(highs, lows, closes, lnm_price=0.0):
     bb_width_pct = (upper_bb - lower_bb) / max(sma20, 1.0)
     bb_pos = (float(closes[-1]) - lower_bb) / max((upper_bb - lower_bb), 1e-5)
 
+    if len(closes) >= 26:
+        prev20 = closes[-25:-5]
+        prev_sma20 = max(float(np.mean(prev20)), 1.0)
+        prev_width_pct = (4.0 * float(np.std(prev20))) / prev_sma20
+        bb_expansion_rate = bb_width_pct / max(prev_width_pct, 1e-6)
+    else:
+        bb_expansion_rate = 1.0
+
     tr = np.maximum(
         highs[1:] - lows[1:],
         np.maximum(np.abs(highs[1:] - closes[:-1]), np.abs(lows[1:] - closes[:-1]))
     )
     atr = calc_ema(tr, 14)
+    atr_sma50 = float(np.mean(tr[-50:])) if len(tr) >= 10 else atr
+    atr_rel_ratio = atr / max(atr_sma50, 1e-6)
     ema9 = calc_ema(closes, 9)
     ema21 = calc_ema(closes, 21)
     ema50 = calc_ema(closes, 50)
@@ -452,18 +492,7 @@ def compute_indicators(highs, lows, closes, lnm_price=0.0):
     else:
         ema_state, ema_score = "EMA_FLAT", 0.0
 
-    if atr_pct > 0.0075 and trend_spread_pct < 0.0018:
-        regime = "CHOP_HIGHVOL"
-    elif bb_width_pct < 0.0085 or atr_pct < 0.0022:
-        regime = "RANGE_SQUEEZE"
-    elif ema9 > ema21 and trend_spread_pct >= 0.0011:
-        regime = "TREND_BULL"
-    elif ema9 < ema21 and trend_spread_pct >= 0.0011:
-        regime = "TREND_BEAR"
-    else:
-        regime = "RANGE_NORMAL"
-
-    return {
+    ind_base = {
         "price": ref_price,
         "high": float(highs[-1]),
         "low": float(lows[-1]),
@@ -471,8 +500,10 @@ def compute_indicators(highs, lows, closes, lnm_price=0.0):
         "rsi": float(rsi),
         "bb_pos": float(bb_pos),
         "bb_width_pct": float(bb_width_pct),
+        "bb_expansion_rate": float(bb_expansion_rate),
         "atr": float(atr),
         "atr_pct": float(atr_pct),
+        "atr_rel_ratio": float(atr_rel_ratio),
         "ema9": float(ema9),
         "ema21": float(ema21),
         "ema50": float(ema50),
@@ -481,8 +512,171 @@ def compute_indicators(highs, lows, closes, lnm_price=0.0):
         "ema_score": float(ema_score),
         "ema_macro_spread_pct": float(ema_macro_spread_pct),
         "price_vs_ema200_pct": float(price_vs_ema200_pct),
-        "regime": regime,
     }
+    reg_info = MarketRegimeClassifier.classify(ind_base)
+    ind_base["regime"] = reg_info["canonical_regime"]
+    ind_base["market_regime"] = reg_info["market_regime"]
+    ind_base["volatility_state"] = reg_info["volatility_state"]
+    return ind_base
+
+
+def _build_indicator_prefix_state(highs, lows, closes):
+    """
+    Precalcula una sola vez por vela el estado prefijo de las primeras N-1 velas
+    cerradas para permitir actualizaciones O(1) en cada tick sin copiar arrays.
+    """
+    n_total = len(closes)
+    h_pre = highs[:-1]
+    l_pre = lows[:-1]
+    c_pre = closes[:-1]
+
+    deltas_pre = np.diff(c_pre)
+    seed = deltas_pre[:14]
+    up_prev = float(seed[seed >= 0].sum()) / 14.0
+    down_prev = float(-seed[seed < 0].sum()) / 14.0
+    for delta in deltas_pre[14:]:
+        d = float(delta)
+        up_prev = (up_prev * 13.0 + (d if d > 0.0 else 0.0)) / 14.0
+        down_prev = (down_prev * 13.0 + (-d if d < 0.0 else 0.0)) / 14.0
+
+    tail19 = tuple(float(x) for x in closes[-20:-1])
+    sum19 = sum(tail19)
+
+    prev20 = closes[-25:-5]
+    prev_sma20 = max(float(np.mean(prev20)), 1.0)
+    prev_width_pct = (4.0 * float(np.std(prev20))) / prev_sma20
+
+    tr_pre = np.maximum(
+        h_pre[1:] - l_pre[1:],
+        np.maximum(np.abs(h_pre[1:] - c_pre[:-1]), np.abs(l_pre[1:] - c_pre[:-1]))
+    )
+    atr_prev = calc_ema(tr_pre, 14)
+    tr_tail49 = tr_pre[-49:]
+    tr_tail49_sum = float(sum(tr_tail49))
+    tr_tail_count = len(tr_tail49)
+
+    def _ema_prefix(series_pre, period):
+        p_eff = max(1, min(period, n_total))
+        alpha = 2.0 / (p_eff + 1.0)
+        ema_val = float(series_pre[0])
+        one_m = 1.0 - alpha
+        for idx in range(1, len(series_pre)):
+            ema_val = alpha * float(series_pre[idx]) + one_m * ema_val
+        return ema_val, alpha
+
+    ema9_prev, alpha9 = _ema_prefix(c_pre, 9)
+    ema21_prev, alpha21 = _ema_prefix(c_pre, 21)
+    ema50_prev, alpha50 = _ema_prefix(c_pre, 50)
+    ema200_prev, alpha200 = _ema_prefix(c_pre, 200)
+    alpha_atr = 2.0 / (min(14, len(tr_pre) + 1) + 1.0)
+
+    return {
+        "orig_h_last": float(highs[-1]),
+        "orig_l_last": float(lows[-1]),
+        "orig_c_last": float(closes[-1]),
+        "c_prev": float(closes[-2]),
+        "up_prev": up_prev,
+        "down_prev": down_prev,
+        "tail19": tail19,
+        "sum19": sum19,
+        "prev_width_pct": prev_width_pct,
+        "atr_prev": atr_prev,
+        "alpha_atr": alpha_atr,
+        "tr_tail49_sum": tr_tail49_sum,
+        "tr_tail_count": tr_tail_count,
+        "ema9_prev": ema9_prev,
+        "alpha9": alpha9,
+        "ema21_prev": ema21_prev,
+        "alpha21": alpha21,
+        "ema50_prev": ema50_prev,
+        "alpha50": alpha50,
+        "ema200_prev": ema200_prev,
+        "alpha200": alpha200,
+    }
+
+
+def compute_indicators_from_prefix(prefix, lnm_price=0.0):
+    """
+    Actualiza todos los indicadores técnicos en tiempo O(1) cuando cambia el
+    precio spot (lnm_price) dentro de la misma ventana de velas.
+    """
+    c_last = float(lnm_price if lnm_price > 0 else prefix["orig_c_last"])
+    if lnm_price > 0:
+        h_last = c_last if c_last > prefix["orig_h_last"] else prefix["orig_h_last"]
+        l_last = c_last if c_last < prefix["orig_l_last"] else prefix["orig_l_last"]
+    else:
+        h_last = prefix["orig_h_last"]
+        l_last = prefix["orig_l_last"]
+
+    c_prev = prefix["c_prev"]
+    d_last = c_last - c_prev
+    up = (prefix["up_prev"] * 13.0 + (d_last if d_last > 0.0 else 0.0)) / 14.0
+    down = (prefix["down_prev"] * 13.0 + (-d_last if d_last < 0.0 else 0.0)) / 14.0
+    rsi = 100.0 - (100.0 / (1.0 + (up / max(down, 1e-9))))
+
+    sma20 = (prefix["sum19"] + c_last) / 20.0
+    var20 = (c_last - sma20) ** 2
+    for x in prefix["tail19"]:
+        diff = x - sma20
+        var20 += diff * diff
+    std20 = math.sqrt(max(0.0, var20 / 20.0))
+    upper_bb, lower_bb = sma20 + 2.0 * std20, sma20 - 2.0 * std20
+    bb_width_pct = (upper_bb - lower_bb) / max(sma20, 1.0)
+    bb_pos = (c_last - lower_bb) / max((upper_bb - lower_bb), 1e-5)
+    bb_expansion_rate = bb_width_pct / max(prefix["prev_width_pct"], 1e-6)
+
+    tr_last = max(h_last - l_last, abs(h_last - c_prev), abs(l_last - c_prev))
+    atr = prefix["alpha_atr"] * tr_last + (1.0 - prefix["alpha_atr"]) * prefix["atr_prev"]
+    atr_sma50 = (prefix["tr_tail49_sum"] + tr_last) / float(prefix["tr_tail_count"] + 1)
+    atr_rel_ratio = atr / max(atr_sma50, 1e-6)
+
+    ema9 = prefix["alpha9"] * c_last + (1.0 - prefix["alpha9"]) * prefix["ema9_prev"]
+    ema21 = prefix["alpha21"] * c_last + (1.0 - prefix["alpha21"]) * prefix["ema21_prev"]
+    ema50 = prefix["alpha50"] * c_last + (1.0 - prefix["alpha50"]) * prefix["ema50_prev"]
+    ema200 = prefix["alpha200"] * c_last + (1.0 - prefix["alpha200"]) * prefix["ema200_prev"]
+
+    ref_price = c_last
+    atr_pct = atr / max(ref_price, 1.0)
+    ema_macro_spread_pct = (ema50 - ema200) / max(ref_price, 1.0)
+    price_vs_ema200_pct = (ref_price - ema200) / max(ref_price, 1.0)
+
+    if ema50 > ema200 and ref_price >= ema50:
+        ema_state, ema_score = "BULL_STRONG", 1.0
+    elif ema50 > ema200 and ref_price < ema50:
+        ema_state, ema_score = "BULL_PULLBACK", 0.35
+    elif ema50 < ema200 and ref_price <= ema50:
+        ema_state, ema_score = "BEAR_STRONG", -1.0
+    elif ema50 < ema200 and ref_price > ema50:
+        ema_state, ema_score = "BEAR_BOUNCE", -0.35
+    else:
+        ema_state, ema_score = "EMA_FLAT", 0.0
+
+    ind_base = {
+        "price": ref_price,
+        "high": h_last,
+        "low": l_last,
+        "open": c_prev,
+        "rsi": float(rsi),
+        "bb_pos": float(bb_pos),
+        "bb_width_pct": float(bb_width_pct),
+        "bb_expansion_rate": float(bb_expansion_rate),
+        "atr": float(atr),
+        "atr_pct": float(atr_pct),
+        "atr_rel_ratio": float(atr_rel_ratio),
+        "ema9": float(ema9),
+        "ema21": float(ema21),
+        "ema50": float(ema50),
+        "ema200": float(ema200),
+        "ema_state": ema_state,
+        "ema_score": float(ema_score),
+        "ema_macro_spread_pct": float(ema_macro_spread_pct),
+        "price_vs_ema200_pct": float(price_vs_ema200_pct),
+    }
+    reg_info = MarketRegimeClassifier.classify(ind_base)
+    ind_base["regime"] = reg_info["canonical_regime"]
+    ind_base["market_regime"] = reg_info["market_regime"]
+    ind_base["volatility_state"] = reg_info["volatility_state"]
+    return ind_base
 
 
 # =====================================================================
@@ -1098,7 +1292,8 @@ class AutonomousGoalBrain:
         equity_after=0, available_balance_after=None, real_balance_delta_sats=None,
         hit_tp=False, harvested=False, is_no_trade=False,
         recovery_mode=False, exited_recovery_bonus=False, lev_used=35.0,
-        exact_fee_sats=0, pl_includes_fees=False
+        exact_fee_sats=0, pl_includes_fees=False,
+        funding_fee_sats=0, slippage_sats=0
     ):
         norm_s = self._normalize_state_key(state)
         norm_ns = self._normalize_state_key(next_state)
@@ -1108,14 +1303,16 @@ class AutonomousGoalBrain:
             self.q_table[norm_s][0] = max(0.005, min(0.022, round(self.q_table[norm_s][0] * 0.96, 4)))
             return
 
-        fee_sats = int(exact_fee_sats) if exact_fee_sats > 0 else max(2, int(round(float(margin_used) * float(lev_used) * (2.0 * Config.TAKER_FEE))))
+        taker_fee_sats = int(exact_fee_sats) if exact_fee_sats > 0 else max(2, int(round(float(margin_used) * float(lev_used) * (2.0 * Config.TAKER_FEE))))
+        extra_friction = int(funding_fee_sats or 0) + int(slippage_sats or 0)
+        fee_sats = taker_fee_sats + extra_friction
 
         if real_balance_delta_sats is not None:
             net_balance_delta = int(real_balance_delta_sats)
         elif pl_includes_fees:
-            net_balance_delta = int(reward_sats)
+            net_balance_delta = int(reward_sats) - extra_friction
         else:
-            net_balance_delta = (int(reward_sats) - fee_sats) if reward_sats >= 0 else (int(reward_sats) - int(round(fee_sats * 0.5)))
+            net_balance_delta = (int(reward_sats) - fee_sats) if reward_sats >= 0 else (int(reward_sats) - int(round(taker_fee_sats * 0.5)) - extra_friction)
 
         self.realized_net_profit_sats += net_balance_delta
         self.total_fees_paid_sats += fee_sats
@@ -1161,7 +1358,7 @@ class AutonomousGoalBrain:
 
 
 # =====================================================================
-# 7. CLIENTE HTTP IDEMPOTENTE CON BAJA LATENCIA Y POOL PERSISTENTE
+# 7. CLIENTE HTTP IDEMPOTENTE CON BAJA LATENCIA Y POOL PERSISTENTE (API v3)
 # =====================================================================
 def _clean_numbers(obj):
     if isinstance(obj, dict):
@@ -1180,16 +1377,22 @@ class LNMarketsClient:
         self.passphrase = passphrase
         self.base_url = base_url or Config.BASE_URL
         self.session = ResilientLNMClient.build_session(f"LNMSniper/7.3-{Config.ENV_MODE}")
+        self.telemetry = LatencyTelemetry(window_size=256)
+        self.order_guard = InFlightOrderGuard(ttl_sec=20.0)
         self._user_cache = None
         self._user_cache_ts = 0.0
+        self._running_cache = None
+        self._running_cache_ts = 0.0
         self._last_ticker_price = 0.0
 
     def _request(self, method, path, params=None, max_retries=2):
         method_up = method.upper()
         clean_p = _clean_numbers(params) if params else None
-        req_timeout = (2.5, 4.5) if method_up == "GET" else (3.5, 7.5)
+        req_timeout = ResilientLNMClient.get_timeout_for(method_up, path)
 
         for attempt in range(max_retries):
+            req_t0 = time.perf_counter()
+            acquired = ResilientLNMClient.acquire_slot(timeout=4.0)
             try:
                 ts = str(int(time.time() * 1000))
                 data_str, url = "", f"{self.base_url}{path}"
@@ -1217,6 +1420,12 @@ class LNMarketsClient:
                     data=data_str if method_up in ("POST", "PUT") and data_str else None,
                     timeout=req_timeout,
                 )
+                elapsed_ms = (time.perf_counter() - req_t0) * 1000.0
+                if "/ticker" in path:
+                    self.telemetry.record("network_ms", elapsed_ms)
+                else:
+                    self.telemetry.record("api_ms", elapsed_ms)
+
                 if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
                     time.sleep(ResilientLNMClient.compute_backoff(attempt))
                     continue
@@ -1224,9 +1433,14 @@ class LNMarketsClient:
                     raise RuntimeError(f"HTTP {resp.status_code} ({path}): {resp.text[:140]}")
                 return resp.json() if resp.text else {}
             except Exception as e:
+                elapsed_ms = (time.perf_counter() - req_t0) * 1000.0
+                self.telemetry.record("api_ms", elapsed_ms)
                 if attempt == max_retries - 1:
                     raise RuntimeError(f"Fallo en {path}: {e}")
                 time.sleep(ResilientLNMClient.compute_backoff(attempt))
+            finally:
+                if acquired:
+                    ResilientLNMClient.release_slot()
 
     def get_ticker_price(self):
         try:
@@ -1250,7 +1464,10 @@ class LNMarketsClient:
             self._user_cache_ts = now
         return u
 
-    def get_running_trades(self):
+    def get_running_trades(self, force_refresh=False):
+        now = time.time()
+        if not force_refresh and self._running_cache is not None and (now - self._running_cache_ts) < 1.1:
+            return list(self._running_cache)
         r = self._request("GET", "/futures/isolated/trades/running", max_retries=2)
         rows = r.get("data", []) if isinstance(r, dict) else r
         if not isinstance(rows, list):
@@ -1259,7 +1476,10 @@ class LNMarketsClient:
         for row in rows:
             if isinstance(row, dict) and "id" in row:
                 unique[str(row["id"])] = row
-        return list(unique.values())
+        result = list(unique.values())
+        self._running_cache = result
+        self._running_cache_ts = now
+        return list(result)
 
     def get_closed_trades(self, limit=25):
         r = self._request("GET", "/futures/isolated/trades/closed", max_retries=2)
@@ -1270,7 +1490,9 @@ class LNMarketsClient:
 
     def open_trade(self, side, margin, leverage, stoploss, takeprofit):
         self._user_cache_ts = 0.0
-        return self._request(
+        self._running_cache_ts = 0.0
+        t0 = time.perf_counter()
+        res = self._request(
             "POST",
             "/futures/isolated/trade",
             {
@@ -1283,21 +1505,67 @@ class LNMarketsClient:
             },
             max_retries=1,
         )
+        self.telemetry.record("confirm_ms", (time.perf_counter() - t0) * 1000.0)
+        return res
 
     def update_stoploss(self, trade_id, new_sl):
-        return self._request(
+        t0 = time.perf_counter()
+        res = self._request(
             "PUT",
             "/futures/isolated/trade/stoploss",
             {"id": str(trade_id), "value": int(round(new_sl))},
             max_retries=2,
         )
+        self.telemetry.record("confirm_ms", (time.perf_counter() - t0) * 1000.0)
+        return res
+
+    def update_takeprofit(self, trade_id, new_tp):
+        t0 = time.perf_counter()
+        res = self._request(
+            "PUT",
+            "/futures/isolated/trade/takeprofit",
+            {"id": str(trade_id), "value": int(round(new_tp))},
+            max_retries=2,
+        )
+        self.telemetry.record("confirm_ms", (time.perf_counter() - t0) * 1000.0)
+        return res
+
+    def add_margin(self, trade_id, amount_sats):
+        self._user_cache_ts = 0.0
+        self._running_cache_ts = 0.0
+        t0 = time.perf_counter()
+        res = self._request(
+            "POST",
+            "/futures/isolated/trade/add-margin",
+            {"id": str(trade_id), "amount": max(1, int(round(amount_sats)))},
+            max_retries=2,
+        )
+        self.telemetry.record("confirm_ms", (time.perf_counter() - t0) * 1000.0)
+        return res
+
+    def cash_in(self, trade_id, amount_sats):
+        self._user_cache_ts = 0.0
+        self._running_cache_ts = 0.0
+        t0 = time.perf_counter()
+        res = self._request(
+            "POST",
+            "/futures/isolated/trade/cash-in",
+            {"id": str(trade_id), "amount": max(1, int(round(amount_sats)))},
+            max_retries=2,
+        )
+        self.telemetry.record("confirm_ms", (time.perf_counter() - t0) * 1000.0)
+        return res
 
     def close_trade(self, trade_id):
         self._user_cache_ts = 0.0
+        self._running_cache_ts = 0.0
+        t0 = time.perf_counter()
         try:
-            return self._request("POST", "/futures/isolated/trade/close", {"id": str(trade_id)}, max_retries=2)
+            res = self._request("POST", "/futures/isolated/trade/close", {"id": str(trade_id)}, max_retries=2)
         except Exception:
-            return self._request("DELETE", "/futures/isolated/trade", {"id": str(trade_id)}, max_retries=2)
+            res = self._request("DELETE", "/futures/isolated/trade", {"id": str(trade_id)}, max_retries=2)
+        self.telemetry.record("confirm_ms", (time.perf_counter() - t0) * 1000.0)
+        return res
 
 
 # =====================================================================
@@ -1310,7 +1578,11 @@ def compute_account_equity(available_balance, running_trades):
         int(round(int(t.get("margin") or 0) * float(t.get("leverage") or 20.0) * Config.TAKER_FEE))
         for t in running_trades
     )
-    true_equity = max(1, int(available_balance) + locked_margin + floating_pl - est_exit_fees)
+    carry_fees = sum(
+        int(round(float(t.get("sum_carry_fees") or t.get("funding_fees") or 0)))
+        for t in running_trades
+    )
+    true_equity = max(1, int(available_balance) + locked_margin + floating_pl - est_exit_fees - max(0, carry_fees))
     return true_equity, locked_margin, floating_pl
 
 
@@ -1455,7 +1727,7 @@ def enforce_concurrency_cap(client, brain, running_trades):
 
 def execute_strategy_guardian(
     client, brain, trade, ind_5m, ind_15m, trade_meta, system_mode,
-    edge_score=0.0, perception=None, current_dd_pct=0.0
+    edge_score=0.0, perception=None, current_dd_pct=0.0, is_hedged=False
 ):
     try:
         tid = str(trade["id"])
@@ -1498,6 +1770,7 @@ def execute_strategy_guardian(
             "last_guardian_mode": mode_label,
             "sl_locked": bool(sl_locked_server),
             "last_edge_score": round(float(edge_score), 4),
+            "is_hedged": bool(is_hedged),
         })
 
         if edge_score <= Config.EDGE_DEGRADATION_EXIT:
@@ -1509,7 +1782,7 @@ def execute_strategy_guardian(
 
         deg_streak = int(trade_meta["edge_deg_streak"])
 
-        if deg_streak >= Config.EDGE_DEGRADATION_PERSISTENCE and edge_score <= Config.EDGE_DEGRADATION_EXIT:
+        if not is_hedged and deg_streak >= Config.EDGE_DEGRADATION_PERSISTENCE and edge_score <= Config.EDGE_DEGRADATION_EXIT:
             if confirm_and_close_trade(client, brain, tid, trade_meta, "FORCED_EDGE_EXIT"):
                 print(
                     f"  🛑 [FORCED EDGE EXIT] Cierre forzado en {tid[:6]} tras {deg_streak} ciclos "
@@ -1517,7 +1790,7 @@ def execute_strategy_guardian(
                 )
                 return True
 
-        if system_mode == "RECOVERY" and current_dd_pct >= 0.08 and edge_score < -0.30:
+        if not is_hedged and system_mode == "RECOVERY" and current_dd_pct >= 0.08 and edge_score < -0.30:
             if confirm_and_close_trade(client, brain, tid, trade_meta, "RECOVERY_FORCED_REDUCTION"):
                 print(
                     f"  🛑 [RECOVERY REDUCTION] Cierre forzado en {tid[:6]} por Recovery DD {current_dd_pct*100:.1f}% "
@@ -1544,7 +1817,7 @@ def execute_strategy_guardian(
                         f"de degradación (Edge:{edge_score:+.3f} | +{pl_sats} sats)"
                     )
                     return True
-            elif (edge_score <= Config.EDGE_DEGRADATION_EXIT and pnl_atr <= -1.00) or (macro_counter and ovr_side is None and edge_score <= -0.48 and pnl_atr <= -0.80):
+            elif not is_hedged and ((edge_score <= Config.EDGE_DEGRADATION_EXIT and pnl_atr <= -1.00) or (macro_counter and ovr_side is None and edge_score <= -0.48 and pnl_atr <= -0.80)):
                 if confirm_and_close_trade(client, brain, tid, trade_meta, "EDGE_DEGRADATION_DEFENSIVE_EXIT"):
                     print(
                         f"  🛑 [GUARDIÁN EDGE CUT] Cierre defensivo en {tid[:6]} (Streak:{deg_streak} | "
@@ -1691,13 +1964,21 @@ def compute_situational_order_params(
 
     is_long = (side == "buy")
     aligned_override = (is_long and override_side == "BULL") or ((not is_long) and override_side == "BEAR")
+    mkt_regime = (
+        perception.get("market_regime") if isinstance(perception, dict) and perception.get("market_regime")
+        else ind_5m.get("market_regime", ind_5m.get("regime", "RANGE_NORMAL"))
+    )
 
     if aligned_override:
         regime_mult = 0.72 if not recovery_mode else 0.52
+    elif mkt_regime == "EXTREME_VOLATILITY":
+        regime_mult = 0.35
     elif "RANGE_SQUEEZE" in norm_s and "CHOP" in norm_s:
         regime_mult = 0.36
     elif "CHOP" in norm_s:
         regime_mult = 0.45
+    elif mkt_regime == "VOLATILITY_EXPANSION":
+        regime_mult = 0.62
     elif "RANGE_SQUEEZE" in norm_s:
         regime_mult = 0.54
     elif "TREND" in norm_s and "LOW_EXP" in norm_s:
@@ -1827,6 +2108,158 @@ def evaluate_system_mode(
     return "NORMAL", True, False, None, False
 
 
+def reconcile_portfolio_with_hedges(
+    client, brain, hedge_store, running, equity_sats=30000, btc_price=70000.0, now=None, safe_mode=False
+):
+    """
+    Reconcilia posiciones aisladas de LN Markets API v3 separando posiciones
+    primarias (gestionadas por AdvancedQBrain de 9 acciones) y patas de cobertura
+    (gestionadas por AdaptiveHedgeController de 7 acciones). Limpia coberturas huérfanas.
+    """
+    now = float(now if now is not None else time.time())
+    if not Config.ENABLE_HYBRID_HEDGE or hedge_store is None:
+        return running, {
+            "primary_trades": list(running or []),
+            "hedge_trades_map": {},
+            "live_map": {str(t["id"]): t for t in (running or []) if isinstance(t, dict) and "id" in t},
+            "locked_margin_sats": sum(int(t.get("margin") or 0) for t in (running or [])),
+            "net_delta_notional_sats": 0,
+            "gross_total_notional_sats": 0,
+            "net_exposure_ratio": 0.0,
+        }
+
+    live_map = {str(t["id"]): t for t in (running or []) if isinstance(t, dict) and "id" in t}
+    closed_orphan_ids = set()
+
+    # Detectar coberturas huérfanas (la primaria cerró en el servidor pero la pata hedge sigue abierta)
+    for orig_id, p in list(hedge_store.pairs.items()):
+        hedge_id = str(p.get("hedge_trade_id")) if p.get("hedge_trade_id") else None
+        orig_alive = orig_id in live_map
+        hedge_alive = bool(hedge_id and hedge_id in live_map)
+        if not orig_alive and hedge_alive:
+            if not safe_mode:
+                try:
+                    resp = client.close_trade(hedge_id)
+                    if isinstance(resp, dict) and (resp.get("closed") is True or str(resp.get("id", "")) == hedge_id):
+                        closed_orphan_ids.add(hedge_id)
+                        print(f"  🧹 [LIMPIEZA HEDGE HUÉRFANO] Cerrada cobertura {hedge_id[:6]} tras cierre de primaria {orig_id[:6]} en servidor.")
+                except Exception:
+                    pass
+            hedge_store.pairs.pop(orig_id, None)
+            hedge_store.dirty = True
+
+    filtered_running = [t for t in (running or []) if str(t.get("id", "")) not in closed_orphan_ids]
+    portfolio_snap = PortfolioHedgeCoordinator.reconcile_portfolio(
+        filtered_running, hedge_store, equity_sats, btc_price, now=now
+    )
+
+    # Garantizar que ninguna pata de cobertura contamine active_trades del cerebro de 9 acciones
+    for ht_id in portfolio_snap["hedge_trades_map"].keys():
+        if ht_id in brain.active_trades:
+            brain.active_trades.pop(ht_id, None)
+            brain.dirty = True
+
+    return filtered_running, portfolio_snap
+
+
+def run_integrated_guardian_and_hedge_cycle(
+    client, brain, hedge_store, portfolio_snap, primary_running,
+    ind_5m, ind_15m, ind_1h, state, current_mode, edge_scores_by_tid,
+    perception, q_vec, account_state, now, safe_mode=False
+):
+    """
+    Ejecuta en cooperación el AdaptiveHedgeController (Fase 5) y el
+    execute_strategy_guardian (Fases 1-3) sobre las posiciones primarias abiertas.
+    """
+    still_running = []
+    current_dd_pct = float(account_state.get("current_dd_pct", 0.0))
+    equity_sats = int(account_state.get("equity_sats", 30000))
+    balance_sats = int(account_state.get("balance_sats", equity_sats))
+    locked_floor_sats = int(account_state.get("locked_floor_sats", 0))
+    lat_degraded = False
+    if hasattr(client, "telemetry") and client.telemetry is not None:
+        lat_degraded, _ = client.telemetry.evaluate_execution_health()
+
+    hedge_map = portfolio_snap.get("hedge_trades_map", {})
+
+    for trade in (primary_running or []):
+        tid = str(trade["id"])
+        t_meta = brain.active_trades.setdefault(tid, infer_adopted_trade(trade, ind_5m, state, now))
+        act_idx = int(t_meta.get("action", 2 if trade.get("side", "buy") == "buy" else 6))
+        q_val = float(q_vec[act_idx]) if act_idx < len(q_vec) else 0.0
+        edge_sc = float(edge_scores_by_tid.get(tid, 0.0))
+
+        closed_by_hedge = False
+        if Config.ENABLE_HYBRID_HEDGE and hedge_store is not None:
+            prev_pair = hedge_store.pairs.get(tid)
+            prev_h_state = str(prev_pair.get("state", "NORMAL")) if isinstance(prev_pair, dict) else "NORMAL"
+            h_tid = str(prev_pair.get("hedge_trade_id")) if (isinstance(prev_pair, dict) and prev_pair.get("hedge_trade_id")) else None
+            hedge_trade_obj = hedge_map.get(h_tid) if h_tid else None
+
+            hedge_dec = AdaptiveHedgeController.evaluate_and_manage_pair(
+                client=client,
+                orig_trade=trade,
+                hedge_trade=hedge_trade_obj,
+                orig_meta=t_meta,
+                portfolio_snap=portfolio_snap,
+                hedge_store=hedge_store,
+                ind_5m=ind_5m,
+                ind_15m=ind_15m,
+                ind_1h=ind_1h,
+                perception=perception,
+                q_val_main=q_val,
+                account_equity_sats=equity_sats,
+                available_balance_sats=balance_sats,
+                locked_floor_sats=locked_floor_sats,
+                latency_degraded=lat_degraded,
+                explorer_mode=Config.EXPLORER_MODE,
+                safe_mode=safe_mode,
+                now=now,
+            )
+            new_h_state = hedge_dec.get("state", "NORMAL")
+            exec_info = hedge_dec.get("execution", {})
+            if exec_info.get("executed") or (new_h_state != prev_h_state and new_h_state != "NORMAL"):
+                eff_r = hedge_dec.get("pair_economics", {}).get("effective_hedge_ratio", 0.0)
+                adv_p = hedge_dec.get("predictive_signal", {}).get("adverse_continuation_prob", 0.0)
+                print(
+                    f"  🛡️ [HEDGE ENGINE] {tid[:6]} | {prev_h_state} ➔ {new_h_state} | "
+                    f"Acción:{hedge_dec.get('selected_action_name')} (Ratio:{eff_r:.2f} | "
+                    f"ProbAdv:{adv_p:.2f} | {exec_info.get('reason')})"
+                )
+            if hedge_dec.get("selected_action_name") == "CLOSE_ORIGINAL_POSITION" and exec_info.get("executed"):
+                t_meta["ai_closed"] = True
+                t_meta["close_reason"] = exec_info.get("reason", "HEDGE_CLOSE_ORIGINAL")
+                brain.dirty = True
+                closed_by_hedge = True
+
+        if closed_by_hedge:
+            continue
+
+        pair_rec = hedge_store.pairs.get(tid) if (Config.ENABLE_HYBRID_HEDGE and hedge_store) else None
+        is_hedged = bool(isinstance(pair_rec, dict) and pair_rec.get("hedge_trade_id"))
+
+        closed_by_guardian = execute_strategy_guardian(
+            client, brain, trade, ind_5m, ind_15m, t_meta, current_mode,
+            edge_score=edge_sc, perception=perception,
+            current_dd_pct=current_dd_pct, is_hedged=is_hedged
+        )
+        if closed_by_guardian:
+            if is_hedged and not safe_mode:
+                h_tid = str(pair_rec.get("hedge_trade_id", ""))
+                if h_tid:
+                    try:
+                        client.close_trade(h_tid)
+                        print(f"  🛡️ [HEDGE ENGINE] Cerrada cobertura vinculada {h_tid[:6]} tras cosecha/cierre de primaria {tid[:6]}.")
+                    except Exception:
+                        pass
+                hedge_store.pairs.pop(tid, None)
+                hedge_store.dirty = True
+        else:
+            still_running.append(trade)
+
+    return still_running
+
+
 def _parse_cli_env():
     env_val = os.getenv("SNIPER_ENV", "mainnet")
     for idx, arg in enumerate(sys.argv):
@@ -1845,6 +2278,7 @@ def main():
 
     safe_mode = ("--safe-mode" in sys.argv) or (os.getenv("SNIPER_SAFE_MODE", "0") == "1")
     once_mode = ("--once" in sys.argv)
+    log_file_path = os.getenv("SNIPER_LOG_FILE", f"sniper_{Config.ENV_MODE}.log")
 
     api_key, api_secret, api_passphrase = load_saved_credentials(Config.ENV_MODE)
     if not api_key or not api_secret or not api_passphrase:
@@ -1861,23 +2295,56 @@ def main():
         max_dd_pct=Config.MAX_DRAWDOWN_PCT,
         max_daily_loss_pct=Config.MAX_DAILY_LOSS_PCT,
     )
+    hedge_store = HedgeStateStore(
+        env_mode=Config.ENV_MODE,
+        filename=Config.HEDGE_STATE_FILE,
+    )
+
+    stop_state = {"requested": False, "sig": None}
+
+    def _handle_shutdown_signal(signum, _frame):
+        stop_state["requested"] = True
+        stop_state["sig"] = signum
+        print(f"\n[SEÑAL RECIBIDA ({signum})] Guardando estado de forma atómica antes de cerrar...")
+        try:
+            brain.save_brain(force=True)
+        except Exception as exc:
+            print(f"[AVISO CIERRE CEREBRO] {exc}")
+        try:
+            hedge_store.save(force=True)
+        except Exception as exc:
+            print(f"[AVISO CIERRE HEDGE] {exc}")
+
+    for sig_name in ("SIGTERM", "SIGINT"):
+        sig_obj = getattr(signal, sig_name, None)
+        if sig_obj is not None:
+            try:
+                signal.signal(sig_obj, _handle_shutdown_signal)
+            except Exception:
+                pass
 
     daily_start_equity, daily_start_date, peak_equity = None, None, None
     recovery_anchor_equity = None
     consecutive_losses, last_entry_time, risk_multiplier, pause_until = 0, 0.0, 1.0, 0.0
+    flat_defensive_streak = 0
+    cycle_counter = 0
     current_mode = "NORMAL"
     last_known_balance = None
 
     print("====================================================================")
-    print(f"  LNM SNIPER v7.3 DUAL [{Config.ENV_MODE.upper()}] – ARQUITECTURA DE SATS NETOS")
-    print(f"  Endpoint: {Config.BASE_URL} | Cerebro: {Config.BRAIN_FILE}")
+    print(f"  LNM SNIPER v7.3+ DUAL [{Config.ENV_MODE.upper()}] – ARQUITECTURA DE SATS NETOS + HEDGE ENGINE (API v3)")
+    print(f"  Endpoint: {Config.BASE_URL} | Cerebro: {Config.BRAIN_FILE} | Hedge: {Config.HEDGE_STATE_FILE}")
     print(f"  Meta Balance: {brain.current_target:,} sats | Máx Pos: {Config.MAX_CONCURRENT_TRADES} | Explorer: {Config.EXPLORER_MODE}")
     if safe_mode:
         print("  🛡️ [MODO SEGURO ACTIVO] Solo reconciliación, Guardian y análisis (sin nuevas órdenes reales).")
     print("====================================================================")
 
-    while True:
-        cycle_t0 = time.time()
+    while not stop_state["requested"]:
+        cycle_t0 = time.perf_counter()
+        cycle_counter += 1
+        if cycle_counter % 120 == 0:
+            rotate_log_file_if_needed(log_file_path)
+
         warmup = brain.is_warming_up()
         if api_health.check_cooldown():
             continue
@@ -1892,17 +2359,27 @@ def main():
             if bucket_4h > int(brain.cycle_state["4h"].get("bucket", 0)):
                 mtf_cache.invalidate("4h")
 
-            running = client.get_running_trades()
-            running_id_set = {str(x["id"]) for x in running}
-            closed_ids = [tid for tid in list(brain.active_trades.keys()) if str(tid) not in running_id_set]
+            running = client.get_running_trades(force_refresh=True)
+            running, portfolio_state = reconcile_portfolio_with_hedges(
+                client, brain, hedge_store, running,
+                equity_sats=last_known_balance or 30000,
+                btc_price=70000.0,
+                now=now,
+                safe_mode=safe_mode,
+            )
+            primary_running = portfolio_state["primary_trades"]
+            hedge_running = list(portfolio_state["hedge_trades_map"].values())
+            primary_id_set = {str(x["id"]) for x in primary_running}
+            closed_ids = [tid for tid in list(brain.active_trades.keys()) if str(tid) not in primary_id_set]
 
             user = client.get_user(force_refresh=bool(closed_ids) or (last_known_balance is None))
             balance = int(user.get("balance", 0))
             if last_known_balance is None:
                 last_known_balance = balance
 
-            if len(running) > Config.MAX_CONCURRENT_TRADES:
-                running = enforce_concurrency_cap(client, brain, running)
+            if len(primary_running) > Config.MAX_CONCURRENT_TRADES:
+                primary_running = enforce_concurrency_cap(client, brain, primary_running)
+                running = primary_running + hedge_running
                 user = client.get_user(force_refresh=True)
                 balance = int(user.get("balance", 0))
 
@@ -1914,13 +2391,14 @@ def main():
             brain.check_and_advance_goal(balance)
             lnm_price = client.get_ticker_price()
 
+            proc_t0 = time.perf_counter()
             ind_5m = mtf_cache.get_indicators_fast("5m", lnm_price)
             ind_15m = mtf_cache.get_indicators_fast("15m", lnm_price)
             ind_1h = mtf_cache.get_indicators_fast("1h")
             ind_4h = mtf_cache.get_indicators_fast("4h")
 
             api_health.record_success()
-            state = brain.discretize_state(ind_5m, ind_15m, ind_1h, ind_4h, len(running))
+            state = brain.discretize_state(ind_5m, ind_15m, ind_1h, ind_4h, len(primary_running))
 
             if closed_ids:
                 closed_map = {str(ct["id"]): ct for ct in client.get_closed_trades(limit=25)}
@@ -1933,6 +2411,18 @@ def main():
                         m_used = int(info.get("margin", ct_obj.get("margin", 1000)))
                         lev_used = float(ct_obj.get("leverage") or info.get("leverage", 35.0))
                         exact_fee = int(ct_obj.get("opening_fee", 0) or 0) + int(ct_obj.get("closing_fee", 0) or 0)
+                        funding_fee = int(round(float(ct_obj.get("sum_carry_fees") or ct_obj.get("funding_fees") or 0)))
+                        fill_price = float(ct_obj.get("price") or ct_obj.get("entryPrice") or 0.0)
+                        dec_price = float(info.get("decision_price") or fill_price)
+                        t_side = str(ct_obj.get("side") or info.get("side") or "buy")
+                        econ = SatsExpectancyGate.compute_trade_economic_breakdown(
+                            pl, m_used, lev_used,
+                            exact_fee_sats=exact_fee,
+                            funding_fee_sats=funding_fee,
+                            entry_price=fill_price,
+                            decision_price=dec_price,
+                            side=t_side,
+                        )
                         was_harvested = bool(info.get("ai_closed", False))
                         orig_st = info.get("state", state)
                         act_taken = int(info.get("action", 2))
@@ -1946,7 +2436,9 @@ def main():
                             equity_after=balance, available_balance_after=balance,
                             hit_tp=hit_tp_real, harvested=was_harvested,
                             recovery_mode=in_rec, exited_recovery_bonus=beat_anchor,
-                            lev_used=lev_used, exact_fee_sats=exact_fee
+                            lev_used=lev_used, exact_fee_sats=exact_fee,
+                            funding_fee_sats=funding_fee,
+                            slippage_sats=econ["slippage_sats"]
                         )
                         if pl < 0:
                             consecutive_losses += 1
@@ -1959,15 +2451,15 @@ def main():
                             risk_multiplier = min(1.0, risk_multiplier + 0.15)
                 last_known_balance = balance
 
-            for t in running:
+            for t in primary_running:
                 tid = str(t["id"])
                 existing = brain.active_trades.get(tid)
                 if not isinstance(existing, dict) or not existing.get("style") or str(existing.get("style")) == "None":
                     brain.active_trades[tid] = infer_adopted_trade(t, ind_5m, state, now, existing_meta=existing)
                     brain.dirty = True
 
-            brain.evaluate_and_close_macro_cycle("1h", bucket_1h, equity, ind_5m["price"], ind_1h, running)
-            brain.evaluate_and_close_macro_cycle("4h", bucket_4h, equity, ind_5m["price"], ind_4h, running)
+            brain.evaluate_and_close_macro_cycle("1h", bucket_1h, equity, ind_5m["price"], ind_1h, primary_running)
+            brain.evaluate_and_close_macro_cycle("4h", bucket_4h, equity, ind_5m["price"], ind_4h, primary_running)
 
             today = date.today()
             if daily_start_date != today or daily_start_equity is None:
@@ -1986,31 +2478,52 @@ def main():
                 brain.dirty = True
 
             prev_eq = getattr(brain, "_last_loop_equity", equity)
-            prev_cnt = getattr(brain, "_last_loop_count", len(running))
-            if len(running) < prev_cnt and equity < prev_eq - 35 and not Config.EXPLORER_MODE:
+            prev_cnt = getattr(brain, "_last_loop_count", len(primary_running))
+            if len(primary_running) < prev_cnt and equity < prev_eq - 35 and not Config.EXPLORER_MODE:
                 consecutive_losses += 1
                 pause_until = max(pause_until, now + min(600, 120 * consecutive_losses))
                 last_entry_time = now
                 print(f"  🛑 [PROTECCIÓN STOP-OUT] Pérdida detectada (Racha: {consecutive_losses}). Enfriamiento por {int(pause_until - now)}s.")
-            elif len(running) < prev_cnt and equity > prev_eq + 25:
+            elif len(primary_running) < prev_cnt and equity > prev_eq + 25:
                 consecutive_losses = max(0, consecutive_losses - 1)
             brain._last_loop_equity = equity
-            brain._last_loop_count = len(running)
+            brain._last_loop_count = len(primary_running)
 
             daily_pnl_pct = (equity - daily_start_equity) / max(daily_start_equity, 1)
             prot = floor_guardian.evaluate_protection(equity, balance, peak_equity, brain.locked_floor, daily_pnl_pct)
             current_dd_pct = prot["current_dd_pct"]
             floor_threat = prot["should_liquidate"] and not Config.EXPLORER_MODE
 
+            # Prevención de bloqueo permanente (Deadlock) en DEFENSIVE cuando no hay posiciones abiertas (Act: 0/5)
+            if len(running) == 0 and current_dd_pct >= Config.MAX_DRAWDOWN_PCT and not floor_threat and daily_pnl_pct > -abs(Config.MAX_DAILY_LOSS_PCT):
+                flat_defensive_streak += 1
+                if flat_defensive_streak >= 25 and equity > int(round(brain.locked_floor * 1.03)):
+                    target_reanchor = int(round(equity / (1.0 - (Config.MAX_DRAWDOWN_PCT - 0.015))))
+                    peak_equity = min(peak_equity, max(equity, target_reanchor))
+                    brain.peak_equity = peak_equity
+                    brain.dirty = True
+                    prot = floor_guardian.evaluate_protection(equity, balance, peak_equity, brain.locked_floor, daily_pnl_pct)
+                    current_dd_pct = prot["current_dd_pct"]
+                    flat_defensive_streak = 0
+                    print(
+                        f"  🔓 [DESBLOQUEO RECOVERY PLANO] 0 pos activas y piso seguro -> "
+                        f"Re-anclando Peak={peak_equity:,} sats (DD ajustado: {current_dd_pct*100:.1f}%) para habilitar modo RECOVERY."
+                    )
+            else:
+                flat_defensive_streak = 0
+
             goal_pct = (balance / max(brain.current_target, 1)) * 100.0
             sprint_mode = goal_pct >= 88.0
 
             perception = PERCEPTION_ENGINE.evaluate(state, ind_5m, ind_15m, ind_1h, ind_4h, now=now)
+            client.telemetry.record("processing_ms", (time.perf_counter() - proc_t0) * 1000.0)
+
             ovr_tag = perception["override_side"] or "OFF"
+            mkt_reg_tag = perception.get("market_regime", ind_5m.get("market_regime", "RANGE"))
             q_vec = brain.get_state_q_values(state)
 
             edge_scores_by_tid = {}
-            for _t in running:
+            for _t in primary_running:
                 _tid = str(_t["id"])
                 _meta = brain.active_trades.get(_tid, {})
                 _act = int(_meta.get("action", 2 if _t.get("side", "buy") == "buy" else 6))
@@ -2026,20 +2539,25 @@ def main():
                     print(f"  ⚠️ [DEGRADACIÓN DE EDGE] ID:{_tid[:6]} | Act:{_act} | Edge:{edge_score:+.3f} (Q:{_q_act:+.3f} | PnL:{_pnl_atr:+.2f}ATR | OVR:{ovr_tag} | Streak:{_deg_cnt})")
 
             if floor_threat and (now >= pause_until):
-                print(f"  🚨 [GUARDIÁN PISO DURO UNIFICADO] {prot['reason']} | Eq:{equity:,} <= Piso:{brain.locked_floor:,}. Liquidando y pausando 45m.")
+                print(f"  🚨 [GUARDIÁN PISO DURO UNIFICADO] {prot['reason']} | Eq:{equity:,} <= Piso:{brain.locked_floor:,}. Liquidando portafolio completo y pausando 45m.")
                 for t_kill in list(running):
                     try:
                         confirm_and_close_trade(client, brain, str(t_kill["id"]), brain.active_trades.get(str(t_kill["id"]), {}), "HARD_FLOOR_KILL_SWITCH")
                     except Exception:
                         pass
                 running = []
+                primary_running = []
+                hedge_running = []
                 brain.active_trades.clear()
+                hedge_store.pairs.clear()
+                hedge_store.dirty = True
                 pause_until = now + 2700
                 peak_equity = equity
                 brain.peak_equity = equity
                 brain.locked_floor = int(round(equity * Config.INITIAL_FLOOR_RATIO))
                 brain.dirty = True
                 brain.save_brain(force=True)
+                hedge_store.save(force=True)
                 current_dd_pct = 0.0
                 floor_threat = False
 
@@ -2051,26 +2569,33 @@ def main():
                 new_entries_allowed = True
 
             mods = brain.get_parallel_modifiers(ind_5m, ind_15m, ind_1h, ind_4h)
-            latency_ms = int(round((time.time() - cycle_t0) * 1000.0))
+            latency_ms = int(round((time.perf_counter() - cycle_t0) * 1000.0))
+            client.telemetry.record("cycle_ms", latency_ms)
+            lat_tag = client.telemetry.format_compact_tag()
+            hedge_tag = f"|H:{len(hedge_running)}" if len(hedge_running) > 0 else ""
             print(
-                f"[{datetime.now().strftime('%H:%M:%S')}][{Config.ENV_MODE[:4].upper()}:{current_mode}][{state}]"
+                f"[{datetime.now().strftime('%H:%M:%S')}][{Config.ENV_MODE[:4].upper()}:{current_mode}][{state}][Reg:{mkt_reg_tag}]"
                 f"[1h:{mods['name_1h'][:4]}|4h:{mods['name_4h'][:4]}|OVR:{ovr_tag}] "
                 f"${ind_5m['price']:.1f} | Bal:{balance:,} ({goal_pct:.1f}% Meta) | Eq:{equity:,} | "
-                f"Act:{len(running)}/{Config.MAX_CONCURRENT_TRADES} | DD:{current_dd_pct*100:.1f}% | {latency_ms}ms"
+                f"Act:{len(primary_running)}/{Config.MAX_CONCURRENT_TRADES}{hedge_tag} | DD:{current_dd_pct*100:.1f}% | {latency_ms}ms [{lat_tag}]"
             )
 
             still_running = []
-            if running:
-                for trade in running:
-                    tid = str(trade["id"])
-                    t_meta = brain.active_trades.setdefault(tid, infer_adopted_trade(trade, ind_5m, state, now))
-                    closed_by_guardian = execute_strategy_guardian(
-                        client, brain, trade, ind_5m, ind_15m, t_meta, current_mode,
-                        edge_score=edge_scores_by_tid.get(tid, 0.0), perception=perception,
-                        current_dd_pct=current_dd_pct
-                    )
-                    if not closed_by_guardian:
-                        still_running.append(trade)
+            if primary_running:
+                account_state = {
+                    "equity_sats": equity,
+                    "balance_sats": balance,
+                    "locked_margin_sats": locked_margin,
+                    "locked_floor_sats": brain.locked_floor,
+                    "hard_floor_breach": floor_threat,
+                    "current_dd_pct": current_dd_pct,
+                }
+                still_running = run_integrated_guardian_and_hedge_cycle(
+                    client, brain, hedge_store, portfolio_state,
+                    primary_running, ind_5m, ind_15m, ind_1h,
+                    state, current_mode, edge_scores_by_tid, perception,
+                    q_vec, account_state, now, safe_mode=safe_mode
+                )
                 evaluate_open_trades_online(brain, still_running, ind_5m, state, now)
 
             active_count = max(len(still_running), len(brain.active_trades))
@@ -2081,7 +2606,7 @@ def main():
             else:
                 capital_max_pos = max(1, min(Config.MAX_CONCURRENT_TRADES, int((equity * 0.60) // 1000)))
                 floor_headroom_pct = (equity - brain.locked_floor) / max(equity, 1) if brain.locked_floor > 0 else 1.0
-                if floor_headroom_pct <= 0.06:
+                if floor_headroom_pct <= 0.06 or mkt_reg_tag == "EXTREME_VOLATILITY":
                     dynamic_max_pos = 1
                 elif recovery_mode:
                     dynamic_max_pos = min(capital_max_pos, 1 if (equity < 10000 or current_dd_pct >= 0.08) else 2)
@@ -2096,6 +2621,7 @@ def main():
             )
             if new_entries_allowed and active_count < dynamic_max_pos:
                 if (locked_margin / max(equity, 1)) < Config.SOFT_EXPOSURE_LIMIT and (now - last_entry_time) >= effective_cooldown:
+                    dec_t0 = time.perf_counter()
                     raw_action = brain.choose_action(
                         state, ind_5m, ind_15m, ind_1h, ind_4h,
                         recovery_mode=recovery_mode, current_dd_pct=current_dd_pct
@@ -2106,6 +2632,9 @@ def main():
                         recovery_mode=recovery_mode, current_dd_pct=current_dd_pct,
                         explorer_mode=Config.EXPLORER_MODE
                     )
+                    decision_elapsed_ms = (time.perf_counter() - dec_t0) * 1000.0
+                    client.telemetry.record("decision_ms", decision_elapsed_ms)
+
                     if action == 0 and raw_action > 0:
                         brain.remember_and_train(state, 0, 0, 1000, state, is_no_trade=True)
                         print(f"  ⏸️ [FILTRO SATS/SEGURIDAD] Entrada bloqueada ({gate_reason} | OVR:{perception.get('override_reason')})")
@@ -2120,6 +2649,9 @@ def main():
                             mods, brain, action, recovery_mode, current_dd_pct, consecutive_losses,
                             combined_rr, perception=perception
                         )
+                        reg_adapt = SatsExpectancyGate.compute_regime_risk_adaptation(
+                            mkt_reg_tag, current_dd_pct=current_dd_pct, recovery_mode=recovery_mode
+                        )
                         base_risk = compute_effective_risk(
                             warmup, risk_multiplier, recovery_mode, sprint_mode,
                             current_dd_pct, parallel_risk_mult=mods["risk_mult"]
@@ -2129,8 +2661,8 @@ def main():
                         if recovery_mode and not Config.EXPLORER_MODE:
                             kelly_mult = min(kelly_mult, 0.72)
 
-                        adj_risk = min(0.11, max(0.03, base_risk * kelly_mult))
-                        margin_sats = max(1000, int(round(equity * adj_risk)))
+                        adj_risk = min(0.11, max(0.03, base_risk * kelly_mult * reg_adapt["size_mult"]))
+                        margin_sats = max(Config.MIN_MARGIN_SATS, int(round(equity * adj_risk)))
 
                         est_entry_fee = max(1, int(round(margin_sats * lev * Config.TAKER_FEE)))
                         exp_ok, exp_reason, proj_exp = SatsExpectancyGate.verify_projected_exposure(
@@ -2139,73 +2671,105 @@ def main():
                             est_entry_fee_sats=est_entry_fee,
                             max_single_trade_risk_pct=Config.MAX_SINGLE_TRADE_MARGIN_PCT,
                         )
+                        est_slip_bps = 2.5 if mkt_reg_tag in ("EXTREME_VOLATILITY", "VOLATILITY_EXPANSION") else 1.0
                         viable_sats, sats_meta = SatsExpectancyGate.verify_net_sats_expectancy(
                             ind_5m["price"], margin_sats, lev, sl, tp,
-                            explorer_mode=Config.EXPLORER_MODE
+                            explorer_mode=Config.EXPLORER_MODE,
+                            slippage_bps=est_slip_bps
                         )
                         if viable_sats and not Config.EXPLORER_MODE and (recovery_mode or "RANGE_SQUEEZE" in state):
                             min_strict_tp = max(44 if recovery_mode else 38, int(round(sats_meta["fee_sats"] * (3.2 + current_dd_pct * 3.0 if recovery_mode else 2.9))))
                             if sats_meta["net_tp_sats"] < min_strict_tp:
                                 viable_sats = False
 
+                        lat_degraded, lat_reason = client.telemetry.evaluate_execution_health()
+                        can_send, dup_reason = client.order_guard.can_send_order(
+                            strat["side"], margin_sats, lev, running_trades=still_running, now=now
+                        )
+
                         if not exp_ok:
                             print(f"  ⏸️ [EXPOSICIÓN PROYECTADA BLOQUEADA] {exp_reason} (Margen:{margin_sats} sats)")
                         elif not viable_sats:
                             print(
                                 f"  ⏸️ [EXPECTANCY SATS INSUFICIENTE] NetTP:+{sats_meta['net_tp_sats']} sats vs "
-                                f"Fee:{sats_meta['fee_sats']} sats (Ratio:{sats_meta['fee_ratio']}x)"
+                                f"Coste:{sats_meta.get('total_cost_sats', sats_meta['fee_sats'])} sats (Ratio:{sats_meta['fee_ratio']}x)"
                             )
+                        elif lat_degraded and not Config.EXPLORER_MODE:
+                            print(f"  ⏸️ [PROTECCIÓN DE LATENCIA] Entrada bloqueada por condición de ejecución degradada ({lat_reason})")
+                        elif not can_send:
+                            print(f"  ⏸️ [GUARDIA ANTI-DUPLICADOS] {dup_reason}")
                         elif safe_mode:
                             print(
                                 f"  🛡️ [MODO SEGURO - SIMULACIÓN] Señal válida {strat['name']} "
                                 f"(Lev {lev}x | Margen {margin_sats} sats | SL:{sl} | TP:{tp} | ExpProy:{proj_exp*100:.1f}%)"
                             )
                         else:
-                            live_running = client.get_running_trades()
-                            if len(live_running) < min(dynamic_max_pos, Config.MAX_CONCURRENT_TRADES):
+                            live_running = client.get_running_trades(force_refresh=False)
+                            hedge_tid_set = hedge_store.get_all_hedge_trade_ids() if Config.ENABLE_HYBRID_HEDGE else set()
+                            live_primary = [t for t in live_running if str(t.get("id")) not in hedge_tid_set]
+                            if len(live_primary) < min(dynamic_max_pos, Config.MAX_CONCURRENT_TRADES):
                                 last_entry_time = now
+                                intent_fp = client.order_guard.register_intent(
+                                    strat["side"], margin_sats, lev, state_key=state, now=now
+                                )
+                                client.telemetry.record("order_dispatch_ms", (time.perf_counter() - dec_t0) * 1000.0)
                                 try:
                                     new_t = client.open_trade(strat["side"], margin_sats, lev, sl, tp)
+                                    client.order_guard.clear_intent(intent_fp)
                                     if isinstance(new_t, dict) and "id" in new_t:
                                         nt_id = str(new_t["id"])
-                                        brain.active_trades[nt_id] = infer_adopted_trade(
+                                        adopted_meta = infer_adopted_trade(
                                             new_t, ind_5m, state, now, forced_action=action
                                         )
+                                        adopted_meta["decision_price"] = float(ind_5m["price"])
+                                        brain.active_trades[nt_id] = adopted_meta
                                         brain.dirty = True
                                         brain.save_brain(force=True)
                                         print(
-                                            f"  → Abierta {strat['name']} [{len(live_running)+1}/{Config.MAX_CONCURRENT_TRADES}] "
+                                            f"  → Abierta {strat['name']} [{len(live_primary)+1}/{Config.MAX_CONCURRENT_TRADES}] "
                                             f"(Lev {lev}x | Margen {margin_sats} sats | ExpProy:{proj_exp*100:.1f}% | Salida:{strat['exit_mode']})"
                                         )
                                 except Exception as open_err:
                                     print(f"  [VERIFICANDO ORDEN POST-TIMEOUT] {open_err}")
                                     time.sleep(1.2)
-                                    verify_running = client.get_running_trades()
+                                    verify_running = client.get_running_trades(force_refresh=True)
+                                    hedge_tid_set = hedge_store.get_all_hedge_trade_ids() if Config.ENABLE_HYBRID_HEDGE else set()
                                     for vt in verify_running:
                                         vtid = str(vt["id"])
-                                        if vtid not in brain.active_trades:
-                                            brain.active_trades[vtid] = infer_adopted_trade(
+                                        if vtid not in brain.active_trades and vtid not in hedge_tid_set:
+                                            adopted_meta = infer_adopted_trade(
                                                 vt, ind_5m, state, now, forced_action=action
                                             )
+                                            adopted_meta["decision_price"] = float(ind_5m["price"])
+                                            brain.active_trades[vtid] = adopted_meta
                                             brain.dirty = True
+                                    client.order_guard.clear_intent(intent_fp)
                                     brain.save_brain(force=True)
 
             brain.save_brain(force=False)
+            hedge_store.save(force=False)
         except RuntimeError as api_err:
             api_health.record_error("API/RED", api_err)
         except Exception as e:
             api_health.record_error(type(e).__name__, e)
 
-        if once_mode:
+        if once_mode or stop_state["requested"]:
             break
 
-        if PERCEPTION_ENGINE.override_side is not None:
-            loop_wait = Config.FAST_ANALYZE_INTERVAL_SEC
+        # Frecuencia operativa adaptativa según calidad de datos, latencia, posiciones y volatilidad (Fase 1.4)
+        lat_deg, _ = client.telemetry.evaluate_execution_health()
+        if lat_deg:
+            loop_wait = min(14.0, Config.IDLE_ANALYZE_INTERVAL_SEC * 1.25)
+        elif PERCEPTION_ENGINE.override_side is not None:
+            loop_wait = Config.FAST_ANALYZE_INTERVAL_SEC * 0.85
         elif len(brain.active_trades) > 0:
-            loop_wait = Config.ACTIVE_ANALYZE_INTERVAL_SEC
+            loop_wait = Config.ACTIVE_ANALYZE_INTERVAL_SEC * 0.85
         else:
             loop_wait = Config.IDLE_ANALYZE_INTERVAL_SEC
-        time.sleep(loop_wait)
+        time.sleep(max(1.0, loop_wait))
+
+    brain.save_brain(force=True)
+    hedge_store.save(force=True)
 
 
 if __name__ == "__main__":

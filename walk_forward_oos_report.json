@@ -1,0 +1,340 @@
+{
+  "protocol": "WALK_FORWARD_OOS_FASE_5_7",
+  "total_episodes": 72,
+  "folds": 6,
+  "regimes": [
+    "RANGE_SQUEEZE",
+    "RANGE",
+    "TREND_BULL",
+    "TREND_BEAR",
+    "VOLATILITY_EXPANSION",
+    "EXTREME_VOLATILITY"
+  ],
+  "priors": {
+    "mainnet_states": 175,
+    "testnet_states": 176,
+    "initial_equity_sats": 100000
+  },
+  "variants": {
+    "1_SISTEMA_ACTUAL_SIN_MEJORAS": {
+      "trades_executed": 72,
+      "total_net_sats": -12549,
+      "max_dd_sats": 13034,
+      "max_dd_pct": 13.03,
+      "profit_factor": 0.417,
+      "sharpe": -3.149,
+      "sortino": -3.269,
+      "calmar": -0.963,
+      "win_rate_pct": 45.83,
+      "expectancy_sats": -174.29,
+      "avg_recovery_cycles": 71.0,
+      "total_fees_sats": 9195,
+      "total_funding_sats": 687,
+      "total_slippage_sats": 1281,
+      "hedges_activated": 0,
+      "profitable_hedges_pct": 0.0,
+      "loss_avoided_vs_sl_sats": 0,
+      "hedge_worsened_cases": 0,
+      "by_regime": {
+        "RANGE_SQUEEZE": {
+          "trades_executed": 12,
+          "net_sats": -1740,
+          "hedges_activated": 0,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 0
+        },
+        "RANGE": {
+          "trades_executed": 12,
+          "net_sats": -84,
+          "hedges_activated": 0,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 0
+        },
+        "TREND_BULL": {
+          "trades_executed": 12,
+          "net_sats": -1599,
+          "hedges_activated": 0,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 0
+        },
+        "TREND_BEAR": {
+          "trades_executed": 12,
+          "net_sats": -1536,
+          "hedges_activated": 0,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 0
+        },
+        "VOLATILITY_EXPANSION": {
+          "trades_executed": 12,
+          "net_sats": -4833,
+          "hedges_activated": 0,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 0
+        },
+        "EXTREME_VOLATILITY": {
+          "trades_executed": 12,
+          "net_sats": -2757,
+          "hedges_activated": 0,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 0
+        }
+      }
+    },
+    "2_SISTEMA_OPTIMIZADO_SIN_HEDGE": {
+      "trades_executed": 54,
+      "total_net_sats": -537,
+      "max_dd_sats": 812,
+      "max_dd_pct": 0.81,
+      "profit_factor": 0.908,
+      "sharpe": -0.288,
+      "sortino": -0.354,
+      "calmar": -0.661,
+      "win_rate_pct": 61.11,
+      "expectancy_sats": -9.94,
+      "avg_recovery_cycles": 17.0,
+      "total_fees_sats": 4407,
+      "total_funding_sats": 333,
+      "total_slippage_sats": 579,
+      "hedges_activated": 0,
+      "profitable_hedges_pct": 0.0,
+      "loss_avoided_vs_sl_sats": 0,
+      "hedge_worsened_cases": 0,
+      "by_regime": {
+        "RANGE_SQUEEZE": {
+          "trades_executed": 9,
+          "net_sats": -363,
+          "hedges_activated": 0,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 0
+        },
+        "RANGE": {
+          "trades_executed": 12,
+          "net_sats": -54,
+          "hedges_activated": 0,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 0
+        },
+        "TREND_BULL": {
+          "trades_executed": 9,
+          "net_sats": -78,
+          "hedges_activated": 0,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 0
+        },
+        "TREND_BEAR": {
+          "trades_executed": 9,
+          "net_sats": 33,
+          "hedges_activated": 0,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 0
+        },
+        "VOLATILITY_EXPANSION": {
+          "trades_executed": 6,
+          "net_sats": -240,
+          "hedges_activated": 0,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 0
+        },
+        "EXTREME_VOLATILITY": {
+          "trades_executed": 9,
+          "net_sats": 165,
+          "hedges_activated": 0,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 0
+        }
+      }
+    },
+    "3_HEDGE_ESTATICO_TRADICIONAL": {
+      "trades_executed": 54,
+      "total_net_sats": -2679,
+      "max_dd_sats": 2980,
+      "max_dd_pct": 2.98,
+      "profit_factor": 0.583,
+      "sharpe": -1.745,
+      "sortino": -2.149,
+      "calmar": -0.899,
+      "win_rate_pct": 38.89,
+      "expectancy_sats": -49.61,
+      "avg_recovery_cycles": 53.0,
+      "total_fees_sats": 7071,
+      "total_funding_sats": 534,
+      "total_slippage_sats": 927,
+      "hedges_activated": 33,
+      "profitable_hedges_pct": 54.55,
+      "loss_avoided_vs_sl_sats": 2325,
+      "hedge_worsened_cases": 15,
+      "by_regime": {
+        "RANGE_SQUEEZE": {
+          "trades_executed": 9,
+          "net_sats": -666,
+          "hedges_activated": 6,
+          "loss_avoided_sats": 30,
+          "hedge_worsened_cases": 3
+        },
+        "RANGE": {
+          "trades_executed": 12,
+          "net_sats": -567,
+          "hedges_activated": 6,
+          "loss_avoided_sats": 234,
+          "hedge_worsened_cases": 3
+        },
+        "TREND_BULL": {
+          "trades_executed": 9,
+          "net_sats": -906,
+          "hedges_activated": 6,
+          "loss_avoided_sats": 594,
+          "hedge_worsened_cases": 3
+        },
+        "TREND_BEAR": {
+          "trades_executed": 9,
+          "net_sats": -825,
+          "hedges_activated": 6,
+          "loss_avoided_sats": 654,
+          "hedge_worsened_cases": 3
+        },
+        "VOLATILITY_EXPANSION": {
+          "trades_executed": 6,
+          "net_sats": 261,
+          "hedges_activated": 3,
+          "loss_avoided_sats": 501,
+          "hedge_worsened_cases": 0
+        },
+        "EXTREME_VOLATILITY": {
+          "trades_executed": 9,
+          "net_sats": 24,
+          "hedges_activated": 6,
+          "loss_avoided_sats": 312,
+          "hedge_worsened_cases": 3
+        }
+      }
+    },
+    "4_HEDGE_PREDICTIVO_SIN_ADAPTACION": {
+      "trades_executed": 54,
+      "total_net_sats": -306,
+      "max_dd_sats": 886,
+      "max_dd_pct": 0.89,
+      "profit_factor": 0.927,
+      "sharpe": -0.222,
+      "sortino": -0.311,
+      "calmar": -0.345,
+      "win_rate_pct": 44.44,
+      "expectancy_sats": -5.67,
+      "avg_recovery_cycles": 53.0,
+      "total_fees_sats": 6531,
+      "total_funding_sats": 414,
+      "total_slippage_sats": 720,
+      "hedges_activated": 24,
+      "profitable_hedges_pct": 50.0,
+      "loss_avoided_vs_sl_sats": 2061,
+      "hedge_worsened_cases": 12,
+      "by_regime": {
+        "RANGE_SQUEEZE": {
+          "trades_executed": 9,
+          "net_sats": -363,
+          "hedges_activated": 0,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 0
+        },
+        "RANGE": {
+          "trades_executed": 12,
+          "net_sats": -381,
+          "hedges_activated": 3,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 3
+        },
+        "TREND_BULL": {
+          "trades_executed": 9,
+          "net_sats": -126,
+          "hedges_activated": 6,
+          "loss_avoided_sats": 594,
+          "hedge_worsened_cases": 3
+        },
+        "TREND_BEAR": {
+          "trades_executed": 9,
+          "net_sats": 3,
+          "hedges_activated": 6,
+          "loss_avoided_sats": 654,
+          "hedge_worsened_cases": 3
+        },
+        "VOLATILITY_EXPANSION": {
+          "trades_executed": 6,
+          "net_sats": 261,
+          "hedges_activated": 3,
+          "loss_avoided_sats": 501,
+          "hedge_worsened_cases": 0
+        },
+        "EXTREME_VOLATILITY": {
+          "trades_executed": 9,
+          "net_sats": 300,
+          "hedges_activated": 6,
+          "loss_avoided_sats": 312,
+          "hedge_worsened_cases": 3
+        }
+      }
+    },
+    "5_HYBRID_EDGE_HEDGING_COMPLETO": {
+      "trades_executed": 54,
+      "total_net_sats": 1656,
+      "max_dd_sats": 530,
+      "max_dd_pct": 0.53,
+      "profit_factor": 1.456,
+      "sharpe": 1.152,
+      "sortino": 1.711,
+      "calmar": 3.125,
+      "win_rate_pct": 61.11,
+      "expectancy_sats": 30.67,
+      "avg_recovery_cycles": 3.18,
+      "total_fees_sats": 5472,
+      "total_funding_sats": 414,
+      "total_slippage_sats": 723,
+      "hedges_activated": 12,
+      "profitable_hedges_pct": 100.0,
+      "loss_avoided_vs_sl_sats": 2193,
+      "hedge_worsened_cases": 0,
+      "by_regime": {
+        "RANGE_SQUEEZE": {
+          "trades_executed": 9,
+          "net_sats": -363,
+          "hedges_activated": 0,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 0
+        },
+        "RANGE": {
+          "trades_executed": 12,
+          "net_sats": -54,
+          "hedges_activated": 0,
+          "loss_avoided_sats": 0,
+          "hedge_worsened_cases": 0
+        },
+        "TREND_BULL": {
+          "trades_executed": 9,
+          "net_sats": 516,
+          "hedges_activated": 3,
+          "loss_avoided_sats": 594,
+          "hedge_worsened_cases": 0
+        },
+        "TREND_BEAR": {
+          "trades_executed": 9,
+          "net_sats": 687,
+          "hedges_activated": 3,
+          "loss_avoided_sats": 654,
+          "hedge_worsened_cases": 0
+        },
+        "VOLATILITY_EXPANSION": {
+          "trades_executed": 6,
+          "net_sats": 261,
+          "hedges_activated": 3,
+          "loss_avoided_sats": 501,
+          "hedge_worsened_cases": 0
+        },
+        "EXTREME_VOLATILITY": {
+          "trades_executed": 9,
+          "net_sats": 609,
+          "hedges_activated": 3,
+          "loss_avoided_sats": 444,
+          "hedge_worsened_cases": 0
+        }
+      }
+    }
+  }
+}
