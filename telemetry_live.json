@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-11-10T16:44:03Z",
+  "timestamp": "2026-11-10T18:18:08Z",
   "balance_sats": 25500,
   "equity_sats": 25500,
   "available_sats": 25500,
@@ -29,6 +29,7 @@
     },
     "policy_entropy": 2.0727,
     "normalized_policy_entropy": 0.9433,
+    "healthy_normalized_entropy": 0.45,
     "dominant_action": "HOLD",
     "dominant_action_freq": 0.2933,
     "action_frequencies": {
@@ -45,6 +46,7 @@
     "avg_sats_per_trade_last20": 10.0,
     "policy_health": "DEGRADED_DEFENSIVE",
     "mfe_capture_avg": 0.1,
+    "target_mfe_capture_ratio": 0.65,
     "mae_margin_ratio_avg": 0.65,
     "learning_guard_status": "ACTIVE_LEARNING",
     "autonomous_adjustments": {

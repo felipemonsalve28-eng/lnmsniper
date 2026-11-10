@@ -71,7 +71,23 @@ def run_all_tests() -> None:
         for p_name, p_meta in raw_cfg[cat].items():
             for req_f in REQUIRED_PARAM_FIELDS:
                 assert req_f in p_meta, f"Falta campo {req_f} en {cat}.{p_name}"
-    print(f"✅ TEST 1 (Esquema 10 Categorías y Validación de Límites en learning_thresholds.json): PASÓ.")
+
+    # Verificación de que no existen parámetros huérfanos sin consumidor en el código (Hallazgo M1)
+    import glob
+    py_code = ""
+    for py_file in glob.glob("*.py"):
+        try:
+            with open(py_file, "r", encoding="utf-8", errors="ignore") as pf:
+                py_code += pf.read() + "\n"
+        except Exception:
+            pass
+    orphaned_keys = []
+    for cat in REQUIRED_CATEGORIES:
+        for p_name in raw_cfg[cat].keys():
+            if p_name not in py_code:
+                orphaned_keys.append(f"{cat}.{p_name}")
+    assert len(orphaned_keys) == 0, f"Existen claves en JSON sin consumidor en el código: {orphaned_keys}"
+    print(f"✅ TEST 1 (Esquema 10 Categorías, Validación de Límites y 0 Claves Huérfanas en learning_thresholds.json): PASÓ.")
 
     # -------------------------------------------------------------------------
     # ESCENARIO 2: Hot-Reload Atómico, Rechazo de Corrupción y Bloqueo Estructural

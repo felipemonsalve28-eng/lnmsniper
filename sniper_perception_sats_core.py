@@ -34,6 +34,20 @@ class MarketRegimeClassifier:
         "CHOP_HIGHVOL",
     )
 
+    ATR_EXTREME_PCT = 0.0085
+    SQUEEZE_BB_WIDTH_PCT = 0.0075
+    EXPANSION_ATR_REL_RATIO = 1.32
+
+    @classmethod
+    def sync_from_thresholds(cls, mgr=None):
+        """Sincroniza umbrales de sensibilidad de régimen desde config/learning_thresholds.json."""
+        tm = mgr or get_thresholds_manager()
+        raw_atr_ext = tm.get_float("market_sensitivity", "atr_extreme_pct", 0.85)
+        cls.ATR_EXTREME_PCT = (raw_atr_ext / 100.0) if raw_atr_ext > 0.05 else max(0.001, raw_atr_ext)
+        raw_sq_bb = tm.get_float("market_sensitivity", "squeeze_bb_width_pct", 0.75)
+        cls.SQUEEZE_BB_WIDTH_PCT = (raw_sq_bb / 100.0) if raw_sq_bb > 0.05 else max(0.0005, raw_sq_bb)
+        cls.EXPANSION_ATR_REL_RATIO = tm.get_float("market_sensitivity", "expansion_atr_rel_ratio", 1.32)
+
     @classmethod
     def classify(cls, ind_5m, ind_15m=None, ind_1h=None):
         price = max(float(ind_5m.get("price", 1.0)), 1.0)
@@ -51,7 +65,7 @@ class MarketRegimeClassifier:
         mtf_alignment = (0.45 * ema_score_5m) + (0.35 * ema_score_15m) + (0.20 * ema_score_1h)
 
         # 1. EXTREME_VOLATILITY: volatilidad desbordada o expansión violenta sin estructura limpia
-        if atr_pct >= 0.0085 or atr_rel >= 2.15 or (atr_pct > 0.0072 and trend_spread_pct < 0.0016):
+        if atr_pct >= cls.ATR_EXTREME_PCT or atr_rel >= 2.15 or (atr_pct > (cls.ATR_EXTREME_PCT * 0.85) and trend_spread_pct < 0.0016):
             return {
                 "market_regime": "EXTREME_VOLATILITY",
                 "canonical_regime": "CHOP_HIGHVOL",
@@ -63,7 +77,7 @@ class MarketRegimeClassifier:
 
         # 2. VOLATILITY_EXPANSION: bandas abriéndose rápido o ATR expandiéndose sobre su media
         is_expanding = (
-            (atr_rel >= 1.32 and bb_expansion_rate >= 1.18 and bb_width_pct >= 0.0080)
+            (atr_rel >= cls.EXPANSION_ATR_REL_RATIO and bb_expansion_rate >= 1.18 and bb_width_pct >= 0.0080)
             or (atr_pct >= 0.0045 and trend_spread_pct >= 0.0022)
         )
         if is_expanding:
@@ -83,7 +97,7 @@ class MarketRegimeClassifier:
             }
 
         # 3. RANGE_SQUEEZE: compresión real (bandas estrechas y ATR contraído sin ruptura activa)
-        if (bb_width_pct < 0.0075 and atr_rel <= 1.08) or (atr_pct < 0.0019 and trend_spread_pct < 0.0012):
+        if (bb_width_pct < cls.SQUEEZE_BB_WIDTH_PCT and atr_rel <= 1.08) or (atr_pct < 0.0019 and trend_spread_pct < 0.0012):
             return {
                 "market_regime": "RANGE_SQUEEZE",
                 "canonical_regime": "RANGE_SQUEEZE",
@@ -314,6 +328,7 @@ class SatsExpectancyGate:
 
     TAKER_FEE_RATE = 0.0010
     ROUND_TRIP_FEE_RATE = 0.0020
+    FUNDING_RATE_8H_EST = 0.0001
     MIN_NET_REWARD_TO_FEE_RATIO = 3.85
 
     @classmethod
@@ -322,7 +337,9 @@ class SatsExpectancyGate:
         tm = mgr or get_thresholds_manager()
         cls.TAKER_FEE_RATE = tm.get_float("fees", "taker_fee_rate", 0.0010)
         cls.ROUND_TRIP_FEE_RATE = tm.get_float("fees", "round_trip_fee_rate", 0.0020)
+        cls.FUNDING_RATE_8H_EST = tm.get_float("fees", "funding_rate_8h_est", 0.0001)
         cls.MIN_NET_REWARD_TO_FEE_RATIO = tm.get_float("expectancy", "min_expectancy_ratio", 3.85)
+        MarketRegimeClassifier.sync_from_thresholds(tm)
 
     @staticmethod
     def compute_regime_risk_adaptation(market_regime, current_dd_pct=0.0, recovery_mode=False):
@@ -467,7 +484,7 @@ class SatsExpectancyGate:
         if raw_action > 0 and not explorer_mode:
             q_act = float(q_values[raw_action]) if raw_action < len(q_values) else -1.0
             q_zero = float(q_values[0]) if len(q_values) > 0 else 0.0
-            min_req_q = max(0.015, q_zero) if (recovery_mode or "CHOP" in norm_s or "RANGE_SQUEEZE" in norm_s) else q_zero
+            min_req_q = max(0.010, q_zero) if (recovery_mode or "CHOP" in norm_s or "RANGE_SQUEEZE" in norm_s) else q_zero
             if q_act <= min_req_q:
                 return 0, "BLOCKED_LOW_Q_VS_NO_TRADE"
 
@@ -485,10 +502,15 @@ class SatsExpectancyGate:
         decision_price=0.0,
         spread_bps=0.0,
         side="buy",
+        gross_includes_execution=True,
     ):
         """
         Distingue rigurosamente entre beneficio bruto y resultado neto en sats:
         Desglosa Taker Fee (entrada + salida), Funding (carry fees), Spread y Slippage.
+        En LN Markets API v3, `pl` de una posición cerrada ya se calcula a partir del
+        precio real de ejecución (`entry_price`), por lo que cuando
+        `gross_includes_execution=True` (por defecto), el slippage y spread no se
+        vuelven a restar de `net_pnl_sats` (evitando doble deducción contable).
         """
         notional_sats = float(margin_sats) * float(leverage)
         est_entry_fee = max(1, int(round(notional_sats * cls.TAKER_FEE_RATE)))
@@ -505,9 +527,11 @@ class SatsExpectancyGate:
             slippage_sats = int(round(notional_sats * adverse_diff_pct))
 
         spread_sats = int(round(notional_sats * (max(0.0, float(spread_bps)) / 10000.0))) if spread_bps > 0 else 0
-        total_friction_sats = taker_fees + funding_sats + slippage_sats + spread_sats
+        settled_fee_sats = taker_fees + funding_sats
+        execution_friction_sats = slippage_sats + spread_sats
+        total_friction_sats = settled_fee_sats + execution_friction_sats
         gross_sats = int(round(float(gross_pnl_sats)))
-        net_sats = gross_sats - total_friction_sats
+        net_sats = gross_sats - (settled_fee_sats if gross_includes_execution else total_friction_sats)
 
         return {
             "gross_pnl_sats": gross_sats,
@@ -516,8 +540,10 @@ class SatsExpectancyGate:
             "exit_fee_sats": max(1, taker_fees - est_entry_fee),
             "taker_fee_sats": taker_fees,
             "funding_fee_sats": funding_sats,
+            "settled_fee_sats": settled_fee_sats,
             "slippage_sats": slippage_sats,
             "spread_sats": spread_sats,
+            "execution_friction_sats": execution_friction_sats,
             "total_friction_sats": total_friction_sats,
         }
 
@@ -530,7 +556,7 @@ class SatsExpectancyGate:
         sl_price,
         tp_price,
         explorer_mode=False,
-        funding_rate_est=0.0,
+        funding_rate_est=None,
         spread_bps=0.0,
         slippage_bps=0.0,
         expectancy_boost=0.0,
@@ -538,12 +564,13 @@ class SatsExpectancyGate:
         tm = get_thresholds_manager()
         cls.sync_from_thresholds(tm)
 
+        eff_funding_rate = cls.FUNDING_RATE_8H_EST if funding_rate_est is None else float(funding_rate_est)
         price = max(float(price), 1.0)
         notional_sats = float(margin_sats) * float(lev)
         entry_fee_sats = max(1, int(round(notional_sats * cls.TAKER_FEE_RATE)))
         exit_fee_sats = max(1, int(round(notional_sats * cls.TAKER_FEE_RATE)))
         fee_sats = max(2, int(round(notional_sats * cls.ROUND_TRIP_FEE_RATE)))
-        funding_sats = max(0, int(round(notional_sats * float(funding_rate_est))))
+        funding_sats = max(0, int(round(notional_sats * eff_funding_rate)))
         spread_sats = max(0, int(round(notional_sats * (float(spread_bps) / 10000.0))))
         slippage_sats = max(0, int(round(notional_sats * (float(slippage_bps) / 10000.0))))
         total_cost_sats = fee_sats + funding_sats + spread_sats + slippage_sats

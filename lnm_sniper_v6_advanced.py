@@ -115,6 +115,12 @@ class Config:
         cls.TAKER_FEE = tm.get_float("fees", "taker_fee_rate", 0.001)
         cls.ENABLE_INTERMEDIATE_LEARNING = (tm.get_int("reward", "decouple_floating_pnl", 1) == 0)
         cls.EDGE_DEGRADATION_PERSISTENCE = tm.get_int("market_sensitivity", "edge_degradation_persistence", 3)
+        cls.EDGE_DEGRADATION_WARN = -abs(tm.get_float("market_sensitivity", "edge_degradation_warn", 0.40))
+        cls.EDGE_DEGRADATION_TIGHTEN = -abs(tm.get_float("market_sensitivity", "edge_degradation_tighten", 0.60))
+        cls.EDGE_DEGRADATION_EXIT = -abs(tm.get_float("market_sensitivity", "edge_degradation_exit", 0.78))
+        raw_atr_ext = tm.get_float("market_sensitivity", "atr_extreme_pct", 0.85)
+        atr_ext_frac = (raw_atr_ext / 100.0) if raw_atr_ext > 0.05 else max(0.001, raw_atr_ext)
+        cls.ATR_EXTREME_PCT = round(max(0.0120, atr_ext_frac * 1.65), 5)
 
     # Umbrales de seguridad y recuperación auditable
     MAX_DAILY_LOSS_PCT = 0.11
@@ -702,10 +708,13 @@ def compute_indicators_from_prefix(prefix, lnm_price=0.0):
 # 6. CEREBRO AUTÓNOMO Q-LEARNING CON MÉTRICAS POR ESTILO Y MODO EXPLORER
 # =====================================================================
 class AutonomousGoalBrain:
+    REWARD_SCHEMA_VERSION = 2
+
     def __init__(self, filename=None, explorer_mode=None, thresholds_manager=None):
         self.filename = filename or Config.BRAIN_FILE
         self.explorer_mode = Config.EXPLORER_MODE if explorer_mode is None else bool(explorer_mode)
         self.thresholds = thresholds_manager or get_thresholds_manager()
+        self.reward_schema_version = self.REWARD_SCHEMA_VERSION
         self.alpha = self.thresholds.get_float("exploration", "alpha_learning_rate", 0.18)
         self.alpha_intermediate = Config.ALPHA_INTERMEDIATE
         self.alpha_macro = 0.18
@@ -816,6 +825,7 @@ class AutonomousGoalBrain:
     @staticmethod
     def _init_q_vector(state_key):
         q = [0.015] * Config.NUM_ACTIONS
+        q[0] = 0.0
         parts = state_key.split("|")
         regime = parts[0] if len(parts) > 0 else "RANGE_NORMAL"
         osc = parts[1] if len(parts) > 1 else "MID"
@@ -839,6 +849,7 @@ class AutonomousGoalBrain:
             c6 = q[6] * 0.45
             q[6] -= c6
             q[5], q[7], q[8] = q[5] + c6 * 0.30, q[7] + c6 * 0.35, q[8] + c6 * 0.35
+        q[0] = 0.0
         return [round(v, 4) for v in q]
 
     @staticmethod
@@ -856,12 +867,17 @@ class AutonomousGoalBrain:
 
     def _migrate_q_vector(self, vec):
         if not isinstance(vec, list):
-            return [0.015] * Config.NUM_ACTIONS
+            res = [0.015] * Config.NUM_ACTIONS
+            res[0] = 0.0
+            return res
         if len(vec) == Config.NUM_ACTIONS:
-            return [float(x) for x in vec]
+            res = [float(x) for x in vec]
+            res[0] = 0.0
+            return res
         new_vec = [0.015] * Config.NUM_ACTIONS
         for i in range(min(len(vec), Config.NUM_ACTIONS)):
             new_vec[i] = float(vec[i])
+        new_vec[0] = 0.0
         return new_vec
 
     @staticmethod
@@ -911,9 +927,29 @@ class AutonomousGoalBrain:
                 k: [round(float(x), 4) for x in (accum_q[k] / accum_counts[k])]
                 for k in accum_q
             }
-            for k in self.q_table:
-                self.q_table[k][0] = max(0.005, min(0.025, self.q_table[k][0]))
+            loaded_schema_ver = int(data.get("reward_schema_version", 1))
+            has_legacy_meta = ("total_trained" in data) or ("memory" in data)
+            is_legacy_v1 = (loaded_schema_ver < self.REWARD_SCHEMA_VERSION) and has_legacy_meta
 
+            if is_legacy_v1 and os.path.basename(self.filename) in ("q_brain_advanced_lnm.json", "q_brain_testnet_lnm.json"):
+                v1_bak = f"{self.filename}.pre_v2_schema.bak"
+                if os.path.exists(self.filename) and not os.path.exists(v1_bak):
+                    try:
+                        shutil.copy2(self.filename, v1_bak)
+                    except Exception:
+                        pass
+
+            for k in self.q_table:
+                if is_legacy_v1:
+                    # Reescalar valores Q heredados del esquema v1 (inflados por 1/(1-gamma) y bonos)
+                    self.q_table[k] = [
+                        0.0 if idx == 0 else round(float(val) * (0.35 if float(val) > 0.0 else 0.50), 4)
+                        for idx, val in enumerate(self.q_table[k])
+                    ]
+                else:
+                    self.q_table[k][0] = 0.0
+
+            self.reward_schema_version = self.REWARD_SCHEMA_VERSION
             self.state_visits = new_visits
             self.q_table_1h = data.get("q_table_1h", {})
             self.q_table_4h = data.get("q_table_4h", {})
@@ -943,16 +979,29 @@ class AutonomousGoalBrain:
             self.total_fees_paid_sats = int(data.get("total_fees_paid_sats", 0))
             self.active_trades = data.get("active_trades", {})
 
-            for item in data.get("memory", []):
-                if isinstance(item, (list, tuple)) and len(item) == 5:
-                    p, s, a, r, ns = item
-                    self.memory.append((
-                        float(p),
-                        self._normalize_state_key(s),
-                        int(a) % Config.NUM_ACTIONS,
-                        float(r),
-                        self._normalize_state_key(ns),
-                    ))
+            for tid_saved in data.get("processed_closed_trade_ids", []):
+                tid_str = str(tid_saved).strip()
+                if tid_str and tid_str not in self._processed_closed_trade_ids_set:
+                    if len(self.processed_closed_trade_ids) == self.processed_closed_trade_ids.maxlen:
+                        ev = self.processed_closed_trade_ids.popleft()
+                        self._processed_closed_trade_ids_set.discard(ev)
+                    self.processed_closed_trade_ids.append(tid_str)
+                    self._processed_closed_trade_ids_set.add(tid_str)
+
+            # Solo cargar memory si proviene del esquema v2 (evita contaminar replay con bonos artificiales v1)
+            if not is_legacy_v1:
+                for item in data.get("memory", []):
+                    if isinstance(item, (list, tuple)) and len(item) == 5:
+                        p, s, a, r, ns = item
+                        self.memory.append((
+                            float(p),
+                            self._normalize_state_key(s),
+                            int(a) % Config.NUM_ACTIONS,
+                            float(r),
+                            self._normalize_state_key(ns),
+                        ))
+            else:
+                self.dirty = True
             print(
                 f"[CEREBRO CARGADO SHA-256 ({Config.ENV_MODE.upper()})] Archivo: {self.filename} | "
                 f"Estados: {len(self.q_table)} | Cierres: {self.total_trained} | Online: {self.total_intermediate_updates}"
@@ -971,6 +1020,7 @@ class AutonomousGoalBrain:
         try:
             payload = {
                 "env": Config.ENV_MODE,
+                "reward_schema_version": self.REWARD_SCHEMA_VERSION,
                 "epsilon": round(self.epsilon, 4),
                 "total_trained": self.total_trained,
                 "total_intermediate_updates": self.total_intermediate_updates,
@@ -987,6 +1037,7 @@ class AutonomousGoalBrain:
                 "cycle_state": self.cycle_state,
                 "state_visits": self.state_visits,
                 "active_trades": self.active_trades,
+                "processed_closed_trade_ids": list(self.processed_closed_trade_ids)[-500:],
                 "memory": list(self.memory)[-1600:],
             }
             self.store.save(payload)
@@ -1187,8 +1238,6 @@ class AutonomousGoalBrain:
             cur_q + self.alpha_macro * (macro_reward + self.gamma * max_next_q - cur_q), 4
         )
 
-        self._experience_replay(self.batch_size, custom_alpha=self.alpha * 0.45)
-
         if random.uniform(0, 1) < max(0.08, self.epsilon * 0.5):
             new_macro_action = random.randint(0, Config.NUM_MACRO_ACTIONS - 1)
         else:
@@ -1288,7 +1337,7 @@ class AutonomousGoalBrain:
         self.supervisor.record_policy_decision(chosen_act)
         return chosen_act
 
-    def _update_q(self, s, a, r, ns, custom_alpha=None, force_negative_on_loss=False, check_guard=False):
+    def _update_q(self, s, a, r, ns, custom_alpha=None, force_negative_on_loss=False, check_guard=False, terminal=True):
         norm_s = self._normalize_state_key(s)
         norm_ns = self._normalize_state_key(ns)
         if norm_s not in self.q_table or len(self.q_table[norm_s]) != Config.NUM_ACTIONS:
@@ -1298,15 +1347,17 @@ class AutonomousGoalBrain:
         a = int(a) % Config.NUM_ACTIONS
         lr = custom_alpha if custom_alpha is not None else self.alpha
         self.gamma = self.thresholds.get_float("exploration", "gamma_discount", self.gamma)
+        eff_gamma = 0.0 if terminal else self.gamma
 
         current_q = float(self.q_table[norm_s][a])
         max_future_q = max(self.q_table[norm_ns])
-        raw_td = float(r) + (self.gamma * max_future_q) - current_q
+        raw_td = float(r) + (eff_gamma * max_future_q) - current_q
 
-        # Garantía matemática: si hubo una pérdida neta real en balance, el gradiente TD
-        # no puede volverse positivo por bootstrapping del estado futuro.
-        if force_negative_on_loss and float(r) < 0.0:
-            signed_td = min(raw_td, float(r))
+        # En transición terminal (eff_gamma=0), raw_td = r - current_q converge al valor
+        # esperado real E[R]. Si force_negative_on_loss está activo y current_q ya era menor
+        # que r < 0, acotamos a 0.0 para no subir Q en una pérdida ni hundirlo artificialmente.
+        if force_negative_on_loss and float(r) < 0.0 and raw_td > 0.0:
+            signed_td = 0.0
         else:
             signed_td = raw_td
 
@@ -1324,10 +1375,11 @@ class AutonomousGoalBrain:
         q_min = self.thresholds.get_float("q_calibration", "q_clip_min", -2.0)
         q_max = self.thresholds.get_float("q_calibration", "q_clip_max", 2.0)
         new_q = float(np.clip(current_q + lr * signed_td, q_min, q_max))
-        if force_negative_on_loss and float(r) < 0.0 and new_q >= current_q and current_q > q_min:
-            new_q = max(q_min, current_q - max(0.0005, abs(lr * float(r))))
+        if check_guard and force_negative_on_loss and float(r) < 0.0 and new_q >= current_q and current_q > q_min:
+            new_q = max(q_min, current_q - max(0.0005, abs(lr * float(r) * 0.25)))
         self._last_delta_q = abs(new_q - current_q)
         self.q_table[norm_s][a] = round(new_q, 4)
+        self.q_table[norm_s][0] = 0.0
         return self._last_delta_q
 
     def _compact_memory(self):
@@ -1358,6 +1410,7 @@ class AutonomousGoalBrain:
                 custom_alpha=custom_alpha,
                 force_negative_on_loss=(float(r) < 0.0),
                 check_guard=False,
+                terminal=True,
             )
             reg_change = 1.0 if str(s).split("|")[0] != str(ns).split("|")[0] else 0.0
             new_prio = round(abs(float(r)) + (0.30 * dq) + (0.20 * reg_change) + 0.02, 4)
@@ -1400,7 +1453,7 @@ class AutonomousGoalBrain:
             raw_shaping = (-abs(raw_shaping) * 1.8) if raw_shaping < 0 else (raw_shaping * 1.8)
 
         shaped_partial = float(np.clip(raw_shaping, -Config.MAX_INTERMEDIATE_REWARD_CLIP, Config.MAX_INTERMEDIATE_REWARD_CLIP))
-        self._update_q(origin_state, action, shaped_partial, current_state, custom_alpha=self.alpha_intermediate)
+        self._update_q(origin_state, action, shaped_partial, current_state, custom_alpha=self.alpha_intermediate, terminal=False)
         self.total_intermediate_updates += 1
         self.dirty = True
         return round(shaped_partial, 4)
@@ -1422,13 +1475,13 @@ class AutonomousGoalBrain:
         CONVENCIÓN CONTABLE LN MARKETS API v3 (Prevención de Doble Descuento):
           1. En LN Markets API v3, el balance líquido disponible (`/account -> balance`)
              ya deduce comisión de apertura, comisión de cierre y funding periódico
-             al liquidar la orden.
+             al liquidar la orden, y `pl` ya refleja el precio real de fill (slippage incluido).
           2. Si el llamador suministra `real_balance_delta_sats` (variación real de
              satoshis líquidos en balance) o `pl_includes_fees=True`, NO se restan
-             nuevamente las comisiones taker ni el funding.
+             nuevamente las comisiones taker, el funding ni el slippage.
           3. Solo cuando `real_balance_delta_sats is None` y `pl_includes_fees=False`
              (es decir, `reward_sats` es PnL bruto antes de fricción), se deduce una
-             única vez el costo total de fricción (`fee_sats = taker_fee + funding + slippage`).
+             única vez el costo total de fricción (`fee_sats`).
           4. Idempotencia estricta: Si se provee `trade_id`, se garantiza que la tupla
              (S, A, R, S') nunca se procese más de una vez para la misma posición.
         """
@@ -1437,7 +1490,7 @@ class AutonomousGoalBrain:
 
         if is_no_trade:
             self.q_table.setdefault(norm_s, self._init_q_vector(norm_s))
-            self.q_table[norm_s][0] = max(0.005, min(0.022, round(self.q_table[norm_s][0] * 0.96, 4)))
+            self.q_table[norm_s][0] = 0.0
             return 0.0
 
         # Control de idempotencia por ID de posición / orden
@@ -1455,7 +1508,8 @@ class AutonomousGoalBrain:
 
         act_idx = int(action) % Config.NUM_ACTIONS
         q_vec_before = self.get_state_q_values(norm_s)
-        entry_q = float(predicted_q_entry) if predicted_q_entry is not None else float(q_vec_before[act_idx])
+        has_explicit_entry_q = predicted_q_entry is not None
+        entry_q = float(predicted_q_entry) if has_explicit_entry_q else float(q_vec_before[act_idx])
 
         taker_rate = self.thresholds.get_float("fees", "taker_fee_rate", Config.TAKER_FEE)
         taker_fee_sats = (
@@ -1465,14 +1519,17 @@ class AutonomousGoalBrain:
         )
         funding_sats = int(round(float(funding_fee_sats or 0)))
         slip_sats = int(round(float(slippage_sats or 0)))
-        fee_sats = max(0, taker_fee_sats + funding_sats + slip_sats)
+        settled_fee_sats = max(0, taker_fee_sats + funding_sats)
 
-        # Prevención estricta de doble descuento de comisiones
+        # Prevención estricta de doble descuento de comisiones y slippage
         if real_balance_delta_sats is not None:
             net_balance_delta = int(round(float(real_balance_delta_sats)))
+            fee_sats = settled_fee_sats
         elif pl_includes_fees:
-            net_balance_delta = int(round(float(reward_sats))) - slip_sats
+            net_balance_delta = int(round(float(reward_sats)))
+            fee_sats = settled_fee_sats
         else:
+            fee_sats = max(0, settled_fee_sats + slip_sats)
             net_balance_delta = int(round(float(reward_sats))) - fee_sats
 
         self.realized_net_profit_sats += net_balance_delta
@@ -1505,7 +1562,7 @@ class AutonomousGoalBrain:
         lam = self.thresholds.get_float("reward", "mae_penalty_lambda", 0.15)
         mu = self.thresholds.get_float("reward", "holding_time_penalty_mu", 0.05)
         reward_scale = max(1.0, self.thresholds.get_float("reward", "reward_scale_sats", 100.0))
-        loss_mult = max(1.0, self.thresholds.get_float("reward", "loss_penalty_multiplier", 1.35))
+        loss_mult = max(1.0, self.thresholds.get_float("reward", "loss_penalty_multiplier", 1.0))
 
         # Modelo Conceptual de Recompensa:
         # R_econ_sats = Delta_Balance_disponible - lambda * MAE_sats - mu * Delta_t_ticks
@@ -1516,8 +1573,6 @@ class AutonomousGoalBrain:
             # Toda pérdida neta en balance debe penalizar negativamente el valor Q
             econ_reward_sats = min(econ_reward_sats, float(net_balance_delta))
             shaped = (econ_reward_sats / reward_scale) * loss_mult
-            if recovery_mode:
-                shaped -= 0.035
         elif net_balance_delta == 0 and econ_reward_sats <= 0.0:
             shaped = (econ_reward_sats / reward_scale) - 0.010
         else:
@@ -1539,11 +1594,12 @@ class AutonomousGoalBrain:
             custom_alpha=self.alpha,
             force_negative_on_loss=is_real_loss,
             check_guard=True,
+            terminal=True,
         )
 
         sup_trade_meta = self.supervisor.record_closed_trade(
             trade_id=str(trade_id) if trade_id is not None else None,
-            predicted_q_entry=entry_q,
+            predicted_q_entry=(entry_q if has_explicit_entry_q else None),
             net_realized_sats=net_balance_delta,
             total_fees_sats=fee_sats,
             margin_sats=int(margin_used),
@@ -2143,11 +2199,14 @@ def evaluate_open_trades_online(brain, running, ind_5m, current_state, now):
         if not isinstance(meta, dict):
             continue
 
-        # Monitoreo en tiempo real de excursión MFE / MAE en satoshis sin contaminar la Q-table
+        # Monitoreo en tiempo real de excursión MFE / MAE neta en satoshis sin contaminar la Q-table
         pl_sats = float(trade.get("pl") or 0.0)
         margin_sats = float(trade.get("margin") or meta.get("margin", 1000.0))
+        lev_f = float(trade.get("leverage") or meta.get("leverage", 25.0))
+        est_round_fee = margin_sats * lev_f * (2.0 * Config.TAKER_FEE)
+        net_unrealized_sats = max(0.0, pl_sats - est_round_fee) if pl_sats > 0.0 else pl_sats
         if hasattr(brain, "supervisor") and brain.supervisor is not None:
-            exc_rec = brain.supervisor.update_open_position_excursion(tid, pl_sats, margin_sats=margin_sats)
+            exc_rec = brain.supervisor.update_open_position_excursion(tid, net_unrealized_sats, margin_sats=margin_sats)
             meta["mfe_sats"] = exc_rec["mfe_sats"]
             meta["mae_sats"] = exc_rec["mae_sats"]
             meta["ticks_observed"] = exc_rec["ticks_observed"]
@@ -2651,13 +2710,19 @@ def main():
             THRESHOLDS_MANAGER.check_and_reload(active_trades_count=len(primary_running))
             state = brain.discretize_state(ind_5m, ind_15m, ind_1h, ind_4h, len(primary_running))
 
+            settled_in_cycle = 0
             if closed_ids:
-                closed_map = {str(ct["id"]): ct for ct in client.get_closed_trades(limit=25)}
+                closed_map = {str(ct["id"]): ct for ct in client.get_closed_trades(limit=50)}
                 tick_ref_sec = max(1.0, THRESHOLDS_MANAGER.get_float("reward", "tick_duration_sec", 15.0))
                 for cid in closed_ids:
-                    info = brain.active_trades.pop(cid, None)
-                    brain.dirty = True
-                    if info and cid in closed_map:
+                    info = brain.active_trades.get(cid)
+                    if not isinstance(info, dict):
+                        brain.active_trades.pop(cid, None)
+                        continue
+                    if cid in closed_map:
+                        brain.active_trades.pop(cid, None)
+                        brain.dirty = True
+                        settled_in_cycle += 1
                         ct_obj = closed_map[cid]
                         pl = int(ct_obj.get("pl", 0))
                         m_used = int(info.get("margin", ct_obj.get("margin", 1000)))
@@ -2674,6 +2739,7 @@ def main():
                             entry_price=fill_price,
                             decision_price=dec_price,
                             side=t_side,
+                            gross_includes_execution=True,
                         )
                         was_harvested = bool(info.get("ai_closed", False))
                         orig_st = info.get("state", state)
@@ -2713,6 +2779,13 @@ def main():
                         else:
                             consecutive_losses = 0
                             risk_multiplier = min(1.0, risk_multiplier + 0.15)
+                    else:
+                        wait_cyc = int(info.get("settlement_wait_cycles", 0)) + 1
+                        info["settlement_wait_cycles"] = wait_cyc
+                        brain.dirty = True
+                        if wait_cyc >= 8:
+                            brain.active_trades.pop(cid, None)
+                            print(f"  [AVISO LIQUIDACIÓN] Posición {str(cid)[:6]} no indexada en /closed tras {wait_cyc} ciclos; liberada.")
                 last_known_balance = balance
 
             for t in primary_running:
@@ -2721,6 +2794,8 @@ def main():
                 if not isinstance(existing, dict) or not existing.get("style") or str(existing.get("style")) == "None":
                     brain.active_trades[tid] = infer_adopted_trade(t, ind_5m, state, now, existing_meta=existing)
                     brain.dirty = True
+                elif int(existing.get("settlement_wait_cycles", 0)) > 0:
+                    existing["settlement_wait_cycles"] = 0
 
             brain.evaluate_and_close_macro_cycle("1h", bucket_1h, equity, ind_5m["price"], ind_1h, primary_running)
             brain.evaluate_and_close_macro_cycle("4h", bucket_4h, equity, ind_5m["price"], ind_4h, primary_running)
@@ -2744,11 +2819,12 @@ def main():
             prev_eq = getattr(brain, "_last_loop_equity", equity)
             prev_cnt = getattr(brain, "_last_loop_count", len(primary_running))
             if len(primary_running) < prev_cnt and equity < prev_eq - 35 and not Config.EXPLORER_MODE:
-                consecutive_losses += 1
-                pause_until = max(pause_until, now + min(600, 120 * consecutive_losses))
+                if settled_in_cycle == 0:
+                    consecutive_losses += 1
+                pause_until = max(pause_until, now + min(600, 120 * max(1, consecutive_losses)))
                 last_entry_time = now
                 print(f"  🛑 [PROTECCIÓN STOP-OUT] Pérdida detectada (Racha: {consecutive_losses}). Enfriamiento por {int(pause_until - now)}s.")
-            elif len(primary_running) < prev_cnt and equity > prev_eq + 25:
+            elif len(primary_running) < prev_cnt and equity > prev_eq + 25 and settled_in_cycle == 0:
                 consecutive_losses = max(0, consecutive_losses - 1)
             brain._last_loop_equity = equity
             brain._last_loop_count = len(primary_running)

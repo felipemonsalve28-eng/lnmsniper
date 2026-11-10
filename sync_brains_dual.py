@@ -62,11 +62,8 @@ def evaluate_transfer_quality(state_key, act_idx, tq, t_visits, test_data):
     econ_w = 1.0
     if trades_cnt >= 10:
         if net_sats < 0 and tq > 0:
-            # Si el estilo pierde sats netos en Testnet, exigir mayor evidencia y descontar peso
-            loss_to_fee = abs(net_sats) / max(fees_sats, 1.0)
-            econ_w = max(0.30, 0.75 - min(0.45, loss_to_fee * 0.25))
-            if tq < 0.11:
-                return False, 0.0
+            # Si el estilo pierde sats netos en Testnet, prohibir transferir Q positivo hacia Mainnet
+            return False, 0.0
         elif fees_sats > 0 and (net_sats / fees_sats) >= 0.25:
             econ_w = 1.10
 
@@ -162,7 +159,7 @@ def sync_dual_brains(
             if max_t_q >= 0.04 and ok_q:
                 scale = round(0.65 * q_weight, 4)
                 q_main[state_key] = [
-                    round(0.02 if i == 0 else float(t_vec[i]) * scale, 4)
+                    round(0.0 if i == 0 else float(t_vec[i]) * scale, 4)
                     for i in range(9)
                 ]
                 v_main[state_key] = max(m_visits, int(t_visits * 0.35 * q_weight))
@@ -192,12 +189,12 @@ def sync_dual_brains(
 
             eff_alpha = round(base_eff_alpha * q_weight, 4)
             blended = (1.0 - eff_alpha) * mq + (eff_alpha * tq)
-            m_vec[act_idx] = round(max(-0.95, min(0.95, blended)), 4)
+            m_vec[act_idx] = round(max(-2.0, min(2.0, blended)), 4)
             actions_enriched += 1
             state_modified = True
 
         if state_modified:
-            m_vec[0] = max(0.01, min(0.025, float(m_vec[0])))
+            m_vec[0] = 0.0
             q_main[state_key] = m_vec
             v_main[state_key] = m_visits + max(1, int(t_visits * 0.15))
             states_transferred += 1

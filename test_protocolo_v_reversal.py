@@ -116,15 +116,15 @@ def run_audit_protocol():
     mock_q = [0.01, 0.05, 0.02, 0.04, 0.03, 0.01, 0.02, 0.12, 0.01]
     mock_strats = {i: {"name": f"STRAT_{i}", "side": "buy" if i <= 4 else "sell"} for i in range(1, 9)}
 
-    # 1. ESCENARIO 1: NO_TRADE (0) gana en selección greedy ante Q negativos
+    # 1. ESCENARIO 1: NO_TRADE (0) gana en selección greedy ante Q negativos (Línea base Q[0] = 0.0 sats)
     tmp_brain = AutonomousGoalBrain(filename="test_tmp_brain.json", explorer_mode=False)
     st_neg = "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS"
-    tmp_brain.q_table[st_neg] = [0.02, -0.15, -0.22, -0.18, -0.12, -0.25, -0.30, -0.19, -0.14]
+    tmp_brain.q_table[st_neg] = [0.0, -0.15, -0.22, -0.18, -0.12, -0.25, -0.30, -0.19, -0.14]
     tmp_brain.state_visits[st_neg] = 95
     tmp_brain.epsilon = 0.0
     greedy_no_trade = tmp_brain.choose_action(st_neg, ind_5m_bull, ind_15m_bull, ind_1h_lag, ind_4h_bear_lag, recovery_mode=False, current_dd_pct=0.01)
     assert greedy_no_trade == 0, f"Fallo E1: NO_TRADE debía ganar, obtuvo {greedy_no_trade}"
-    print("✅ ESCENARIO 1 (NO_TRADE Elegible y Ganador en Selección Greedy): PASÓ.")
+    print("✅ ESCENARIO 1 (NO_TRADE Elegible y Ganador en Selección Greedy, Base 0.0 Sats): PASÓ.")
 
     # 2. ESCENARIO 2: Integridad 9 acciones + Redirección Giro en V cuando hay acciones con Q positivo
     final_action, reason = SatsExpectancyGate.filter_and_rank_action(
@@ -261,12 +261,13 @@ def run_audit_protocol():
     # 15. ESCENARIO 15: Sincronización de Piso Unificado y Fusión Dual Testnet -> Mainnet
     t_main_f = "test_sync_main.json"
     t_test_f = "test_sync_test.json"
-    AtomicBrainStore(t_main_f).save({"q_table": {st_neg: [0.02, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01]}, "state_visits": {st_neg: 5}})
-    AtomicBrainStore(t_test_f).save({"q_table": {st_neg: [0.02, 0.35, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01]}, "state_visits": {st_neg: 30}})
+    AtomicBrainStore(t_main_f).save({"q_table": {st_neg: [0.0, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01]}, "state_visits": {st_neg: 5}})
+    AtomicBrainStore(t_test_f).save({"q_table": {st_neg: [0.0, 0.35, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01]}, "state_visits": {st_neg: 30}})
     assert sync_dual_brains(t_main_f, t_test_f, min_testnet_visits=15) is True
     synced_main = AtomicBrainStore(t_main_f).load()
+    assert synced_main["q_table"][st_neg][0] == 0.0, "Fallo E15: Q(s, 0) debe estar anclado en 0.0 sats."
     assert synced_main["q_table"][st_neg][1] > 0.05, "Fallo E15: Nutrición Testnet -> Mainnet no transfirió Q de alta confianza."
-    print("✅ ESCENARIO 15 (Fusión Atómica Testnet ➔ Mainnet + Piso Unificado): PASÓ.")
+    print("✅ ESCENARIO 15 (Fusión Atómica Testnet ➔ Mainnet + Piso Unificado, Base Q(s,0)=0.0): PASÓ.")
 
     # 16. ESCENARIO 16: Telemetría P50/P95/P99, Bloqueo por Latencia y Guardia Anti-Duplicados (Fase 1)
     lat = LatencyTelemetry(window_size=32)

@@ -236,7 +236,7 @@ class LearningQualitySupervisor:
                 self.td_error_status = "WARMING_UP"
                 self.td_error_trend = "INSUFFICIENT_DATA"
             else:
-                if abs_td >= crit_thr or rolling_avg >= crit_thr:
+                if abs_td >= crit_thr or (rolling_avg >= crit_thr and abs_td >= warn_thr):
                     self.td_error_status = "CRITICAL"
                     self.td_error_trend = "CRITICAL"
                 elif rolling_avg >= warn_thr or (abs_td >= warn_thr and slope > div_slope):
@@ -283,7 +283,8 @@ class LearningQualitySupervisor:
 
             else:
                 # Estado suspendido (SUSPENDED_CRITICAL_TD o RECOVERING_HYSTERESIS)
-                if abs_td < warn_thr and self.td_error_status != "CRITICAL":
+                # Evaluar la transición actual sin quedar bloqueado por el promedio histórico previo
+                if abs_td < warn_thr:
                     self.hysteresis_recovery_streak += 1
                     self.learning_guard_status = "RECOVERING_HYSTERESIS"
                     if self.hysteresis_recovery_streak >= hyst_recovery_req:
@@ -312,7 +313,7 @@ class LearningQualitySupervisor:
     def record_closed_trade(
         self,
         trade_id: Optional[str],
-        predicted_q_entry: float,
+        predicted_q_entry: Optional[float],
         net_realized_sats: int,
         total_fees_sats: int,
         margin_sats: int,
@@ -322,6 +323,8 @@ class LearningQualitySupervisor:
         """
         Actualiza incrementalmente Q-Bias en satoshis, Fee-Efficiency Ratio (FER)
         y métricas de captura MFE/MAE al liquidarse una posición.
+        Si `predicted_q_entry is None` (orden adoptada sin Q de apertura), se
+        omite de la ventana de Q-Bias para no contaminar la calibración.
         """
         with self._lock:
             # Recuperar excursiones registradas en vivo si no fueron provistas explícitamente
@@ -343,57 +346,61 @@ class LearningQualitySupervisor:
             # B. Q-Bias en Satoshis: Q_entry_sats - Net_Sats_Realized
             # -----------------------------------------------------------------
             q_scale = self.thresholds.get_float("q_calibration", "q_to_sats_scale", 100.0)
-            q_entry_sats = _safe_float(predicted_q_entry, 0.0) * q_scale
-            q_bias_trade = q_entry_sats - float(net_sats)
-            self.q_bias_window.append(q_bias_trade)
-
             q_warmup = self.thresholds.get_int("q_calibration", "warmup_min_samples", 3)
             over_alert = self.thresholds.get_float("q_calibration", "overestimation_alert_sats", 25.0)
             under_alert = self.thresholds.get_float("q_calibration", "underestimation_alert_sats", -25.0)
             q_persist_req = self.thresholds.get_int("learning_guard", "q_bias_persistence_trades", 3)
             hyst_req = self.thresholds.get_int("learning_guard", "hysteresis_recovery_updates", 5)
 
-            mean_q_bias = sum(self.q_bias_window) / float(len(self.q_bias_window))
-            if mean_q_bias > over_alert:
-                self.q_bias_overestimation_streak += 1
-                self.q_bias_recovery_streak = 0
-            else:
-                self.q_bias_overestimation_streak = 0
+            if predicted_q_entry is not None:
+                q_entry_sats = _safe_float(predicted_q_entry, 0.0) * q_scale
+                q_bias_trade = q_entry_sats - float(net_sats)
+                self.q_bias_window.append(q_bias_trade)
 
-            if len(self.q_bias_window) < q_warmup:
-                self.q_bias_status = "WARMING_UP"
-            else:
+                mean_q_bias = sum(self.q_bias_window) / float(len(self.q_bias_window))
                 if mean_q_bias > over_alert:
-                    self.q_bias_status = "OVERESTIMATING"
-                    if (
-                        not self.q_bias_defense_active
-                        and self.q_bias_overestimation_streak >= q_persist_req
-                    ):
-                        self.q_bias_defense_active = True
-                        self._emit_alert(
-                            indicator="Q_BIAS",
-                            severity="WARNING",
-                            message=(
-                                f"Sobreestimacion Q sistematica detectada ({mean_q_bias:+.1f} sats > "
-                                f"{over_alert:+.1f} sats por {self.q_bias_overestimation_streak} ops). "
-                                f"Se incrementa umbral dinamico de expectancy."
-                            ),
-                            meta={"q_bias_sats": mean_q_bias},
-                        )
-                elif mean_q_bias < under_alert:
-                    self.q_bias_status = "UNDERESTIMATING"
+                    self.q_bias_overestimation_streak += 1
+                    self.q_bias_recovery_streak = 0
                 else:
-                    self.q_bias_status = "CALIBRATED"
-                    if self.q_bias_defense_active:
-                        self.q_bias_recovery_streak += 1
-                        if self.q_bias_recovery_streak >= hyst_req:
-                            self.q_bias_defense_active = False
-                            self.q_bias_recovery_streak = 0
+                    self.q_bias_overestimation_streak = 0
+
+                if len(self.q_bias_window) < q_warmup:
+                    self.q_bias_status = "WARMING_UP"
+                else:
+                    if mean_q_bias > over_alert:
+                        self.q_bias_status = "OVERESTIMATING"
+                        if (
+                            not self.q_bias_defense_active
+                            and self.q_bias_overestimation_streak >= q_persist_req
+                        ):
+                            self.q_bias_defense_active = True
                             self._emit_alert(
                                 indicator="Q_BIAS",
-                                severity="INFO",
-                                message=f"Q-Bias recalibrado ({mean_q_bias:+.1f} sats). Se restaura umbral de expectancy.",
+                                severity="WARNING",
+                                message=(
+                                    f"Sobreestimacion Q sistematica detectada ({mean_q_bias:+.1f} sats > "
+                                    f"{over_alert:+.1f} sats por {self.q_bias_overestimation_streak} ops). "
+                                    f"Se incrementa umbral dinamico de expectancy."
+                                ),
+                                meta={"q_bias_sats": mean_q_bias},
                             )
+                    elif mean_q_bias < under_alert:
+                        self.q_bias_status = "UNDERESTIMATING"
+                    else:
+                        self.q_bias_status = "CALIBRATED"
+                        if self.q_bias_defense_active:
+                            self.q_bias_recovery_streak += 1
+                            if self.q_bias_recovery_streak >= hyst_req:
+                                self.q_bias_defense_active = False
+                                self.q_bias_recovery_streak = 0
+                                self._emit_alert(
+                                    indicator="Q_BIAS",
+                                    severity="INFO",
+                                    message=f"Q-Bias recalibrado ({mean_q_bias:+.1f} sats). Se restaura umbral de expectancy.",
+                                )
+            else:
+                q_entry_sats = 0.0
+                q_bias_trade = 0.0
 
             # -----------------------------------------------------------------
             # C. Fee-Efficiency Ratio (FER)
@@ -785,6 +792,8 @@ class LearningQualitySupervisor:
 
             n_mfe = len(self.mfe_capture_window)
             mfe_avg = (sum(self.mfe_capture_window) / float(n_mfe)) if n_mfe > 0 else 0.0
+            target_mfe = self.thresholds.get_float("mfe_mae", "target_mfe_capture_ratio", 0.65)
+            healthy_ent = self.thresholds.get_float("policy_entropy", "healthy_normalized_entropy", 0.45)
 
             n_mae = len(self.mae_margin_window)
             mae_avg = (sum(self.mae_margin_window) / float(n_mae)) if n_mae > 0 else 0.0
@@ -817,12 +826,14 @@ class LearningQualitySupervisor:
                 "fer_cohorts": self.get_fer_cohorts(),
                 "policy_entropy": round(_safe_float(ent_metrics["policy_entropy"]), 4),
                 "normalized_policy_entropy": round(_safe_float(ent_metrics["normalized_policy_entropy"]), 4),
+                "healthy_normalized_entropy": round(_safe_float(healthy_ent), 4),
                 "dominant_action": ent_metrics["dominant_action"],
                 "dominant_action_freq": ent_metrics["dominant_action_freq"],
                 "action_frequencies": ent_metrics["action_frequencies"],
                 "avg_sats_per_trade_last20": round(_safe_float(avg_sats_20), 2),
                 "policy_health": policy_health,
                 "mfe_capture_avg": round(_safe_float(mfe_avg), 4),
+                "target_mfe_capture_ratio": round(_safe_float(target_mfe), 4),
                 "mae_margin_ratio_avg": round(_safe_float(mae_avg), 4),
                 "learning_guard_status": self.learning_guard_status,
                 "autonomous_adjustments": self.get_autonomous_adjustments(),

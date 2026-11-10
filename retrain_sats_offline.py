@@ -117,7 +117,7 @@ def recalibrate_brain_for_sats_accumulation(
         lcb_penalty = round(0.015 / math.sqrt(max(1, visits)), 5)
 
         new_q = [max(-0.85, min(0.85, float(x))) for x in q_vec]
-        new_q[0] = max(0.01, min(0.025, new_q[0]))
+        new_q[0] = 0.0
 
         # 1. Penalizar REVERSION (2, 6) y DEF_SCALP (4, 8) cuando operan contra expansiones direccionales
         is_bull_expansion = (
@@ -165,27 +165,30 @@ def recalibrate_brain_for_sats_accumulation(
                 new_q[6] = round(new_q[6] - 0.065, 5)
 
         if "RANGE_SQUEEZE" in regime and "BULL" in macro_trend and "BULL_DIP" in ema_struct:
-            new_q[0] = max(new_q[0], 0.025)
+            new_q[0] = 0.0
             for s_idx in (5, 6, 7, 8):
                 if new_q[s_idx] > 0.0:
                     new_q[s_idx] = round(new_q[s_idx] * 0.25 - 0.12, 5)
 
         if ("RANGE_SQUEEZE" in regime or "CHOP_HIGHVOL" in regime) and ("CHOP" in macro_trend or "HIGH_EXP" in exp):
-            new_q[0] = max(new_q[0], 0.025)
+            new_q[0] = 0.0
             new_q[3] -= 0.045
             new_q[7] -= 0.045
             if "HIGH_EXP" in exp:
-                new_q[2] = min(new_q[2], 0.020)
-                new_q[6] = min(new_q[6], 0.020)
-                new_q[4] = min(new_q[4], 0.020)
-                new_q[8] = min(new_q[8], 0.020)
+                new_q[2] = min(new_q[2], 0.0)
+                new_q[6] = min(new_q[6], 0.0)
+                new_q[4] = min(new_q[4], 0.0)
+                new_q[8] = min(new_q[8], 0.0)
             for idx in [1, 2, 4, 5, 6, 8]:
                 new_q[idx] = round(new_q[idx] - lcb_penalty, 5)
 
-        # 3. Favorecer decisiones conservadoras (NO_TRADE = 0) cuando ninguna acción supere expectativa neta mínima
+        # 3. Favorecer decisiones conservadoras (NO_TRADE = 0, base 0.0 sats) cuando ninguna acción supere expectativa neta mínima
         max_dir_q = max(new_q[1:])
-        if max_dir_q < 0.018:
-            new_q[0] = max(new_q[0], 0.024)
+        if max_dir_q < 0.010:
+            for idx in range(1, 9):
+                if new_q[idx] > 0.0:
+                    new_q[idx] = round(new_q[idx] - 0.010, 5)
+        new_q[0] = 0.0
 
         q_table[state_key] = [round(max(-0.95, min(0.95, val)), 4) for val in new_q]
         new_best = int(max(range(9), key=lambda i: float(q_table[state_key][i])))
