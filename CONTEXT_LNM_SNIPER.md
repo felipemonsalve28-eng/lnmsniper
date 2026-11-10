@@ -128,6 +128,31 @@
      - [test_learning_quality_and_sats.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_learning_quality_and_sats.py): **7 de 7 bloques pasaron al 100%** (incluyendo nuevo Test 7 de Expectancy Bayesiana, Sizing y Mainnet Epsilon).
      - [test_protocolo_v_reversal.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_protocolo_v_reversal.py): **23 de 23 escenarios pasaron al 100%** (Latencia media: 0.665 ms/ciclo; RAM Delta: +2.7 KB).
 
+### Etapa 10: Implementación y Certificación del Cluster Beta (F6 + F7)
+- **Estado:** **Etapas 3 y 4 de la directiva completadas exitosamente para Cluster Beta (F6 y F7)**.
+- **Detalle de Mejoras Cuantitativas, Estructurales y de Rendimiento:**
+  1. **[lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py):**
+     - **Refactor Modular de `main()` (F6):** Reducción de la complejidad ciclomática del bucle principal, aislando responsabilidades en funciones puras:
+       * `process_settlement_queue`: Reconciliación diferida, liquidación y aprendizaje de órdenes cerradas.
+       * `manage_open_positions_and_hedges`: Supervisión MFE/MAE en tiempo real, trailing stops y hedges híbridos integrados.
+       * `evaluate_and_dispatch_entries`: Evaluación de compuertas Bayesianas, dimensionamiento 1/4 Kelly y despacho / simulación sombra.
+     - **Guardado Diferido / Debounce (F6):** Implementado `Config.BRAIN_SAVE_INTERVAL = 30.0` s y lógica debounce en `save_brain(force=False)`. Las transiciones ordinarias en `remember_and_train` no saturan el almacenamiento flash en Termux/Android (ahorro de latencia de 100-300 ms por tick). El guardado forzado (`force=True`) se ejecuta atómicamente ante liquidaciones, stop-outs, o interrupciones `SIGINT`/`SIGTERM`.
+     - **Auditoría de Transiciones en Streaming JSONL (F6):** Método `AutonomousGoalBrain._append_transition_audit_jsonl` que añade en tiempo real cada transición (S, A, Q_pred, sats_net, reward, TD, guard_status) a `logs/transitions_audit.jsonl` sin acumulación en RAM.
+     - **Modo Sombra / Shadow Mode (F7):**
+       * Habilitación transparente vía `Config.SHADOW_MODE` o variable de entorno `SNIPER_SHADOW_MODE=1`.
+       * Función `record_shadow_order`: Registra órdenes simuladas con atributos completos (entry, SL, TP, expectancy probabilística, comisiones estimadas) en `logs/shadow_signals.jsonl`.
+       * Función `update_shadow_trades`: Simula en tiempo real la liquidación virtual contra ticks de precio spot, validando TP y SL y computando PnL neto en satoshis.
+  2. **[test_learning_quality_and_sats.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_learning_quality_and_sats.py):**
+     - Incorporado **Escenario 8** verificando:
+       * Intervalo y lógica de debounce de guardado (evita escrituras redundantes < 30 s).
+       * Modularidad de las funciones de ciclo F6.
+       * Simulación completa de órdenes en modo sombra F7 con impacto simultáneo en TP y SL.
+     - **Resultado:** **8 de 8 bloques superados al 100%**.
+  3. **[test_protocolo_v_reversal.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_protocolo_v_reversal.py):**
+     - **Resultado:** **23 de 23 escenarios superados al 100%** (Latencia media: 0.643 ms/ciclo; RAM Delta: +2.7 KB).
+  4. **[validate_walk_forward_oos.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/validate_walk_forward_oos.py):**
+     - Certificación Walk-Forward Out-Of-Sample confirmada a lo largo de 6 regímenes y 72 episodios OOS. Hybrid Edge Hedging: Net=+1656 sats, MaxDD=0.53%, PF=1.46.
+
 ---
 
 ## 3. ARQUITECTURA DE ARCHIVOS CLAVE

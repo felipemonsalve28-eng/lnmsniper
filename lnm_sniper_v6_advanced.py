@@ -64,7 +64,8 @@ class Config:
     BRAIN_FILE = "q_brain_advanced_lnm.json"
     HEDGE_STATE_FILE = "hedge_state_mainnet.json"
     ENABLE_HYBRID_HEDGE = True
-    BRAIN_SAVE_INTERVAL = 90.0
+    BRAIN_SAVE_INTERVAL = 30.0
+    SHADOW_MODE = os.getenv("SNIPER_SHADOW_MODE", "0").lower() in ("1", "true", "yes")
     SHARED_MTF_DISK_CACHE = os.path.join(tempfile.gettempdir(), "sniper_mtf_candles_v73.json")
     MIN_MARGIN_SATS = 1000
 
@@ -823,6 +824,17 @@ class AutonomousGoalBrain:
         self.load_brain()
 
     @staticmethod
+    def _append_transition_audit_jsonl(entry: dict):
+        try:
+            log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, "transitions_audit.jsonl")
+            with open(log_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, default=str) + "\n")
+        except Exception:
+            pass
+
+    @staticmethod
     def _init_q_vector(state_key):
         q = [0.015] * Config.NUM_ACTIONS
         q[0] = 0.0
@@ -1012,11 +1024,11 @@ class AutonomousGoalBrain:
     def save_brain(self, force=False):
         now = time.time()
         if not force and not self.dirty:
-            return
+            return False
         if not force and (now - self.last_save_time) < Config.BRAIN_SAVE_INTERVAL:
-            return
+            return False
         if not self.q_table:
-            return
+            return False
         try:
             payload = {
                 "env": Config.ENV_MODE,
@@ -1043,8 +1055,10 @@ class AutonomousGoalBrain:
             self.store.save(payload)
             self.dirty = False
             self.last_save_time = now
+            return True
         except Exception as e:
             print(f"[ERROR I/O] Fallo al guardar cerebro ({self.filename}): {e}")
+            return False
 
     def _save_divergence_snapshot(self, reason="CRITICAL_TD_DIVERGENCE"):
         """Guarda un snapshot de emergencia del cerebro antes de suspender aprendizaje online."""
@@ -1611,7 +1625,7 @@ class AutonomousGoalBrain:
         self.memory.append((priority, norm_s, act_idx, round(shaped, 4), norm_ns))
 
         # Trazabilidad estricta de la transición
-        self.transition_audit_log.append({
+        audit_entry = {
             "timestamp": int(time.time()),
             "trade_id": str(trade_id) if trade_id is not None else None,
             "state": norm_s,
@@ -1628,7 +1642,9 @@ class AutonomousGoalBrain:
             "td_error": round(self._last_td_error, 4),
             "delta_q": round(dq, 4),
             "learning_guard_status": self.supervisor.learning_guard_status,
-        })
+        }
+        self.transition_audit_log.append(audit_entry)
+        self._append_transition_audit_jsonl(audit_entry)
 
         self.total_trained += 1
         if self.total_trained % 400 == 0:
@@ -1641,7 +1657,7 @@ class AutonomousGoalBrain:
             self.epsilon = max(0.04, round(self.epsilon, 4))
         else:
             self.epsilon = max(self.epsilon_min, round(self.epsilon * self.epsilon_decay, 4))
-        self.save_brain(force=True)
+        self.save_brain(force=False)
         return round(shaped, 4)
 
 
@@ -2568,6 +2584,474 @@ def run_integrated_guardian_and_hedge_cycle(
     return still_running
 
 
+def record_shadow_order(order_data: dict):
+    """Registra una orden simulada del modo sombra en logs/shadow_signals.jsonl (Fase F7)."""
+    try:
+        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "shadow_signals.jsonl")
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(order_data, default=str) + "\n")
+    except Exception:
+        pass
+
+
+def update_shadow_trades(brain, spot_price: float, now: float = None):
+    """
+    Simula en tiempo real la evolución de órdenes del modo sombra contra el precio spot (Fase F7).
+    """
+    now_ts = time.time() if now is None else float(now)
+    shadow_dict = getattr(brain, "shadow_trades", None)
+    if not isinstance(shadow_dict, dict) or not shadow_dict:
+        return []
+    closed_sims = []
+    for sid in list(shadow_dict.keys()):
+        st = shadow_dict[sid]
+        entry = float(st["entry_price"])
+        sl = float(st["stoploss"])
+        tp = float(st["takeprofit"])
+        side = st["side"]
+        m_sats = float(st["margin_sats"])
+        lev = float(st["leverage"])
+        cost = float(st.get("total_cost_sats", m_sats * lev * 0.002))
+        outcome = None
+
+        if side == "buy":
+            if spot_price >= tp:
+                gross = m_sats * lev * (tp - entry) / entry
+                outcome = ("CLOSED_TP", gross - cost)
+            elif spot_price <= sl:
+                gross = -m_sats * lev * (entry - sl) / entry
+                outcome = ("CLOSED_SL", gross - cost)
+        else:
+            if spot_price <= tp:
+                gross = m_sats * lev * (entry - tp) / entry
+                outcome = ("CLOSED_TP", gross - cost)
+            elif spot_price >= sl:
+                gross = -m_sats * lev * (sl - entry) / entry
+                outcome = ("CLOSED_SL", gross - cost)
+
+        if outcome is not None:
+            status, net_sats = outcome
+            rec = dict(st)
+            rec["status"] = status
+            rec["closed_price"] = spot_price
+            rec["closed_timestamp"] = int(now_ts)
+            rec["net_realized_sats"] = round(net_sats, 1)
+            record_shadow_order(rec)
+            shadow_dict.pop(sid, None)
+            closed_sims.append(rec)
+            print(f"  🕶️ [MODO SOMBRA SIMULADO] {status} {sid[:12]} | Net: {net_sats:+.1f} sats | Spot: ${spot_price:.1f}")
+    return closed_sims
+
+
+def process_settlement_queue(
+    client,
+    brain,
+    closed_ids,
+    state,
+    now,
+    recovery_anchor_equity,
+    current_mode,
+    consecutive_losses,
+    risk_multiplier,
+    pause_until,
+):
+    """
+    Maneja la cola de liquidación diferida y conciliación de órdenes cerradas (Fase F6).
+    """
+    settled_in_cycle = 0
+    if not closed_ids:
+        return settled_in_cycle, consecutive_losses, risk_multiplier, pause_until
+
+    closed_map = {str(ct["id"]): ct for ct in client.get_closed_trades(limit=50)}
+    tick_ref_sec = max(1.0, THRESHOLDS_MANAGER.get_float("reward", "tick_duration_sec", 15.0))
+    for cid in closed_ids:
+        info = brain.active_trades.get(cid)
+        if not isinstance(info, dict):
+            brain.active_trades.pop(cid, None)
+            continue
+        if cid in closed_map:
+            brain.active_trades.pop(cid, None)
+            brain.dirty = True
+            settled_in_cycle += 1
+            ct_obj = closed_map[cid]
+            pl = int(ct_obj.get("pl", 0))
+            m_used = int(info.get("margin", ct_obj.get("margin", 1000)))
+            lev_used = float(ct_obj.get("leverage") or info.get("leverage", 35.0))
+            exact_fee = int(ct_obj.get("opening_fee", 0) or 0) + int(ct_obj.get("closing_fee", 0) or 0)
+            funding_fee = int(round(float(ct_obj.get("sum_carry_fees") or ct_obj.get("funding_fees") or 0)))
+            fill_price = float(ct_obj.get("price") or ct_obj.get("entryPrice") or 0.0)
+            dec_price = float(info.get("decision_price") or fill_price)
+            t_side = str(ct_obj.get("side") or info.get("side") or "buy")
+            econ = SatsExpectancyGate.compute_trade_economic_breakdown(
+                pl,
+                m_used,
+                lev_used,
+                exact_fee_sats=exact_fee,
+                funding_fee_sats=funding_fee,
+                entry_price=fill_price,
+                decision_price=dec_price,
+                side=t_side,
+                gross_includes_execution=True,
+            )
+            was_harvested = bool(info.get("ai_closed", False))
+            orig_st = info.get("state", state)
+            act_taken = int(info.get("action", 2))
+            in_rec = (current_mode == "RECOVERY") or (recovery_anchor_equity is not None)
+            balance = int(client.get_user(force_refresh=False).get("balance", 0))
+            beat_anchor = recovery_anchor_equity is not None and balance >= int(round(recovery_anchor_equity * 1.03))
+
+            hit_tp_real = bool(ct_obj.get("takeprofit_wi")) or (
+                econ["net_pnl_sats"] > m_used * 0.16 and not bool(ct_obj.get("stoploss_wi"))
+            )
+            entry_ts = float(info.get("entry_time", now))
+            dur_ticks = max(1.0, (now - entry_ts) / tick_ref_sec)
+            mae_tracked = float(info.get("mae_sats", 0.0))
+            mfe_tracked = float(info.get("mfe_sats", max(0, econ["net_pnl_sats"])))
+            pred_q = info.get("entry_q", None)
+
+            brain.remember_and_train(
+                orig_st,
+                act_taken,
+                pl,
+                m_used,
+                state,
+                equity_after=balance,
+                available_balance_after=balance,
+                real_balance_delta_sats=econ["net_pnl_sats"],
+                hit_tp=hit_tp_real,
+                harvested=was_harvested,
+                recovery_mode=in_rec,
+                exited_recovery_bonus=beat_anchor,
+                lev_used=lev_used,
+                exact_fee_sats=econ["taker_fee_sats"],
+                pl_includes_fees=True,
+                funding_fee_sats=funding_fee,
+                slippage_sats=econ["slippage_sats"],
+                trade_id=cid,
+                mae_sats=mae_tracked,
+                mfe_sats=mfe_tracked,
+                duration_ticks=dur_ticks,
+                predicted_q_entry=pred_q,
+            )
+            if econ["net_pnl_sats"] < 0:
+                consecutive_losses += 1
+                risk_multiplier = max(0.55, risk_multiplier * Config.ANTI_MARTINGALE_FACTOR)
+                if consecutive_losses >= Config.CONSECUTIVE_LOSS_LIMIT and not Config.EXPLORER_MODE:
+                    pause_until = now + Config.CONSECUTIVE_LOSS_PAUSE_SEC
+                    consecutive_losses = 0
+            else:
+                consecutive_losses = 0
+                risk_multiplier = min(1.0, risk_multiplier + 0.15)
+        else:
+            wait_cyc = int(info.get("settlement_wait_cycles", 0)) + 1
+            info["settlement_wait_cycles"] = wait_cyc
+            brain.dirty = True
+            if wait_cyc >= 8:
+                brain.active_trades.pop(cid, None)
+                print(f"  [AVISO LIQUIDACIÓN] Posición {str(cid)[:6]} no indexada en /closed tras {wait_cyc} ciclos; liberada.")
+
+    return settled_in_cycle, consecutive_losses, risk_multiplier, pause_until
+
+
+def manage_open_positions_and_hedges(
+    client,
+    brain,
+    hedge_store,
+    portfolio_state,
+    primary_running,
+    ind_5m,
+    ind_15m,
+    ind_1h,
+    state,
+    current_mode,
+    edge_scores_by_tid,
+    perception,
+    q_vec,
+    account_state,
+    now,
+    safe_mode=False,
+):
+    """
+    Supervisa excursiones MFE/MAE en tiempo real, trailing stops y hedges integrados (Fase F6).
+    """
+    still_running = []
+    if primary_running:
+        still_running = run_integrated_guardian_and_hedge_cycle(
+            client,
+            brain,
+            hedge_store,
+            portfolio_state,
+            primary_running,
+            ind_5m,
+            ind_15m,
+            ind_1h,
+            state,
+            current_mode,
+            edge_scores_by_tid,
+            perception,
+            q_vec,
+            account_state,
+            now,
+            safe_mode=safe_mode,
+        )
+        evaluate_open_trades_online(brain, still_running, ind_5m, state, now)
+    return still_running
+
+
+def evaluate_and_dispatch_entries(
+    client,
+    brain,
+    state,
+    ind_5m,
+    ind_15m,
+    ind_1h,
+    ind_4h,
+    mods,
+    recovery_mode,
+    current_dd_pct,
+    dynamic_max_pos,
+    active_count,
+    locked_margin,
+    equity,
+    balance,
+    last_entry_time,
+    now,
+    consecutive_losses,
+    warmup,
+    risk_multiplier,
+    sprint_mode,
+    mkt_reg_tag,
+    still_running,
+    safe_mode,
+    hedge_store,
+    perception,
+    shadow_mode=False,
+):
+    """
+    Evalúa compuertas Bayesianas, calcula sizing 1/4 Kelly y despacha o simula en sombra (Fases F4, F5, F6, F7).
+    """
+    action_taken = 0
+    if active_count >= dynamic_max_pos:
+        return action_taken, last_entry_time
+
+    fer_mult = 1.0
+    if hasattr(brain, "supervisor") and brain.supervisor is not None:
+        rolling_fer = brain.supervisor.get_rolling_fer()
+        if rolling_fer < 1.0:
+            fer_cooldown_cfg = THRESHOLDS_MANAGER.get_float("exploration", "fer_cooldown_mult", 2.0)
+            fer_mult = max(1.0, fer_cooldown_cfg)
+
+    effective_cooldown = Config.ENTRY_COOLDOWN_SEC * fer_mult * (
+        0.75 if Config.EXPLORER_MODE
+        else (0.85 if perception.get("override_side") is not None else (1.8 if (recovery_mode or "CHOP" in state) else 1.0))
+    )
+
+    if (locked_margin / max(equity, 1)) < Config.SOFT_EXPOSURE_LIMIT and (now - last_entry_time) >= effective_cooldown:
+        dec_t0 = time.perf_counter()
+        raw_action = brain.choose_action(
+            state, ind_5m, ind_15m, ind_1h, ind_4h,
+            recovery_mode=recovery_mode, current_dd_pct=current_dd_pct
+        )
+        q_vec = brain.get_state_q_values(state)
+        action, gate_reason = SatsExpectancyGate.filter_and_rank_action(
+            raw_action, state, q_vec, brain.strategies, perception,
+            recovery_mode=recovery_mode, current_dd_pct=current_dd_pct,
+            explorer_mode=Config.EXPLORER_MODE
+        )
+        decision_elapsed_ms = (time.perf_counter() - dec_t0) * 1000.0
+        client.telemetry.record("decision_ms", decision_elapsed_ms)
+
+        if action == 0 and raw_action > 0:
+            brain.remember_and_train(state, 0, 0, 1000, state, is_no_trade=True)
+            print(f"  ⏸️ [FILTRO SATS/SEGURIDAD] Entrada bloqueada ({gate_reason} | OVR:{perception.get('override_reason')})")
+
+        if action > 0:
+            q_val = float(q_vec[action]) if action < len(q_vec) else 0.0
+            strat = brain.strategies[action]
+            combined_rr = mods["rr_mult"] * (Config.RECOVERY_RR_MULT if recovery_mode else 1.0)
+            raw_lev, raw_sl, raw_tp = calculate_strategy_order_params(
+                strat, ind_5m["price"], ind_5m["atr"], rr_mult=combined_rr
+            )
+            lev, sl, tp = compute_situational_order_params(
+                raw_lev, raw_sl, raw_tp, strat, state, ind_5m, ind_15m, ind_1h, ind_4h,
+                mods, brain, action, recovery_mode, current_dd_pct, consecutive_losses,
+                combined_rr, perception=perception
+            )
+            reg_adapt = SatsExpectancyGate.compute_regime_risk_adaptation(
+                mkt_reg_tag, current_dd_pct=current_dd_pct, recovery_mode=recovery_mode
+            )
+            base_risk = compute_effective_risk(
+                warmup, risk_multiplier, recovery_mode, sprint_mode,
+                current_dd_pct, parallel_risk_mult=mods["risk_mult"]
+            )
+            strat_style = strat.get("style", "SNIPER")
+            p_hat, p_lcb, bayes_info = SatsExpectancyGate.estimate_bayesian_win_rate(
+                state, action, strat_style, mkt_reg_tag, brain.style_metrics
+            )
+            sl_dist_pct = abs(float(ind_5m["price"]) - float(sl)) / max(float(ind_5m["price"]), 1.0)
+            fee_rt = THRESHOLDS_MANAGER.get_float("fees", "round_trip_fee_rate", 0.0020)
+            tp_dist_pct = abs(float(tp) - float(ind_5m["price"])) / max(float(ind_5m["price"]), 1.0)
+
+            b_ratio = max(0.2, (tp_dist_pct - fee_rt) / max(0.0001, sl_dist_pct + fee_rt))
+            kelly_scale = THRESHOLDS_MANAGER.get_float("q_calibration", "fractional_kelly_scale", 0.25)
+            raw_kelly = max(0.0, (p_hat * b_ratio - (1.0 - p_hat)) / b_ratio)
+            kelly_mult = float(np.clip(0.70 + (raw_kelly * kelly_scale * 3.0), 0.55, 1.40))
+            if recovery_mode and not Config.EXPLORER_MODE:
+                kelly_mult = min(kelly_mult, 0.72)
+
+            base_risk_pct = float(np.clip(base_risk * 0.35, 0.012, 0.035))
+            eff_risk_pct = base_risk_pct * kelly_mult * reg_adapt["size_mult"]
+            risk_budget_sats = max(150, int(round(equity * eff_risk_pct)))
+
+            loss_per_margin_sat = float(lev) * (sl_dist_pct + fee_rt)
+            if loss_per_margin_sat > 0.0001:
+                derived_margin = int(round(risk_budget_sats / loss_per_margin_sat))
+            else:
+                derived_margin = int(round(equity * 0.04))
+
+            max_single_margin = int(round(equity * Config.MAX_SINGLE_TRADE_MARGIN_PCT))
+            margin_sats = max(Config.MIN_MARGIN_SATS, min(max_single_margin, derived_margin))
+
+            est_entry_fee = max(1, int(round(margin_sats * lev * Config.TAKER_FEE)))
+            exp_ok, exp_reason, proj_exp = SatsExpectancyGate.verify_projected_exposure(
+                locked_margin, margin_sats, equity, balance,
+                max_exposure_ratio=Config.SOFT_EXPOSURE_LIMIT,
+                est_entry_fee_sats=est_entry_fee,
+                max_single_trade_risk_pct=Config.MAX_SINGLE_TRADE_MARGIN_PCT,
+            )
+            est_slip_bps = (
+                THRESHOLDS_MANAGER.get_float("market_sensitivity", "max_slippage_bps_volatile", 7.5) * 0.35
+                if mkt_reg_tag in ("EXTREME_VOLATILITY", "VOLATILITY_EXPANSION")
+                else THRESHOLDS_MANAGER.get_float("market_sensitivity", "max_slippage_bps_normal", 3.0) * 0.35
+            )
+            auto_adj = brain.supervisor.get_autonomous_adjustments()
+            viable_sats, sats_meta = SatsExpectancyGate.verify_net_sats_expectancy(
+                ind_5m["price"], margin_sats, lev, sl, tp,
+                explorer_mode=Config.EXPLORER_MODE,
+                slippage_bps=est_slip_bps,
+                expectancy_boost=auto_adj["expectancy_boost_applied"],
+                state=state,
+                action=action,
+                style=strat_style,
+                regime=mkt_reg_tag,
+                style_metrics=brain.style_metrics,
+            )
+            if viable_sats and not Config.EXPLORER_MODE and (recovery_mode or "RANGE_SQUEEZE" in state):
+                floor_rec = THRESHOLDS_MANAGER.get_int("expectancy", "min_net_profit_sats_recovery", 44)
+                floor_std = THRESHOLDS_MANAGER.get_int("expectancy", "min_net_profit_sats", 38)
+                base_cost_ref = int(sats_meta.get("total_cost_sats", sats_meta["fee_sats"]))
+                min_strict_tp = max(
+                    floor_rec if recovery_mode else floor_std,
+                    int(round(base_cost_ref * (3.2 + current_dd_pct * 3.0 if recovery_mode else 2.9))),
+                )
+                if sats_meta["net_tp_sats"] < min_strict_tp:
+                    viable_sats = False
+
+            lat_degraded, lat_reason = client.telemetry.evaluate_execution_health()
+            can_send, dup_reason = client.order_guard.can_send_order(
+                strat["side"], margin_sats, lev, running_trades=still_running, now=now
+            )
+
+            if not exp_ok:
+                print(f"  ⏸️ [EXPOSICIÓN PROYECTADA BLOQUEADA] {exp_reason} (Margen:{margin_sats} sats)")
+            elif not viable_sats:
+                print(
+                    f"  ⏸️ [EXPECTANCY SATS INSUFICIENTE] NetTP:+{sats_meta['net_tp_sats']} sats vs "
+                    f"Coste:{sats_meta.get('total_cost_sats', sats_meta['fee_sats'])} sats (Ratio:{sats_meta['fee_ratio']}x)"
+                )
+            elif lat_degraded and not Config.EXPLORER_MODE:
+                print(f"  ⏸️ [PROTECCIÓN DE LATENCIA] Entrada bloqueada por condición de ejecución degradada ({lat_reason})")
+            elif not can_send:
+                print(f"  ⏸️ [GUARDIA ANTI-DUPLICADOS] {dup_reason}")
+            elif safe_mode:
+                print(
+                    f"  🛡️ [MODO SEGURO - SIMULACIÓN] Señal válida {strat['name']} "
+                    f"(Lev {lev}x | Margen {margin_sats} sats | SL:{sl} | TP:{tp} | ExpProy:{proj_exp*100:.1f}%)"
+                )
+            elif shadow_mode or Config.SHADOW_MODE:
+                shadow_tid = f"shadow-{int(now)}-{action}"
+                shadow_rec = {
+                    "id": shadow_tid,
+                    "timestamp": int(now),
+                    "action": action,
+                    "style": strat_style,
+                    "name": strat["name"],
+                    "side": strat["side"],
+                    "margin_sats": margin_sats,
+                    "leverage": lev,
+                    "entry_price": float(ind_5m["price"]),
+                    "stoploss": float(sl),
+                    "takeprofit": float(tp),
+                    "total_cost_sats": sats_meta.get("total_cost_sats", 0),
+                    "expected_net_sats": sats_meta.get("expected_net_sats", 0.0),
+                    "p_hat": sats_meta.get("p_hat", 0.0),
+                    "p_star": sats_meta.get("p_star", 0.0),
+                    "state": state,
+                    "status": "OPEN_SIMULATED",
+                }
+                record_shadow_order(shadow_rec)
+                if not hasattr(brain, "shadow_trades"):
+                    brain.shadow_trades = {}
+                brain.shadow_trades[shadow_tid] = shadow_rec
+                last_entry_time = now
+                action_taken = action
+                print(
+                    f"  🕶️ [MODO SOMBRA - ORDEN SIMULADA] {strat['name']} {strat['side'].upper()} "
+                    f"(Lev {lev}x | Margen {margin_sats} sats | Entry:${ind_5m['price']:.1f} | "
+                    f"SL:{sl:.1f} | TP:{tp:.1f} | E_net:+{sats_meta.get('expected_net_sats', 0):.1f} sats)"
+                )
+            else:
+                live_running = client.get_running_trades(force_refresh=False)
+                hedge_tid_set = hedge_store.get_all_hedge_trade_ids() if Config.ENABLE_HYBRID_HEDGE else set()
+                live_primary = [t for t in live_running if str(t.get("id")) not in hedge_tid_set]
+                if len(live_primary) < min(dynamic_max_pos, Config.MAX_CONCURRENT_TRADES):
+                    last_entry_time = now
+                    action_taken = action
+                    intent_fp = client.order_guard.register_intent(
+                        strat["side"], margin_sats, lev, state_key=state, now=now
+                    )
+                    client.telemetry.record("order_dispatch_ms", (time.perf_counter() - dec_t0) * 1000.0)
+                    try:
+                        new_t = client.open_trade(strat["side"], margin_sats, lev, sl, tp)
+                        client.order_guard.clear_intent(intent_fp)
+                        if isinstance(new_t, dict) and "id" in new_t:
+                            nt_id = str(new_t["id"])
+                            adopted_meta = infer_adopted_trade(
+                                new_t, ind_5m, state, now, forced_action=action
+                            )
+                            adopted_meta["decision_price"] = float(ind_5m["price"])
+                            q_val = float(q_vec[action]) if action < len(q_vec) else 0.0
+                            adopted_meta["entry_q"] = float(q_val)
+                            brain.active_trades[nt_id] = adopted_meta
+                            brain.dirty = True
+                            brain.save_brain(force=False)
+                            print(
+                                f"  → Abierta {strat['name']} [{len(live_primary)+1}/{Config.MAX_CONCURRENT_TRADES}] "
+                                f"(Lev {lev}x | Margen {margin_sats} sats | ExpProy:{proj_exp*100:.1f}% | Salida:{strat['exit_mode']})"
+                            )
+                    except Exception as open_err:
+                        print(f"  [VERIFICANDO ORDEN POST-TIMEOUT] {open_err}")
+                        time.sleep(1.2)
+                        verify_running = client.get_running_trades(force_refresh=True)
+                        hedge_tid_set = hedge_store.get_all_hedge_trade_ids() if Config.ENABLE_HYBRID_HEDGE else set()
+                        for vt in verify_running:
+                            vtid = str(vt["id"])
+                            if vtid not in brain.active_trades and vtid not in hedge_tid_set:
+                                adopted_meta = infer_adopted_trade(
+                                    vt, ind_5m, state, now, forced_action=action
+                                )
+                                adopted_meta["decision_price"] = float(ind_5m["price"])
+                                adopted_meta["entry_q"] = float(q_val)
+                                brain.active_trades[vtid] = adopted_meta
+                                brain.dirty = True
+                        client.order_guard.clear_intent(intent_fp)
+                        brain.save_brain(force=False)
+
+    return action_taken, last_entry_time
+
+
 def _parse_cli_env():
     env_val = os.getenv("SNIPER_ENV", "mainnet")
     for idx, arg in enumerate(sys.argv):
@@ -2709,83 +3193,16 @@ def main():
             THRESHOLDS_MANAGER.check_and_reload(active_trades_count=len(primary_running))
             state = brain.discretize_state(ind_5m, ind_15m, ind_1h, ind_4h, len(primary_running))
 
-            settled_in_cycle = 0
+            settled_in_cycle, consecutive_losses, risk_multiplier, pause_until = process_settlement_queue(
+                client, brain, closed_ids, state, now,
+                recovery_anchor_equity, current_mode,
+                consecutive_losses, risk_multiplier, pause_until
+            )
             if closed_ids:
-                closed_map = {str(ct["id"]): ct for ct in client.get_closed_trades(limit=50)}
-                tick_ref_sec = max(1.0, THRESHOLDS_MANAGER.get_float("reward", "tick_duration_sec", 15.0))
-                for cid in closed_ids:
-                    info = brain.active_trades.get(cid)
-                    if not isinstance(info, dict):
-                        brain.active_trades.pop(cid, None)
-                        continue
-                    if cid in closed_map:
-                        brain.active_trades.pop(cid, None)
-                        brain.dirty = True
-                        settled_in_cycle += 1
-                        ct_obj = closed_map[cid]
-                        pl = int(ct_obj.get("pl", 0))
-                        m_used = int(info.get("margin", ct_obj.get("margin", 1000)))
-                        lev_used = float(ct_obj.get("leverage") or info.get("leverage", 35.0))
-                        exact_fee = int(ct_obj.get("opening_fee", 0) or 0) + int(ct_obj.get("closing_fee", 0) or 0)
-                        funding_fee = int(round(float(ct_obj.get("sum_carry_fees") or ct_obj.get("funding_fees") or 0)))
-                        fill_price = float(ct_obj.get("price") or ct_obj.get("entryPrice") or 0.0)
-                        dec_price = float(info.get("decision_price") or fill_price)
-                        t_side = str(ct_obj.get("side") or info.get("side") or "buy")
-                        econ = SatsExpectancyGate.compute_trade_economic_breakdown(
-                            pl, m_used, lev_used,
-                            exact_fee_sats=exact_fee,
-                            funding_fee_sats=funding_fee,
-                            entry_price=fill_price,
-                            decision_price=dec_price,
-                            side=t_side,
-                            gross_includes_execution=True,
-                        )
-                        was_harvested = bool(info.get("ai_closed", False))
-                        orig_st = info.get("state", state)
-                        act_taken = int(info.get("action", 2))
-                        in_rec = (current_mode == "RECOVERY") or (recovery_anchor_equity is not None)
-                        beat_anchor = (recovery_anchor_equity is not None and balance >= int(round(recovery_anchor_equity * 1.03)))
-
-                        hit_tp_real = bool(ct_obj.get("takeprofit_wi")) or (econ["net_pnl_sats"] > m_used * 0.16 and not bool(ct_obj.get("stoploss_wi")))
-                        entry_ts = float(info.get("entry_time", now))
-                        dur_ticks = max(1.0, (now - entry_ts) / tick_ref_sec)
-                        mae_tracked = float(info.get("mae_sats", 0.0))
-                        mfe_tracked = float(info.get("mfe_sats", max(0, econ["net_pnl_sats"])))
-                        pred_q = info.get("entry_q", None)
-
-                        brain.remember_and_train(
-                            orig_st, act_taken, pl, m_used, state,
-                            equity_after=balance, available_balance_after=balance,
-                            real_balance_delta_sats=econ["net_pnl_sats"],
-                            hit_tp=hit_tp_real, harvested=was_harvested,
-                            recovery_mode=in_rec, exited_recovery_bonus=beat_anchor,
-                            lev_used=lev_used, exact_fee_sats=econ["taker_fee_sats"],
-                            pl_includes_fees=True,
-                            funding_fee_sats=funding_fee,
-                            slippage_sats=econ["slippage_sats"],
-                            trade_id=cid,
-                            mae_sats=mae_tracked,
-                            mfe_sats=mfe_tracked,
-                            duration_ticks=dur_ticks,
-                            predicted_q_entry=pred_q,
-                        )
-                        if econ["net_pnl_sats"] < 0:
-                            consecutive_losses += 1
-                            risk_multiplier = max(0.55, risk_multiplier * Config.ANTI_MARTINGALE_FACTOR)
-                            if consecutive_losses >= Config.CONSECUTIVE_LOSS_LIMIT and not Config.EXPLORER_MODE:
-                                pause_until = now + Config.CONSECUTIVE_LOSS_PAUSE_SEC
-                                consecutive_losses = 0
-                        else:
-                            consecutive_losses = 0
-                            risk_multiplier = min(1.0, risk_multiplier + 0.15)
-                    else:
-                        wait_cyc = int(info.get("settlement_wait_cycles", 0)) + 1
-                        info["settlement_wait_cycles"] = wait_cyc
-                        brain.dirty = True
-                        if wait_cyc >= 8:
-                            brain.active_trades.pop(cid, None)
-                            print(f"  [AVISO LIQUIDACIÓN] Posición {str(cid)[:6]} no indexada en /closed tras {wait_cyc} ciclos; liberada.")
                 last_known_balance = balance
+
+            if Config.SHADOW_MODE or hasattr(brain, "shadow_trades"):
+                update_shadow_trades(brain, float(ind_5m["price"]), now=now)
 
             for t in primary_running:
                 tid = str(t["id"])
@@ -2919,23 +3336,20 @@ def main():
                 f"Act:{len(primary_running)}/{Config.MAX_CONCURRENT_TRADES}{hedge_tag} | DD:{current_dd_pct*100:.1f}% | {latency_ms}ms [{lat_tag}]"
             )
 
-            still_running = []
-            if primary_running:
-                account_state = {
-                    "equity_sats": equity,
-                    "balance_sats": balance,
-                    "locked_margin_sats": locked_margin,
-                    "locked_floor_sats": brain.locked_floor,
-                    "hard_floor_breach": floor_threat,
-                    "current_dd_pct": current_dd_pct,
-                }
-                still_running = run_integrated_guardian_and_hedge_cycle(
-                    client, brain, hedge_store, portfolio_state,
-                    primary_running, ind_5m, ind_15m, ind_1h,
-                    state, current_mode, edge_scores_by_tid, perception,
-                    q_vec, account_state, now, safe_mode=safe_mode
-                )
-                evaluate_open_trades_online(brain, still_running, ind_5m, state, now)
+            account_state = {
+                "equity_sats": equity,
+                "balance_sats": balance,
+                "locked_margin_sats": locked_margin,
+                "locked_floor_sats": brain.locked_floor,
+                "hard_floor_breach": floor_threat,
+                "current_dd_pct": current_dd_pct,
+            }
+            still_running = manage_open_positions_and_hedges(
+                client, brain, hedge_store, portfolio_state,
+                primary_running, ind_5m, ind_15m, ind_1h,
+                state, current_mode, edge_scores_by_tid, perception,
+                q_vec, account_state, now, safe_mode=safe_mode
+            )
 
             active_count = max(len(still_running), len(brain.active_trades))
             if recovery_mode and current_dd_pct >= 0.08:
@@ -2954,182 +3368,36 @@ def main():
                 else:
                     dynamic_max_pos = capital_max_pos
 
-            fer_mult = 1.0
-            if hasattr(brain, "supervisor") and brain.supervisor is not None:
-                rolling_fer = brain.supervisor.get_rolling_fer()
-                if rolling_fer < 1.0:
-                    fer_cooldown_cfg = THRESHOLDS_MANAGER.get_float("exploration", "fer_cooldown_mult", 2.0)
-                    fer_mult = max(1.0, fer_cooldown_cfg)
-
-            effective_cooldown = Config.ENTRY_COOLDOWN_SEC * fer_mult * (
-                0.75 if Config.EXPLORER_MODE
-                else (0.85 if perception.get("override_side") is not None else (1.8 if (recovery_mode or "CHOP" in state) else 1.0))
-            )
             if new_entries_allowed and active_count < dynamic_max_pos:
-                if (locked_margin / max(equity, 1)) < Config.SOFT_EXPOSURE_LIMIT and (now - last_entry_time) >= effective_cooldown:
-                    dec_t0 = time.perf_counter()
-                    raw_action = brain.choose_action(
-                        state, ind_5m, ind_15m, ind_1h, ind_4h,
-                        recovery_mode=recovery_mode, current_dd_pct=current_dd_pct
-                    )
-                    q_vec = brain.get_state_q_values(state)
-                    action, gate_reason = SatsExpectancyGate.filter_and_rank_action(
-                        raw_action, state, q_vec, brain.strategies, perception,
-                        recovery_mode=recovery_mode, current_dd_pct=current_dd_pct,
-                        explorer_mode=Config.EXPLORER_MODE
-                    )
-                    decision_elapsed_ms = (time.perf_counter() - dec_t0) * 1000.0
-                    client.telemetry.record("decision_ms", decision_elapsed_ms)
-
-                    if action == 0 and raw_action > 0:
-                        brain.remember_and_train(state, 0, 0, 1000, state, is_no_trade=True)
-                        print(f"  ⏸️ [FILTRO SATS/SEGURIDAD] Entrada bloqueada ({gate_reason} | OVR:{perception.get('override_reason')})")
-                    if action > 0:
-                        strat = brain.strategies[action]
-                        combined_rr = mods["rr_mult"] * (Config.RECOVERY_RR_MULT if recovery_mode else 1.0)
-                        raw_lev, raw_sl, raw_tp = calculate_strategy_order_params(
-                            strat, ind_5m["price"], ind_5m["atr"], rr_mult=combined_rr
-                        )
-                        lev, sl, tp = compute_situational_order_params(
-                            raw_lev, raw_sl, raw_tp, strat, state, ind_5m, ind_15m, ind_1h, ind_4h,
-                            mods, brain, action, recovery_mode, current_dd_pct, consecutive_losses,
-                            combined_rr, perception=perception
-                        )
-                        reg_adapt = SatsExpectancyGate.compute_regime_risk_adaptation(
-                            mkt_reg_tag, current_dd_pct=current_dd_pct, recovery_mode=recovery_mode
-                        )
-                        base_risk = compute_effective_risk(
-                            warmup, risk_multiplier, recovery_mode, sprint_mode,
-                            current_dd_pct, parallel_risk_mult=mods["risk_mult"]
-                        )
-                        strat_style = strat.get("style", "SNIPER")
-                        p_hat, p_lcb, bayes_info = SatsExpectancyGate.estimate_bayesian_win_rate(
-                            state, action, strat_style, mkt_reg_tag, brain.style_metrics
-                        )
-                        sl_dist_pct = abs(float(ind_5m["price"]) - float(sl)) / max(float(ind_5m["price"]), 1.0)
-                        fee_rt = THRESHOLDS_MANAGER.get_float("fees", "round_trip_fee_rate", 0.0020)
-                        tp_dist_pct = abs(float(tp) - float(ind_5m["price"])) / max(float(ind_5m["price"]), 1.0)
-
-                        b_ratio = max(0.2, (tp_dist_pct - fee_rt) / max(0.0001, sl_dist_pct + fee_rt))
-                        kelly_scale = THRESHOLDS_MANAGER.get_float("q_calibration", "fractional_kelly_scale", 0.25)
-                        raw_kelly = max(0.0, (p_hat * b_ratio - (1.0 - p_hat)) / b_ratio)
-                        kelly_mult = float(np.clip(0.70 + (raw_kelly * kelly_scale * 3.0), 0.55, 1.40))
-                        if recovery_mode and not Config.EXPLORER_MODE:
-                            kelly_mult = min(kelly_mult, 0.72)
-
-                        base_risk_pct = float(np.clip(base_risk * 0.35, 0.012, 0.035))
-                        eff_risk_pct = base_risk_pct * kelly_mult * reg_adapt["size_mult"]
-                        risk_budget_sats = max(150, int(round(equity * eff_risk_pct)))
-
-                        loss_per_margin_sat = float(lev) * (sl_dist_pct + fee_rt)
-                        if loss_per_margin_sat > 0.0001:
-                            derived_margin = int(round(risk_budget_sats / loss_per_margin_sat))
-                        else:
-                            derived_margin = int(round(equity * 0.04))
-
-                        max_single_margin = int(round(equity * Config.MAX_SINGLE_TRADE_MARGIN_PCT))
-                        margin_sats = max(Config.MIN_MARGIN_SATS, min(max_single_margin, derived_margin))
-
-                        est_entry_fee = max(1, int(round(margin_sats * lev * Config.TAKER_FEE)))
-                        exp_ok, exp_reason, proj_exp = SatsExpectancyGate.verify_projected_exposure(
-                            locked_margin, margin_sats, equity, balance,
-                            max_exposure_ratio=Config.SOFT_EXPOSURE_LIMIT,
-                            est_entry_fee_sats=est_entry_fee,
-                            max_single_trade_risk_pct=Config.MAX_SINGLE_TRADE_MARGIN_PCT,
-                        )
-                        est_slip_bps = (
-                            THRESHOLDS_MANAGER.get_float("market_sensitivity", "max_slippage_bps_volatile", 7.5) * 0.35
-                            if mkt_reg_tag in ("EXTREME_VOLATILITY", "VOLATILITY_EXPANSION")
-                            else THRESHOLDS_MANAGER.get_float("market_sensitivity", "max_slippage_bps_normal", 3.0) * 0.35
-                        )
-                        auto_adj = brain.supervisor.get_autonomous_adjustments()
-                        viable_sats, sats_meta = SatsExpectancyGate.verify_net_sats_expectancy(
-                            ind_5m["price"], margin_sats, lev, sl, tp,
-                            explorer_mode=Config.EXPLORER_MODE,
-                            slippage_bps=est_slip_bps,
-                            expectancy_boost=auto_adj["expectancy_boost_applied"],
-                            state=state,
-                            action=action,
-                            style=strat_style,
-                            regime=mkt_reg_tag,
-                            style_metrics=brain.style_metrics,
-                        )
-                        if viable_sats and not Config.EXPLORER_MODE and (recovery_mode or "RANGE_SQUEEZE" in state):
-                            floor_rec = THRESHOLDS_MANAGER.get_int("expectancy", "min_net_profit_sats_recovery", 44)
-                            floor_std = THRESHOLDS_MANAGER.get_int("expectancy", "min_net_profit_sats", 38)
-                            base_cost_ref = int(sats_meta.get("total_cost_sats", sats_meta["fee_sats"]))
-                            min_strict_tp = max(
-                                floor_rec if recovery_mode else floor_std,
-                                int(round(base_cost_ref * (3.2 + current_dd_pct * 3.0 if recovery_mode else 2.9))),
-                            )
-                            if sats_meta["net_tp_sats"] < min_strict_tp:
-                                viable_sats = False
-
-                        lat_degraded, lat_reason = client.telemetry.evaluate_execution_health()
-                        can_send, dup_reason = client.order_guard.can_send_order(
-                            strat["side"], margin_sats, lev, running_trades=still_running, now=now
-                        )
-
-                        if not exp_ok:
-                            print(f"  ⏸️ [EXPOSICIÓN PROYECTADA BLOQUEADA] {exp_reason} (Margen:{margin_sats} sats)")
-                        elif not viable_sats:
-                            print(
-                                f"  ⏸️ [EXPECTANCY SATS INSUFICIENTE] NetTP:+{sats_meta['net_tp_sats']} sats vs "
-                                f"Coste:{sats_meta.get('total_cost_sats', sats_meta['fee_sats'])} sats (Ratio:{sats_meta['fee_ratio']}x)"
-                            )
-                        elif lat_degraded and not Config.EXPLORER_MODE:
-                            print(f"  ⏸️ [PROTECCIÓN DE LATENCIA] Entrada bloqueada por condición de ejecución degradada ({lat_reason})")
-                        elif not can_send:
-                            print(f"  ⏸️ [GUARDIA ANTI-DUPLICADOS] {dup_reason}")
-                        elif safe_mode:
-                            print(
-                                f"  🛡️ [MODO SEGURO - SIMULACIÓN] Señal válida {strat['name']} "
-                                f"(Lev {lev}x | Margen {margin_sats} sats | SL:{sl} | TP:{tp} | ExpProy:{proj_exp*100:.1f}%)"
-                            )
-                        else:
-                            live_running = client.get_running_trades(force_refresh=False)
-                            hedge_tid_set = hedge_store.get_all_hedge_trade_ids() if Config.ENABLE_HYBRID_HEDGE else set()
-                            live_primary = [t for t in live_running if str(t.get("id")) not in hedge_tid_set]
-                            if len(live_primary) < min(dynamic_max_pos, Config.MAX_CONCURRENT_TRADES):
-                                last_entry_time = now
-                                intent_fp = client.order_guard.register_intent(
-                                    strat["side"], margin_sats, lev, state_key=state, now=now
-                                )
-                                client.telemetry.record("order_dispatch_ms", (time.perf_counter() - dec_t0) * 1000.0)
-                                try:
-                                    new_t = client.open_trade(strat["side"], margin_sats, lev, sl, tp)
-                                    client.order_guard.clear_intent(intent_fp)
-                                    if isinstance(new_t, dict) and "id" in new_t:
-                                        nt_id = str(new_t["id"])
-                                        adopted_meta = infer_adopted_trade(
-                                            new_t, ind_5m, state, now, forced_action=action
-                                        )
-                                        adopted_meta["decision_price"] = float(ind_5m["price"])
-                                        adopted_meta["entry_q"] = float(q_val)
-                                        brain.active_trades[nt_id] = adopted_meta
-                                        brain.dirty = True
-                                        brain.save_brain(force=True)
-                                        print(
-                                            f"  → Abierta {strat['name']} [{len(live_primary)+1}/{Config.MAX_CONCURRENT_TRADES}] "
-                                            f"(Lev {lev}x | Margen {margin_sats} sats | ExpProy:{proj_exp*100:.1f}% | Salida:{strat['exit_mode']})"
-                                        )
-                                except Exception as open_err:
-                                    print(f"  [VERIFICANDO ORDEN POST-TIMEOUT] {open_err}")
-                                    time.sleep(1.2)
-                                    verify_running = client.get_running_trades(force_refresh=True)
-                                    hedge_tid_set = hedge_store.get_all_hedge_trade_ids() if Config.ENABLE_HYBRID_HEDGE else set()
-                                    for vt in verify_running:
-                                        vtid = str(vt["id"])
-                                        if vtid not in brain.active_trades and vtid not in hedge_tid_set:
-                                            adopted_meta = infer_adopted_trade(
-                                                vt, ind_5m, state, now, forced_action=action
-                                            )
-                                            adopted_meta["decision_price"] = float(ind_5m["price"])
-                                            adopted_meta["entry_q"] = float(q_val)
-                                            brain.active_trades[vtid] = adopted_meta
-                                            brain.dirty = True
-                                    client.order_guard.clear_intent(intent_fp)
-                                    brain.save_brain(force=True)
+                _action_taken, last_entry_time = evaluate_and_dispatch_entries(
+                    client=client,
+                    brain=brain,
+                    state=state,
+                    ind_5m=ind_5m,
+                    ind_15m=ind_15m,
+                    ind_1h=ind_1h,
+                    ind_4h=ind_4h,
+                    mods=mods,
+                    recovery_mode=recovery_mode,
+                    current_dd_pct=current_dd_pct,
+                    dynamic_max_pos=dynamic_max_pos,
+                    active_count=active_count,
+                    locked_margin=locked_margin,
+                    equity=equity,
+                    balance=balance,
+                    last_entry_time=last_entry_time,
+                    now=now,
+                    consecutive_losses=consecutive_losses,
+                    warmup=warmup,
+                    risk_multiplier=risk_multiplier,
+                    sprint_mode=sprint_mode,
+                    mkt_reg_tag=mkt_reg_tag,
+                    still_running=still_running,
+                    safe_mode=safe_mode,
+                    hedge_store=hedge_store,
+                    perception=perception,
+                    shadow_mode=Config.SHADOW_MODE,
+                )
 
             TELEMETRY_DISPATCHER.publish(
                 balance_sats=balance,

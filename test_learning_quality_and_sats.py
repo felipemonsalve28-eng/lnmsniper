@@ -49,6 +49,11 @@ from lnm_sniper_v6_advanced import (
     TELEMETRY_DISPATCHER,
     THRESHOLDS_MANAGER,
     evaluate_open_trades_online,
+    record_shadow_order,
+    update_shadow_trades,
+    process_settlement_queue,
+    manage_open_positions_and_hedges,
+    evaluate_and_dispatch_entries,
 )
 
 
@@ -427,6 +432,85 @@ def run_all_tests() -> None:
     fer_cooldown_cfg = THRESHOLDS_MANAGER.get_float("exploration", "fer_cooldown_mult", 2.0)
     assert fer_cooldown_cfg >= 2.0
     print("✅ TEST 7 (Cluster Alpha: Expectancy Bayesiana Jerárquica O(1) + Cero Exploración Mainnet + Cooldown FER): PASÓ.")
+
+    # -------------------------------------------------------------------------
+    # ESCENARIO 8: Cluster Beta (F6 Guardado Diferido / Debounce, Refactor main(), Auditoría JSONL + F7 Modo Sombra)
+    # -------------------------------------------------------------------------
+    # 8a. Configuración y Debounce de guardado de cerebro
+    assert hasattr(Config, "BRAIN_SAVE_INTERVAL")
+    assert Config.BRAIN_SAVE_INTERVAL >= 10.0
+    assert hasattr(Config, "SHADOW_MODE")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        b_debounce_path = os.path.join(tmpdir, "debounce_brain.json")
+        b_deb = AutonomousGoalBrain(filename=b_debounce_path, explorer_mode=True)
+        b_deb.q_table["STATE_TEST"] = [0.0] * 9
+        b_deb.dirty = True
+        # Primera llamada force=False guarda archivo si dirty
+        saved_1 = b_deb.save_brain(force=False)
+        assert saved_1 is True
+        mtime_1 = os.path.getmtime(b_debounce_path)
+
+        # Segunda llamada inmediata force=False se pospone (debounce retorna False)
+        b_deb.dirty = True
+        saved_2 = b_deb.save_brain(force=False)
+        assert saved_2 is False
+        mtime_2 = os.path.getmtime(b_debounce_path)
+        assert mtime_1 == mtime_2, "El guardado debounced no debe escribir a disco antes de BRAIN_SAVE_INTERVAL"
+
+        # Guardado forzado force=True escribe inmediatamente
+        time.sleep(0.02)
+        saved_3 = b_deb.save_brain(force=True)
+        assert saved_3 is True
+        mtime_3 = os.path.getmtime(b_debounce_path)
+        assert mtime_3 > mtime_1, "El guardado forzado debe sincronizar inmediatamente a disco"
+
+    # 8b. Modularidad de funciones F6
+    assert callable(process_settlement_queue)
+    assert callable(manage_open_positions_and_hedges)
+    assert callable(evaluate_and_dispatch_entries)
+
+    # 8c. Modo Sombra F7: registro y liquidación virtual de órdenes simuladas
+    with tempfile.TemporaryDirectory() as tmpdir:
+        b_shadow_path = os.path.join(tmpdir, "shadow_brain.json")
+        b_shadow = AutonomousGoalBrain(filename=b_shadow_path, explorer_mode=True)
+        b_shadow.shadow_trades = {
+            "shadow-test-buy": {
+                "id": "shadow-test-buy",
+                "side": "buy",
+                "entry_price": 70000.0,
+                "stoploss": 69000.0,
+                "takeprofit": 72000.0,
+                "margin_sats": 1000,
+                "leverage": 20.0,
+                "total_cost_sats": 40.0,
+                "status": "OPEN_SIMULATED",
+            },
+            "shadow-test-sell": {
+                "id": "shadow-test-sell",
+                "side": "sell",
+                "entry_price": 70000.0,
+                "stoploss": 71000.0,
+                "takeprofit": 68000.0,
+                "margin_sats": 1000,
+                "leverage": 20.0,
+                "total_cost_sats": 40.0,
+                "status": "OPEN_SIMULATED",
+            },
+        }
+
+        # Simular precio spot que alcanza TP de la orden buy (72500 >= 72000) y SL de la sell (72500 >= 71000)
+        closed_sims = update_shadow_trades(b_shadow, 72500.0, now=time.time())
+        assert len(closed_sims) == 2
+        statuses = {s["id"]: s["status"] for s in closed_sims}
+        assert statuses["shadow-test-buy"] == "CLOSED_TP"
+        assert statuses["shadow-test-sell"] == "CLOSED_SL"
+        pnl_by_id = {s["id"]: s["net_realized_sats"] for s in closed_sims}
+        assert pnl_by_id["shadow-test-buy"] > 0
+        assert pnl_by_id["shadow-test-sell"] < 0
+        assert len(b_shadow.shadow_trades) == 0
+
+    print("✅ TEST 8 (Cluster Beta: F6 Refactor Modular main(), Guardado Diferido/Debounce, Auditoría JSONL + F7 Modo Sombra Simulado): PASÓ.")
 
     print("=" * 80)
     print("🏆 CERTIFICACIÓN COMPLETA: TODOS LOS ESCENARIOS SUPERADOS AL 100% 🏆")
