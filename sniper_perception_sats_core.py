@@ -548,6 +548,42 @@ class SatsExpectancyGate:
         }
 
     @classmethod
+    def estimate_bayesian_win_rate(cls, state=None, action=None, style=None, regime=None, style_metrics=None):
+        """
+        Estimador Bayesiano jerárquico Beta-Binomial de probabilidad de éxito (win rate) O(1).
+        Realiza contracción (shrinkage) ante escasez de datos:
+        1. Prior Global calibrado (alpha_0 = 7.0, beta_0 = 15.0 => WR base ~31.8%)
+        2. Estilo de trading (SNIPER, REVERSION, TREND, DEF_SCALP)
+        3. Régimen de mercado si está disponible
+        """
+        tm = get_thresholds_manager()
+        alpha_0 = tm.get_float("expectancy", "bayesian_prior_alpha", 7.0)
+        beta_0 = tm.get_float("expectancy", "bayesian_prior_beta", 15.0)
+
+        alpha_post = alpha_0
+        beta_post = beta_0
+
+        if style_metrics and style and style in style_metrics:
+            st = style_metrics[style]
+            trades = max(0, int(st.get("trades", 0)))
+            wins = max(0, int(st.get("wins", 0)))
+            if trades >= 3:
+                alpha_post += float(wins)
+                beta_post += float(trades - wins)
+
+        n_eff = alpha_post + beta_post
+        p_hat = alpha_post / max(1.0, n_eff)
+        var_p = (p_hat * (1.0 - p_hat)) / max(1.0, n_eff + 1.0)
+        sigma_p = math.sqrt(max(0.0, var_p))
+        p_lcb = max(0.05, min(0.95, p_hat - 1.25 * sigma_p))
+
+        return round(p_hat, 4), round(p_lcb, 4), {
+            "alpha_post": round(alpha_post, 2),
+            "beta_post": round(beta_post, 2),
+            "sigma_p": round(sigma_p, 4),
+        }
+
+    @classmethod
     def verify_net_sats_expectancy(
         cls,
         price,
@@ -560,6 +596,11 @@ class SatsExpectancyGate:
         spread_bps=0.0,
         slippage_bps=0.0,
         expectancy_boost=0.0,
+        state=None,
+        action=None,
+        style=None,
+        regime=None,
+        style_metrics=None,
     ):
         tm = get_thresholds_manager()
         cls.sync_from_thresholds(tm)
@@ -579,12 +620,24 @@ class SatsExpectancyGate:
         sl_dist_pct = abs(price - float(sl_price)) / price
 
         expected_gross_tp_sats = int(round(notional_sats * tp_dist_pct))
+        expected_gross_sl_sats = int(round(notional_sats * sl_dist_pct))
         expected_net_tp_sats = expected_gross_tp_sats - total_cost_sats
-        expected_loss_sl_sats = int(round(notional_sats * sl_dist_pct)) + total_cost_sats
+        expected_loss_sl_sats = expected_gross_sl_sats + total_cost_sats
 
         fee_ratio = expected_gross_tp_sats / max(float(total_cost_sats), 1.0)
         net_expectancy_ratio = expected_net_tp_sats / max(float(total_cost_sats), 1.0)
         net_rr = expected_net_tp_sats / max(float(expected_loss_sl_sats), 1.0)
+
+        # F4: Estimación Bayesiana de Win Rate (p_hat, p_lcb) y Breakeven (p*)
+        p_hat, p_lcb, bayes_meta = cls.estimate_bayesian_win_rate(
+            state=state, action=action, style=style, regime=regime, style_metrics=style_metrics
+        )
+        p_star = float(expected_loss_sl_sats) / max(1.0, float(expected_gross_tp_sats + expected_gross_sl_sats))
+        safety_margin = tm.get_float("expectancy", "breakeven_safety_margin", 0.04)
+        required_p = p_star + (0.0 if explorer_mode else safety_margin)
+
+        expected_net_sats = (p_hat * expected_net_tp_sats) - ((1.0 - p_hat) * expected_loss_sl_sats)
+        expected_net_lcb_sats = (p_lcb * expected_net_tp_sats) - ((1.0 - p_lcb) * expected_loss_sl_sats)
 
         min_ratio_exp = tm.get_float("expectancy", "min_expectancy_ratio_explorer", 2.40)
         min_ratio_std = tm.get_float("expectancy", "min_expectancy_ratio", cls.MIN_NET_REWARD_TO_FEE_RATIO)
@@ -606,10 +659,17 @@ class SatsExpectancyGate:
             else tm.get_float("expectancy", "min_net_rr", 1.05)
         )
 
+        probabilistic_ok = (
+            (p_hat >= p_star)
+            if explorer_mode
+            else (p_lcb >= required_p or expected_net_lcb_sats > 0.0 or expected_net_sats >= min_net_sats * 0.5)
+        )
+
         is_viable = (
             expected_net_tp_sats >= min_net_sats
             and fee_ratio >= min_ratio
             and net_rr >= min_rr
+            and probabilistic_ok
         )
         return is_viable, {
             "gross_tp_sats": expected_gross_tp_sats,
@@ -626,6 +686,11 @@ class SatsExpectancyGate:
             "net_expectancy_ratio": round(net_expectancy_ratio, 2),
             "min_expectancy_ratio_applied": round(min_ratio, 2),
             "net_rr": round(net_rr, 2),
+            "p_hat": round(p_hat, 4),
+            "p_lcb": round(p_lcb, 4),
+            "p_star": round(p_star, 4),
+            "expected_net_sats": round(expected_net_sats, 1),
+            "expected_net_lcb_sats": round(expected_net_lcb_sats, 1),
         }
 
     @staticmethod

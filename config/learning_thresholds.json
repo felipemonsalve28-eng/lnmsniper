@@ -71,6 +71,30 @@
       "min_limit": 0.3,
       "max_limit": 5.0,
       "structural_lock_when_open": false
+    },
+    "breakeven_safety_margin": {
+      "value": 0.04,
+      "unit": "probability",
+      "description": "Margen de seguridad probabilistico exigido sobre el win rate de equilibrio (p*).",
+      "min_limit": 0.0,
+      "max_limit": 0.3,
+      "structural_lock_when_open": false
+    },
+    "bayesian_prior_alpha": {
+      "value": 7.0,
+      "unit": "pseudo_wins",
+      "description": "Prior bayesiano alpha (aciertos pseudo-observados) para contraccion jerarquica de win rate.",
+      "min_limit": 0.5,
+      "max_limit": 50.0,
+      "structural_lock_when_open": false
+    },
+    "bayesian_prior_beta": {
+      "value": 15.0,
+      "unit": "pseudo_losses",
+      "description": "Prior bayesiano beta (fallos pseudo-observados) para contraccion jerarquica de win rate (prior WR ~31.8%).",
+      "min_limit": 0.5,
+      "max_limit": 50.0,
+      "structural_lock_when_open": false
     }
   },
   "fees": {
@@ -245,6 +269,14 @@
       "min_limit": 0.1,
       "max_limit": 20.0,
       "structural_lock_when_open": true
+    },
+    "fractional_kelly_scale": {
+      "value": 0.25,
+      "unit": "fraction",
+      "description": "Escala fraccionaria de Kelly (0.25 = 1/4 Kelly) para modulacion de tamano de posicion.",
+      "min_limit": 0.05,
+      "max_limit": 1.0,
+      "structural_lock_when_open": false
     }
   },
   "policy_entropy": {
@@ -453,6 +485,22 @@
       "min_limit": 0.1,
       "max_limit": 0.999,
       "structural_lock_when_open": true
+    },
+    "mainnet_epsilon": {
+      "value": 0.0,
+      "unit": "probability",
+      "description": "Tasa de exploracion epsilon en Mainnet (0.0 = politica puramente determinista/greedy sobre LCB).",
+      "min_limit": 0.0,
+      "max_limit": 0.05,
+      "structural_lock_when_open": false
+    },
+    "fer_cooldown_mult": {
+      "value": 2.0,
+      "unit": "multiplier",
+      "description": "Multiplicador de cooldown entre operaciones cuando FER reciente cae por debajo de 1.0.",
+      "min_limit": 1.0,
+      "max_limit": 5.0,
+      "structural_lock_when_open": false
     }
   },
   "learning_guard": {

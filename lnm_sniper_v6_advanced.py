@@ -1214,17 +1214,11 @@ class AutonomousGoalBrain:
         btc_move_pct = (current_price - start_price) / start_price
         winrate_pct = (wins_cnt / trades_cnt * 100.0) if trades_cnt > 0 else 0.0
 
-        align_bonus = 0.0
-        if prev_action == 1:
-            align_bonus = 0.06 if btc_move_pct > 0.0025 else (-0.05 if btc_move_pct < -0.0025 else -0.01)
-        elif prev_action == 2:
-            align_bonus = 0.06 if btc_move_pct < -0.0025 else (-0.05 if btc_move_pct > 0.0025 else -0.01)
-        elif prev_action == 0:
-            align_bonus = 0.05 if abs(btc_move_pct) <= 0.0035 else -0.03
-        elif prev_action == 3:
-            align_bonus = 0.05 if cycle_roi_pct >= -0.005 else -0.04
-
-        macro_reward = float(np.clip((cycle_roi_pct * 7.5) + align_bonus, -0.38, 0.38))
+        reward_scale = max(1.0, self.thresholds.get_float("reward", "reward_scale_sats", 100.0))
+        # Recompensa macro basada estrictamente en satoshis netos consolidados del ciclo (M3)
+        # Sin bonos de direccion de BTC (align_bonus) que sesgan la seleccion micro
+        net_cycle_sats = float(realized_pnl) if trades_cnt > 0 else float(eq_delta)
+        macro_reward = float(np.clip(net_cycle_sats / (reward_scale * 3.0), -0.50, 0.50))
         next_macro_state = self.discretize_macro_state(ind_tf, cycle_roi_pct)
 
         if prev_state not in q_macro or len(q_macro[prev_state]) != Config.NUM_MACRO_ACTIONS:
@@ -1273,9 +1267,7 @@ class AutonomousGoalBrain:
     def choose_action(self, state, ind_5m, ind_15m, ind_1h, ind_4h, recovery_mode=False, current_dd_pct=0.0):
         norm_s = self._normalize_state_key(state)
         q_vals = self.get_state_q_values(norm_s)
-        self.state_visits[norm_s] = self.state_visits.get(norm_s, 0) + 1
-        visits = self.state_visits[norm_s]
-        self.dirty = True
+        visits = self.state_visits.get(norm_s, 0)
 
         self.epsilon_decay = self.thresholds.get_float("exploration", "epsilon_decay", self.epsilon_decay)
         if self.explorer_mode:
@@ -1288,28 +1280,32 @@ class AutonomousGoalBrain:
         else:
             allowed_actions = [0, 1, 2, 3, 4, 5, 6, 7, 8]
 
-        # La política de exploración (epsilon) se mantiene independiente de la suspensión del Learning Guard
+        # F5: Supresión estricta de aperturas aleatorias en Mainnet (mainnet_epsilon=0.0 por defecto)
         if self.explorer_mode:
             self.alpha = 0.24
             self.epsilon = max(self.epsilon_min, round(self.epsilon * self.epsilon_decay, 4))
             if random.uniform(0, 1) < self.epsilon:
                 active_candidates = [a for a in allowed_actions if a != 0]
                 chosen_act = int(random.choice(active_candidates))
+                self.state_visits[norm_s] = visits + 1
+                self.dirty = True
                 self.supervisor.record_policy_decision(chosen_act)
                 return chosen_act
         else:
+            mainnet_eps = self.thresholds.get_float("exploration", "mainnet_epsilon", 0.0)
             if recovery_mode:
                 self.alpha = self.thresholds.get_float("exploration", "alpha_recovery_rate", 0.28)
-                effective_eps = max(0.04, self.epsilon)
+                effective_eps = min(mainnet_eps, 0.02)
             else:
                 self.alpha = self.thresholds.get_float("exploration", "alpha_learning_rate", 0.18)
-                self.epsilon = max(self.epsilon_min, round(self.epsilon * self.epsilon_decay, 4))
-                effective_eps = max(0.06, self.epsilon) if visits < 25 else (0.0 if "CHOP" in norm_s else min(0.030, self.epsilon))
+                effective_eps = mainnet_eps
 
             if effective_eps > 0.0 and random.uniform(0, 1) < effective_eps:
                 if visits < 25 and not recovery_mode:
                     non_rev = [a for a in allowed_actions if a not in (0, 2, 6)]
                     chosen_act = int(random.choice(non_rev if non_rev else allowed_actions))
+                    self.state_visits[norm_s] = visits + 1
+                    self.dirty = True
                     self.supervisor.record_policy_decision(chosen_act)
                     return chosen_act
                 self.supervisor.record_policy_decision(0)
@@ -1334,6 +1330,9 @@ class AutonomousGoalBrain:
             return q_val + b
 
         chosen_act = int(max(allowed_actions, key=biased_q))
+        if chosen_act > 0:
+            self.state_visits[norm_s] = visits + 1
+            self.dirty = True
         self.supervisor.record_policy_decision(chosen_act)
         return chosen_act
 
@@ -2955,7 +2954,14 @@ def main():
                 else:
                     dynamic_max_pos = capital_max_pos
 
-            effective_cooldown = Config.ENTRY_COOLDOWN_SEC * (
+            fer_mult = 1.0
+            if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                rolling_fer = brain.supervisor.get_rolling_fer()
+                if rolling_fer < 1.0:
+                    fer_cooldown_cfg = THRESHOLDS_MANAGER.get_float("exploration", "fer_cooldown_mult", 2.0)
+                    fer_mult = max(1.0, fer_cooldown_cfg)
+
+            effective_cooldown = Config.ENTRY_COOLDOWN_SEC * fer_mult * (
                 0.75 if Config.EXPLORER_MODE
                 else (0.85 if perception.get("override_side") is not None else (1.8 if (recovery_mode or "CHOP" in state) else 1.0))
             )
@@ -2996,13 +3002,33 @@ def main():
                             warmup, risk_multiplier, recovery_mode, sprint_mode,
                             current_dd_pct, parallel_risk_mult=mods["risk_mult"]
                         )
-                        q_val = float(q_vec[action]) if action < len(q_vec) else 0.0
-                        kelly_mult = 1.35 if q_val >= 0.08 else (1.10 if q_val >= 0.03 else 0.78)
+                        strat_style = strat.get("style", "SNIPER")
+                        p_hat, p_lcb, bayes_info = SatsExpectancyGate.estimate_bayesian_win_rate(
+                            state, action, strat_style, mkt_reg_tag, brain.style_metrics
+                        )
+                        sl_dist_pct = abs(float(ind_5m["price"]) - float(sl)) / max(float(ind_5m["price"]), 1.0)
+                        fee_rt = THRESHOLDS_MANAGER.get_float("fees", "round_trip_fee_rate", 0.0020)
+                        tp_dist_pct = abs(float(tp) - float(ind_5m["price"])) / max(float(ind_5m["price"]), 1.0)
+
+                        b_ratio = max(0.2, (tp_dist_pct - fee_rt) / max(0.0001, sl_dist_pct + fee_rt))
+                        kelly_scale = THRESHOLDS_MANAGER.get_float("q_calibration", "fractional_kelly_scale", 0.25)
+                        raw_kelly = max(0.0, (p_hat * b_ratio - (1.0 - p_hat)) / b_ratio)
+                        kelly_mult = float(np.clip(0.70 + (raw_kelly * kelly_scale * 3.0), 0.55, 1.40))
                         if recovery_mode and not Config.EXPLORER_MODE:
                             kelly_mult = min(kelly_mult, 0.72)
 
-                        adj_risk = min(0.11, max(0.03, base_risk * kelly_mult * reg_adapt["size_mult"]))
-                        margin_sats = max(Config.MIN_MARGIN_SATS, int(round(equity * adj_risk)))
+                        base_risk_pct = float(np.clip(base_risk * 0.35, 0.012, 0.035))
+                        eff_risk_pct = base_risk_pct * kelly_mult * reg_adapt["size_mult"]
+                        risk_budget_sats = max(150, int(round(equity * eff_risk_pct)))
+
+                        loss_per_margin_sat = float(lev) * (sl_dist_pct + fee_rt)
+                        if loss_per_margin_sat > 0.0001:
+                            derived_margin = int(round(risk_budget_sats / loss_per_margin_sat))
+                        else:
+                            derived_margin = int(round(equity * 0.04))
+
+                        max_single_margin = int(round(equity * Config.MAX_SINGLE_TRADE_MARGIN_PCT))
+                        margin_sats = max(Config.MIN_MARGIN_SATS, min(max_single_margin, derived_margin))
 
                         est_entry_fee = max(1, int(round(margin_sats * lev * Config.TAKER_FEE)))
                         exp_ok, exp_reason, proj_exp = SatsExpectancyGate.verify_projected_exposure(
@@ -3022,6 +3048,11 @@ def main():
                             explorer_mode=Config.EXPLORER_MODE,
                             slippage_bps=est_slip_bps,
                             expectancy_boost=auto_adj["expectancy_boost_applied"],
+                            state=state,
+                            action=action,
+                            style=strat_style,
+                            regime=mkt_reg_tag,
+                            style_metrics=brain.style_metrics,
                         )
                         if viable_sats and not Config.EXPLORER_MODE and (recovery_mode or "RANGE_SQUEEZE" in state):
                             floor_rec = THRESHOLDS_MANAGER.get_int("expectancy", "min_net_profit_sats_recovery", 44)

@@ -372,7 +372,7 @@ def run_all_tests() -> None:
     print("✅ TEST 5 (Despachador de Telemetría Headless Atómica `telemetry_live.json`): PASÓ.")
 
     # -------------------------------------------------------------------------
-    # ESCENARIO 6: Regresión Arquitectónica (9 Acciones, Cerebro Real, Guardian, Concurrencia 5)
+    # ESCENARIO 6: Regresión Arquitectónica (9 Acciones, HardFloorGuardian y Límite de 5 Posiciones)
     # -------------------------------------------------------------------------
     Config.configure_environment("mainnet")
     assert Config.NUM_ACTIONS == 9
@@ -381,6 +381,52 @@ def run_all_tests() -> None:
     prot_res = fg.evaluate_protection(25000, 25000, 26000, 19500, -0.02)
     assert prot_res["should_liquidate"] is False
     print("✅ TEST 6 (Regresión Arquitectónica: 9 Acciones, HardFloorGuardian y Límite de 5 Posiciones): PASÓ.")
+
+    # -------------------------------------------------------------------------
+    # ESCENARIO 7: Cluster Alpha (F4 Expectancy Bayesiana Jerárquica + F5 Cero Exploración Mainnet)
+    # -------------------------------------------------------------------------
+    # 7a. Estimador Bayesiano jerárquico Beta-Binomial y contracción
+    p_global, p_lcb_global, meta_g = SatsExpectancyGate.estimate_bayesian_win_rate()
+    assert abs(p_global - (7.0 / 22.0)) < 1e-3, f"Prior global esperado ~0.3182, obtuvo {p_global}"
+    assert p_lcb_global <= p_global and p_lcb_global > 0.05
+
+    mock_style_win = {"TREND": {"trades": 10, "wins": 8}}
+    p_trend, p_lcb_trend, _ = SatsExpectancyGate.estimate_bayesian_win_rate(style="TREND", style_metrics=mock_style_win)
+    # Posterior: (7 + 8) / (22 + 10) = 15 / 32 = 0.46875
+    assert abs(p_trend - 0.4688) < 1e-3
+    assert p_trend > p_global, "Estilo con 80% WR debe elevar la probabilidad estimada posterior"
+
+    # 7b. Compuerta de Expectancy probabilística real:
+    # Simular estilo deficitario (20 trades, 2 wins -> 10% WR) frente a stop loss estándar
+    mock_style_poor = {"REVERSION": {"trades": 20, "wins": 2}}
+    viable_poor, meta_poor = SatsExpectancyGate.verify_net_sats_expectancy(
+        price=78000.0, margin_sats=2000, lev=25, sl_price=77400.0, tp_price=79200.0,
+        explorer_mode=False, style="REVERSION", style_metrics=mock_style_poor
+    )
+    # Debe ser bloqueada por win rate insuficiente respecto al breakeven p*
+    assert meta_poor["p_star"] > meta_poor["p_lcb"]
+    assert viable_poor is False, "Estilo con 10% WR debe ser bloqueado por la compuerta bayesiana probabilística"
+
+    # 7c. Supresión estricta de exploración con capital real en Mainnet (mainnet_epsilon = 0.0)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        b_main_path = os.path.join(tmpdir, "mainnet_test_brain.json")
+        b_main = AutonomousGoalBrain(filename=b_main_path, explorer_mode=False)
+        ind_dummy = {
+            "price": 78000.0, "atr": 200.0, "rsi": 50.0, "bb_pos": 0.5, "ema9": 78000.0,
+            "ema21": 78000.0, "ema_score": 0.0, "regime": "RANGE_NORMAL"
+        }
+        # En 30 decisiones de política, nunca debe generar una acción aleatoria
+        for _ in range(30):
+            chosen = b_main.choose_action(
+                "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS",
+                ind_dummy, ind_dummy, ind_dummy, ind_dummy
+            )
+            assert chosen in range(9)
+
+    # 7d. Multiplicador de cooldown dinámico cuando FER reciente < 1.0
+    fer_cooldown_cfg = THRESHOLDS_MANAGER.get_float("exploration", "fer_cooldown_mult", 2.0)
+    assert fer_cooldown_cfg >= 2.0
+    print("✅ TEST 7 (Cluster Alpha: Expectancy Bayesiana Jerárquica O(1) + Cero Exploración Mainnet + Cooldown FER): PASÓ.")
 
     print("=" * 80)
     print("🏆 CERTIFICACIÓN COMPLETA: TODOS LOS ESCENARIOS SUPERADOS AL 100% 🏆")

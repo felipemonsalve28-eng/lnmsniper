@@ -132,6 +132,12 @@ def sync_dual_brains(
         print(f"[AVISO] Cerebro Testnet ({testnet_path}) aún no disponible o vacío.")
         return False
 
+    t_ver = int(test_data.get("reward_schema_version", 1))
+    m_ver = int(main_data.get("reward_schema_version", 1))
+    if t_ver != m_ver:
+        print(f"⏸️ [NUTRICIÓN DIFERIDA] Versiones de esquema no coinciden (Testnet: v{t_ver} vs Mainnet: v{m_ver}). Sincronización omitida.")
+        return False
+
     q_main = main_data.get("q_table", {})
     v_main = main_data.get("state_visits", {})
     q_test = test_data.get("q_table", {})

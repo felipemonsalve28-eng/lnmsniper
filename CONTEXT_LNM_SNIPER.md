@@ -106,6 +106,28 @@
      - Escenarios 1 y 15 actualizados para validar `Q(s, 0) = 0.0` como anclaje base de `NO_TRADE`.
      - **Resultado:** 23 de 23 escenarios superados al 100% (Latencia media: 0.702 ms/ciclo < 1.5 ms; Deriva de memoria RAM: +2.7 KB < 16 KB tras 500 ciclos).
 
+### Etapa 9: Implementación y Certificación del Cluster Alpha (F4 + F5)
+- **Estado:** **Etapas 3 y 4 de la directiva completadas exitosamente para F4 y F5**.
+- **Detalle de Mejoras Cuantitativas y Algorítmicas:**
+  1. **[config/learning_thresholds.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/config/learning_thresholds.json):**
+     - Incorporados parámetros formales: `breakeven_safety_margin = 0.04`, `bayesian_prior_alpha = 7.0`, `bayesian_prior_beta = 15.0`, `fractional_kelly_scale = 0.25`, `mainnet_epsilon = 0.0` y `fer_cooldown_mult = 2.0`.
+     - Verificación completa: 77/77 parámetros activos con consumidor directo en código (0 huérfanos).
+  2. **[sniper_perception_sats_core.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sniper_perception_sats_core.py):**
+     - Implementado `estimate_bayesian_win_rate`: estimador Bayesiano jerárquico Beta-Binomial $O(1)$ con contracción desde celda $(s, a)$ hacia estilo (`SNIPER`, `REVERSION`, `TREND`, `DEF_SCALP`) y prior global ($\alpha_0=7, \beta_0=15 \Rightarrow \text{WR}\approx 31.8\%$).
+     - Compuerta de Expectancy probabilística en `verify_net_sats_expectancy`: cálculo analítico de tasa de equilibrio $p^{*} = (L + C) / (G + L)$, esperanza neta $E$ y cota inferior $E_{\text{LCB}}$. Filtra sistemáticamente operaciones con $\hat{p}_{\text{LCB}} < p^{*} + \text{margen}$, eliminando el fee drag estructural de estilos con bajo win rate.
+  3. **[lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py):**
+     - `choose_action`: `mainnet_epsilon = 0.0` enforzado en Mainnet (política determinista / greedy sobre LCB; cero aperturas aleatorias con capital real). Desacople de `state_visits` de los ticks del loop para no inflar visitas sin transiciones.
+     - `evaluate_and_close_macro_cycle`: Eliminado el `align_bonus` cosmético de dirección de BTC. La recompensa macro se calcula puramente sobre satoshis netos consolidados del ciclo.
+     - `main()`:
+       - Sizing por riesgo real en satoshis sobre el Stop Loss: `margin_sats = risk_budget / (lev * (sl_dist + fee_rt))`, garantizando que la pérdida al saltar el stop loss coincida exactamente con el presupuesto de riesgo en satoshis.
+       - Modulador de Kelly Fraccionario ($\frac{1}{4}$ Kelly) con cota de seguridad `[0.55, 1.40]`.
+       - Cooldown adaptativo según FER reciente: duplicación de cooldown cuando $\text{FER}_{\text{rolling}} < 1.0$.
+  4. **[sync_brains_dual.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sync_brains_dual.py):**
+     - Exigencia estricta de coincidencia de `reward_schema_version` para autorizar sincronización entre Testnet y Mainnet.
+  5. **Certificación Cuantitativa (Etapa 4):**
+     - [test_learning_quality_and_sats.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_learning_quality_and_sats.py): **7 de 7 bloques pasaron al 100%** (incluyendo nuevo Test 7 de Expectancy Bayesiana, Sizing y Mainnet Epsilon).
+     - [test_protocolo_v_reversal.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_protocolo_v_reversal.py): **23 de 23 escenarios pasaron al 100%** (Latencia media: 0.665 ms/ciclo; RAM Delta: +2.7 KB).
+
 ---
 
 ## 3. ARQUITECTURA DE ARCHIVOS CLAVE
