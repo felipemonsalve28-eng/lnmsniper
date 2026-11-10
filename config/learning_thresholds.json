@@ -1,0 +1,598 @@
+{
+  "expectancy": {
+    "min_expectancy_ratio": {
+      "value": 3.85,
+      "unit": "ratio",
+      "description": "Ratio minimo de beneficio bruto proyectado sobre costos totales (comisiones + funding + slippage) para autorizar entrada en modo normal.",
+      "min_limit": 1.1,
+      "max_limit": 10.0,
+      "structural_lock_when_open": false
+    },
+    "min_expectancy_ratio_explorer": {
+      "value": 2.4,
+      "unit": "ratio",
+      "description": "Ratio minimo de beneficio bruto sobre costos totales en modo explorador.",
+      "min_limit": 1.05,
+      "max_limit": 8.0,
+      "structural_lock_when_open": false
+    },
+    "min_net_to_cost_ratio": {
+      "value": 2.8,
+      "unit": "ratio",
+      "description": "Multiplo minimo de ganancia neta en satoshis respecto al costo total de friccion en modo normal.",
+      "min_limit": 0.5,
+      "max_limit": 10.0,
+      "structural_lock_when_open": false
+    },
+    "min_net_to_cost_ratio_explorer": {
+      "value": 1.5,
+      "unit": "ratio",
+      "description": "Multiplo minimo de ganancia neta en satoshis respecto al costo total de friccion en modo explorador.",
+      "min_limit": 0.2,
+      "max_limit": 8.0,
+      "structural_lock_when_open": false
+    },
+    "min_net_profit_sats": {
+      "value": 38,
+      "unit": "sats",
+      "description": "Piso absoluto de ganancia neta proyectada en satoshis para abrir posicion en modo normal.",
+      "min_limit": 1,
+      "max_limit": 5000,
+      "structural_lock_when_open": false
+    },
+    "min_net_profit_sats_explorer": {
+      "value": 16,
+      "unit": "sats",
+      "description": "Piso absoluto de ganancia neta proyectada en satoshis para abrir posicion en modo explorador.",
+      "min_limit": 1,
+      "max_limit": 2000,
+      "structural_lock_when_open": false
+    },
+    "min_net_profit_sats_recovery": {
+      "value": 44,
+      "unit": "sats",
+      "description": "Piso absoluto de ganancia neta proyectada en satoshis durante modo recuperacion.",
+      "min_limit": 5,
+      "max_limit": 5000,
+      "structural_lock_when_open": false
+    },
+    "min_net_rr": {
+      "value": 1.05,
+      "unit": "ratio",
+      "description": "Relacion Riesgo-Beneficio neta minima post-comisiones en modo normal.",
+      "min_limit": 0.5,
+      "max_limit": 10.0,
+      "structural_lock_when_open": false
+    },
+    "min_net_rr_explorer": {
+      "value": 0.72,
+      "unit": "ratio",
+      "description": "Relacion Riesgo-Beneficio neta minima post-comisiones en modo explorador.",
+      "min_limit": 0.3,
+      "max_limit": 5.0,
+      "structural_lock_when_open": false
+    }
+  },
+  "fees": {
+    "taker_fee_rate": {
+      "value": 0.001,
+      "unit": "rate",
+      "description": "Tasa de comision taker por lado en LN Markets (0.10%).",
+      "min_limit": 0.0001,
+      "max_limit": 0.01,
+      "structural_lock_when_open": true
+    },
+    "round_trip_fee_rate": {
+      "value": 0.002,
+      "unit": "rate",
+      "description": "Tasa de comision round-trip apertura + cierre en LN Markets (0.20%).",
+      "min_limit": 0.0002,
+      "max_limit": 0.02,
+      "structural_lock_when_open": true
+    },
+    "funding_rate_8h_est": {
+      "value": 0.0001,
+      "unit": "rate",
+      "description": "Tasa estimada de funding/carry por ventana de 8 horas en LN Markets.",
+      "min_limit": 0.0,
+      "max_limit": 0.01,
+      "structural_lock_when_open": false
+    },
+    "fer_high_threshold": {
+      "value": 2.5,
+      "unit": "ratio",
+      "description": "Umbral de Fee-Efficiency Ratio (FER >= 2.5) para clasificar eficiencia alta.",
+      "min_limit": 1.2,
+      "max_limit": 20.0,
+      "structural_lock_when_open": false
+    },
+    "fer_moderate_threshold": {
+      "value": 1.2,
+      "unit": "ratio",
+      "description": "Umbral inferior de FER (1.2 <= FER < 2.5) para eficiencia moderada; debajo activa respuesta contra fee drag.",
+      "min_limit": 0.5,
+      "max_limit": 10.0,
+      "structural_lock_when_open": false
+    },
+    "fer_warning_threshold": {
+      "value": 1.0,
+      "unit": "ratio",
+      "description": "Umbral critico de FER (FER < 1.0 indica destruccion de capital por friccion operativa).",
+      "min_limit": 0.1,
+      "max_limit": 5.0,
+      "structural_lock_when_open": false
+    },
+    "fer_window_size": {
+      "value": 20,
+      "unit": "trades",
+      "description": "Ventana movil de operaciones cerradas para calculo de Fee-Efficiency Ratio.",
+      "min_limit": 5,
+      "max_limit": 500,
+      "structural_lock_when_open": false
+    }
+  },
+  "td_error": {
+    "window_size": {
+      "value": 50,
+      "unit": "updates",
+      "description": "Ventana movil de actualizaciones de Q-table para media movil y gradiente de TD-Error.",
+      "min_limit": 5,
+      "max_limit": 500,
+      "structural_lock_when_open": false
+    },
+    "warmup_min_samples": {
+      "value": 5,
+      "unit": "updates",
+      "description": "Minimo de actualizaciones antes de emitir clasificacion de estado TD-Error fuera de WARMING_UP.",
+      "min_limit": 2,
+      "max_limit": 100,
+      "structural_lock_when_open": false
+    },
+    "stable_threshold": {
+      "value": 0.45,
+      "unit": "q_units",
+      "description": "Umbral superior de media movil |delta_t| para considerar convergencia STABLE.",
+      "min_limit": 0.05,
+      "max_limit": 5.0,
+      "structural_lock_when_open": false
+    },
+    "warning_threshold": {
+      "value": 0.85,
+      "unit": "q_units",
+      "description": "Umbral de |delta_t| que dispara clasificacion WARNING por incremento sostenido.",
+      "min_limit": 0.1,
+      "max_limit": 10.0,
+      "structural_lock_when_open": false
+    },
+    "critical_threshold": {
+      "value": 1.35,
+      "unit": "q_units",
+      "description": "Umbral de divergencia severa |delta_t| que clasifica el update como CRITICAL.",
+      "min_limit": 0.2,
+      "max_limit": 20.0,
+      "structural_lock_when_open": false
+    },
+    "improving_slope_threshold": {
+      "value": -0.005,
+      "unit": "q_per_update",
+      "description": "Pendiente negativa maxima del gradiente de TD-Error para clasificar estado IMPROVING.",
+      "min_limit": -5.0,
+      "max_limit": 0.0,
+      "structural_lock_when_open": false
+    },
+    "diverging_slope_threshold": {
+      "value": 0.015,
+      "unit": "q_per_update",
+      "description": "Pendiente positiva del gradiente de TD-Error que alerta divergencia progresiva.",
+      "min_limit": 0.0001,
+      "max_limit": 5.0,
+      "structural_lock_when_open": false
+    }
+  },
+  "q_calibration": {
+    "window_size": {
+      "value": 20,
+      "unit": "trades",
+      "description": "Ventana movil de operaciones cerradas para calculo de Q-Bias en satoshis.",
+      "min_limit": 5,
+      "max_limit": 200,
+      "structural_lock_when_open": false
+    },
+    "warmup_min_samples": {
+      "value": 3,
+      "unit": "trades",
+      "description": "Minimo de operaciones cerradas requeridas para evaluar sesgo Q.",
+      "min_limit": 1,
+      "max_limit": 50,
+      "structural_lock_when_open": false
+    },
+    "q_to_sats_scale": {
+      "value": 100.0,
+      "unit": "sats_per_q",
+      "description": "Factor de conversion inversa de valor Q a satoshis proyectados (Q_entry_sats = Q * scale).",
+      "min_limit": 1.0,
+      "max_limit": 10000.0,
+      "structural_lock_when_open": true
+    },
+    "overestimation_alert_sats": {
+      "value": 25.0,
+      "unit": "sats",
+      "description": "Umbral positivo de Q-Bias en satoshis que diagnostica sobreestimacion sistematica.",
+      "min_limit": 1.0,
+      "max_limit": 5000.0,
+      "structural_lock_when_open": false
+    },
+    "underestimation_alert_sats": {
+      "value": -25.0,
+      "unit": "sats",
+      "description": "Umbral negativo de Q-Bias en satoshis que diagnostica subestimacion excesiva.",
+      "min_limit": -5000.0,
+      "max_limit": -1.0,
+      "structural_lock_when_open": false
+    },
+    "q_clip_min": {
+      "value": -2.0,
+      "unit": "q_units",
+      "description": "Limite inferior de valores en la Q-table para evitar explosion numerica.",
+      "min_limit": -20.0,
+      "max_limit": -0.1,
+      "structural_lock_when_open": true
+    },
+    "q_clip_max": {
+      "value": 2.0,
+      "unit": "q_units",
+      "description": "Limite superior de valores en la Q-table para evitar sobreestimacion descontrolada.",
+      "min_limit": 0.1,
+      "max_limit": 20.0,
+      "structural_lock_when_open": true
+    }
+  },
+  "policy_entropy": {
+    "window_size": {
+      "value": 100,
+      "unit": "decisions",
+      "description": "Ventana movil de decisiones consecutivas para evaluar entropia de la politica.",
+      "min_limit": 10,
+      "max_limit": 1000,
+      "structural_lock_when_open": false
+    },
+    "warmup_min_samples": {
+      "value": 10,
+      "unit": "decisions",
+      "description": "Minimo de decisiones en ventana antes de evaluar colapso de entropia.",
+      "min_limit": 5,
+      "max_limit": 200,
+      "structural_lock_when_open": false
+    },
+    "num_actions": {
+      "value": 9,
+      "unit": "actions",
+      "description": "Numero de acciones discretas del agente Q-Learning (0: HOLD, 1..4: LONG, 5..8: SHORT).",
+      "min_limit": 9,
+      "max_limit": 9,
+      "structural_lock_when_open": true
+    },
+    "min_normalized_entropy": {
+      "value": 0.25,
+      "unit": "ratio",
+      "description": "Entropia normalizada minima [0, 1] debajo de la cual se diagnostica colapso de politica.",
+      "min_limit": 0.01,
+      "max_limit": 0.95,
+      "structural_lock_when_open": false
+    },
+    "healthy_normalized_entropy": {
+      "value": 0.45,
+      "unit": "ratio",
+      "description": "Entropia normalizada objetivo para una politica sana y equilibrada.",
+      "min_limit": 0.1,
+      "max_limit": 0.99,
+      "structural_lock_when_open": false
+    },
+    "max_dominant_action_freq": {
+      "value": 0.85,
+      "unit": "ratio",
+      "description": "Frecuencia relativa maxima de una sola accion antes de diagnosticar monopolio o paralisis.",
+      "min_limit": 0.3,
+      "max_limit": 1.0,
+      "structural_lock_when_open": false
+    }
+  },
+  "mfe_mae": {
+    "window_size": {
+      "value": 20,
+      "unit": "trades",
+      "description": "Ventana movil de operaciones cerradas para promediar ratios MFE y MAE.",
+      "min_limit": 3,
+      "max_limit": 200,
+      "structural_lock_when_open": false
+    },
+    "target_mfe_capture_ratio": {
+      "value": 0.65,
+      "unit": "ratio",
+      "description": "Objetivo de referencia de captura de MFE (Realized / MFE >= 60-70%).",
+      "min_limit": 0.2,
+      "max_limit": 1.0,
+      "structural_lock_when_open": false
+    },
+    "min_mfe_capture_warn": {
+      "value": 0.4,
+      "unit": "ratio",
+      "description": "Umbral inferior de captura de MFE (< 40%) que dispara ajuste de trailing stop por cierre prematuro.",
+      "min_limit": 0.05,
+      "max_limit": 0.9,
+      "structural_lock_when_open": false
+    },
+    "max_mae_margin_ratio_warn": {
+      "value": 0.5,
+      "unit": "ratio",
+      "description": "Umbral maximo aceptable de MAE respecto al margen asignado (MAE / Margin < 50%).",
+      "min_limit": 0.05,
+      "max_limit": 1.0,
+      "structural_lock_when_open": false
+    },
+    "trailing_tighten_factor": {
+      "value": 0.85,
+      "unit": "multiplier",
+      "description": "Factor multiplicador aplicado al trailing stop cuando la captura MFE es baja o el MAE excede umbral.",
+      "min_limit": 0.4,
+      "max_limit": 1.0,
+      "structural_lock_when_open": false
+    }
+  },
+  "reward": {
+    "mae_penalty_lambda": {
+      "value": 0.15,
+      "unit": "weight",
+      "description": "Coeficiente normalizado lambda de penalizacion por Maximum Adverse Excursion en satoshis (MAE_sats).",
+      "min_limit": 0.0,
+      "max_limit": 2.0,
+      "structural_lock_when_open": false
+    },
+    "holding_time_penalty_mu": {
+      "value": 0.05,
+      "unit": "sats_per_tick",
+      "description": "Coeficiente normalizado mu de coste de oportunidad por tiempo de capital inmovilizado (delta_t_ticks).",
+      "min_limit": 0.0,
+      "max_limit": 10.0,
+      "structural_lock_when_open": false
+    },
+    "tick_duration_sec": {
+      "value": 15.0,
+      "unit": "seconds",
+      "description": "Duracion base de un tick en segundos para convertir segundos de tenencia a delta_t_ticks.",
+      "min_limit": 1.0,
+      "max_limit": 300.0,
+      "structural_lock_when_open": false
+    },
+    "reward_scale_sats": {
+      "value": 100.0,
+      "unit": "sats",
+      "description": "Escala de normalizacion en satoshis para transformar recompensa economica liquidada a unidades Q.",
+      "min_limit": 1.0,
+      "max_limit": 10000.0,
+      "structural_lock_when_open": true
+    },
+    "loss_penalty_multiplier": {
+      "value": 1.35,
+      "unit": "multiplier",
+      "description": "Multiplicador de severidad sobre perdidas reales en balance para asegurar gradiente Q negativo.",
+      "min_limit": 1.0,
+      "max_limit": 5.0,
+      "structural_lock_when_open": false
+    },
+    "decouple_floating_pnl": {
+      "value": 1,
+      "unit": "flag",
+      "description": "Bandera (1=activo, 0=inactivo) que prohibe actualizar la Q-table con PnL flotante no consolidado.",
+      "min_limit": 0,
+      "max_limit": 1,
+      "structural_lock_when_open": true
+    }
+  },
+  "exploration": {
+    "epsilon_initial": {
+      "value": 0.06,
+      "unit": "probability",
+      "description": "Probabilidad inicial de exploracion epsilon en modo estandar.",
+      "min_limit": 0.0,
+      "max_limit": 1.0,
+      "structural_lock_when_open": false
+    },
+    "epsilon_min": {
+      "value": 0.015,
+      "unit": "probability",
+      "description": "Limite inferior de exploracion epsilon en modo estandar.",
+      "min_limit": 0.0,
+      "max_limit": 0.5,
+      "structural_lock_when_open": false
+    },
+    "epsilon_decay": {
+      "value": 0.992,
+      "unit": "multiplier",
+      "description": "Factor multiplicador de decaimiento de epsilon tras cada transicion cerrada.",
+      "min_limit": 0.8,
+      "max_limit": 1.0,
+      "structural_lock_when_open": false
+    },
+    "epsilon_explorer_initial": {
+      "value": 0.28,
+      "unit": "probability",
+      "description": "Probabilidad inicial de exploracion epsilon en modo explorador.",
+      "min_limit": 0.01,
+      "max_limit": 1.0,
+      "structural_lock_when_open": false
+    },
+    "epsilon_explorer_min": {
+      "value": 0.08,
+      "unit": "probability",
+      "description": "Limite inferior de exploracion epsilon en modo explorador.",
+      "min_limit": 0.01,
+      "max_limit": 0.5,
+      "structural_lock_when_open": false
+    },
+    "alpha_learning_rate": {
+      "value": 0.18,
+      "unit": "rate",
+      "description": "Tasa de aprendizaje alpha de Q-Learning en regimen normal.",
+      "min_limit": 0.001,
+      "max_limit": 1.0,
+      "structural_lock_when_open": false
+    },
+    "alpha_recovery_rate": {
+      "value": 0.28,
+      "unit": "rate",
+      "description": "Tasa de aprendizaje alpha de Q-Learning durante modo recuperacion.",
+      "min_limit": 0.001,
+      "max_limit": 1.0,
+      "structural_lock_when_open": false
+    },
+    "gamma_discount": {
+      "value": 0.92,
+      "unit": "factor",
+      "description": "Factor de descuento temporal gamma sobre el valor futuro max Q(s', a').",
+      "min_limit": 0.1,
+      "max_limit": 0.999,
+      "structural_lock_when_open": true
+    }
+  },
+  "learning_guard": {
+    "critical_td_streak_to_suspend": {
+      "value": 3,
+      "unit": "updates",
+      "description": "Numero de updates consecutivos con TD-Error CRITICAL para suspender actualizaciones online de la Q-table.",
+      "min_limit": 1,
+      "max_limit": 50,
+      "structural_lock_when_open": false
+    },
+    "hysteresis_recovery_updates": {
+      "value": 5,
+      "unit": "updates",
+      "description": "Numero de updates estables consecutivos requeridos por histeresis antes de reactivar Q-updates.",
+      "min_limit": 1,
+      "max_limit": 100,
+      "structural_lock_when_open": false
+    },
+    "q_bias_persistence_trades": {
+      "value": 3,
+      "unit": "trades",
+      "description": "Operaciones consecutivas con Q-Bias sobre umbral antes de activar penalizacion de expectancy.",
+      "min_limit": 1,
+      "max_limit": 50,
+      "structural_lock_when_open": false
+    },
+    "q_bias_expectancy_step": {
+      "value": 0.35,
+      "unit": "ratio_delta",
+      "description": "Incremento aplicado al umbral de expectancy cuando persiste sobreestimacion de Q-Bias.",
+      "min_limit": 0.05,
+      "max_limit": 3.0,
+      "structural_lock_when_open": false
+    },
+    "fer_persistence_trades": {
+      "value": 3,
+      "unit": "trades",
+      "description": "Operaciones consecutivas con FER < 1.2 antes de endurecer filtros contra fee drag.",
+      "min_limit": 1,
+      "max_limit": 50,
+      "structural_lock_when_open": false
+    },
+    "fer_expectancy_boost": {
+      "value": 0.5,
+      "unit": "ratio_delta",
+      "description": "Incremento adicional al umbral de expectancy cuando FER < 1.2 en ventana movil.",
+      "min_limit": 0.05,
+      "max_limit": 4.0,
+      "structural_lock_when_open": false
+    },
+    "entropy_persistence_ticks": {
+      "value": 10,
+      "unit": "ticks",
+      "description": "Decisiones consecutivas con entropia normalizada baja para confirmar colapso de politica.",
+      "min_limit": 2,
+      "max_limit": 200,
+      "structural_lock_when_open": false
+    },
+    "mfe_mae_persistence_trades": {
+      "value": 3,
+      "unit": "trades",
+      "description": "Operaciones consecutivas con baja captura MFE o alto MAE antes de ajustar trailing stop.",
+      "min_limit": 1,
+      "max_limit": 50,
+      "structural_lock_when_open": false
+    }
+  },
+  "market_sensitivity": {
+    "atr_extreme_pct": {
+      "value": 0.9,
+      "unit": "percent",
+      "description": "ATR porcentual a partir del cual se clasifica el mercado en volatilidad extrema.",
+      "min_limit": 0.1,
+      "max_limit": 10.0,
+      "structural_lock_when_open": false
+    },
+    "squeeze_bb_width_pct": {
+      "value": 0.45,
+      "unit": "percent",
+      "description": "Ancho maximo de Bandas de Bollinger para identificar compresion (squeeze).",
+      "min_limit": 0.05,
+      "max_limit": 5.0,
+      "structural_lock_when_open": false
+    },
+    "expansion_atr_rel_ratio": {
+      "value": 1.15,
+      "unit": "ratio",
+      "description": "Ratio minimo de ATR actual sobre media para confirmar expansion de volatilidad.",
+      "min_limit": 0.5,
+      "max_limit": 5.0,
+      "structural_lock_when_open": false
+    },
+    "max_slippage_bps_normal": {
+      "value": 3.0,
+      "unit": "bps",
+      "description": "Slippage estimado en puntos basicos en condiciones normales de mercado.",
+      "min_limit": 0.0,
+      "max_limit": 50.0,
+      "structural_lock_when_open": false
+    },
+    "max_slippage_bps_volatile": {
+      "value": 7.5,
+      "unit": "bps",
+      "description": "Slippage estimado en puntos basicos durante alta volatilidad o cascada.",
+      "min_limit": 0.5,
+      "max_limit": 100.0,
+      "structural_lock_when_open": false
+    },
+    "edge_degradation_warn": {
+      "value": 0.4,
+      "unit": "score",
+      "description": "Puntaje de degradacion de edge para emitir alerta preventiva.",
+      "min_limit": 0.1,
+      "max_limit": 0.95,
+      "structural_lock_when_open": false
+    },
+    "edge_degradation_tighten": {
+      "value": 0.6,
+      "unit": "score",
+      "description": "Puntaje de degradacion de edge para ajustar stops defensivos.",
+      "min_limit": 0.2,
+      "max_limit": 0.98,
+      "structural_lock_when_open": false
+    },
+    "edge_degradation_exit": {
+      "value": 0.78,
+      "unit": "score",
+      "description": "Puntaje de degradacion de edge para ordenar salida tactica.",
+      "min_limit": 0.3,
+      "max_limit": 1.0,
+      "structural_lock_when_open": false
+    },
+    "edge_degradation_persistence": {
+      "value": 3,
+      "unit": "ticks",
+      "description": "Ticks consecutivos requeridos para confirmar degradacion sostenida de edge.",
+      "min_limit": 1,
+      "max_limit": 30,
+      "structural_lock_when_open": false
+    }
+  }
+}

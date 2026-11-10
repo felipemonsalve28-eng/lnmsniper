@@ -9,6 +9,10 @@ __pycache__/
 
 # Logs del sistema
 *.log
+logs/
+
+# Capturas y temporales
+*.png
 
 # Backups, bloqueos, hashes temporales y auditorías
 *.bak

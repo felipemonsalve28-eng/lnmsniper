@@ -1,0 +1,70 @@
+{
+  "timestamp": "2026-11-10T16:44:03Z",
+  "balance_sats": 25500,
+  "equity_sats": 25500,
+  "available_sats": 25500,
+  "active_trades": 0,
+  "rl_metrics": {
+    "rolling_td_error_avg": 0.5436,
+    "td_error_trend": "STABLE",
+    "td_error_status": "STABLE",
+    "td_error_slope": -0.00024,
+    "last_abs_td_error": 0.12,
+    "q_bias_sats": 80.0,
+    "q_bias_std_sats": 0.0,
+    "q_bias_slope": 0.0,
+    "q_bias_status": "OVERESTIMATING",
+    "fee_efficiency_ratio": 0.5,
+    "global_fee_efficiency_ratio": 0.5,
+    "fer_status": "CAPITAL_DESTRUCTION",
+    "fer_cohorts": {
+      "rolling_winners_count": 4,
+      "rolling_winners_fer": 0.5,
+      "rolling_losers_count": 0,
+      "rolling_losers_fer": 0.0,
+      "global_winners_count": 4,
+      "global_winners_fer": 0.5,
+      "global_losers_count": 0,
+      "global_losers_fer": 0.0
+    },
+    "policy_entropy": 2.0727,
+    "normalized_policy_entropy": 0.9433,
+    "dominant_action": "HOLD",
+    "dominant_action_freq": 0.2933,
+    "action_frequencies": {
+      "HOLD": 0.2933,
+      "LONG_CONSERVATIVE": 0.0933,
+      "LONG_MODERATE": 0.0933,
+      "LONG_AGGRESSIVE": 0.0933,
+      "LONG_CONTRARIAN": 0.0933,
+      "SHORT_CONSERVATIVE": 0.0933,
+      "SHORT_MODERATE": 0.08,
+      "SHORT_AGGRESSIVE": 0.08,
+      "SHORT_REVERSION": 0.08
+    },
+    "avg_sats_per_trade_last20": 10.0,
+    "policy_health": "DEGRADED_DEFENSIVE",
+    "mfe_capture_avg": 0.1,
+    "mae_margin_ratio_avg": 0.65,
+    "learning_guard_status": "ACTIVE_LEARNING",
+    "autonomous_adjustments": {
+      "allow_online_q_updates": true,
+      "learning_guard_status": "ACTIVE_LEARNING",
+      "effective_min_expectancy_ratio": 4.7,
+      "expectancy_boost_applied": 0.85,
+      "q_bias_defense_active": true,
+      "fer_defense_active": true,
+      "policy_collapse_detected": false,
+      "policy_collapse_reason": "NONE",
+      "mfe_mae_defense_active": true,
+      "dynamic_trailing_multiplier": 0.85
+    },
+    "window_samples": {
+      "td_error_samples": 14,
+      "q_bias_samples": 4,
+      "fer_samples": 4,
+      "entropy_samples": 75,
+      "mfe_mae_samples": 4
+    }
+  }
+}

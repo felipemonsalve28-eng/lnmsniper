@@ -10,6 +10,7 @@ Contabilidad Económica Completa (Taker Fee, Funding, Spread y Slippage).
 import time
 import math
 from collections import deque
+from learning_thresholds_manager import get_thresholds_manager
 
 
 class MarketRegimeClassifier:
@@ -315,6 +316,14 @@ class SatsExpectancyGate:
     ROUND_TRIP_FEE_RATE = 0.0020
     MIN_NET_REWARD_TO_FEE_RATIO = 3.85
 
+    @classmethod
+    def sync_from_thresholds(cls, mgr=None):
+        """Sincroniza las constantes de compuerta desde config/learning_thresholds.json."""
+        tm = mgr or get_thresholds_manager()
+        cls.TAKER_FEE_RATE = tm.get_float("fees", "taker_fee_rate", 0.0010)
+        cls.ROUND_TRIP_FEE_RATE = tm.get_float("fees", "round_trip_fee_rate", 0.0020)
+        cls.MIN_NET_REWARD_TO_FEE_RATIO = tm.get_float("expectancy", "min_expectancy_ratio", 3.85)
+
     @staticmethod
     def compute_regime_risk_adaptation(market_regime, current_dd_pct=0.0, recovery_mode=False):
         reg = str(market_regime or "RANGE_NORMAL").upper()
@@ -524,7 +533,11 @@ class SatsExpectancyGate:
         funding_rate_est=0.0,
         spread_bps=0.0,
         slippage_bps=0.0,
+        expectancy_boost=0.0,
     ):
+        tm = get_thresholds_manager()
+        cls.sync_from_thresholds(tm)
+
         price = max(float(price), 1.0)
         notional_sats = float(margin_sats) * float(lev)
         entry_fee_sats = max(1, int(round(notional_sats * cls.TAKER_FEE_RATE)))
@@ -543,11 +556,28 @@ class SatsExpectancyGate:
         expected_loss_sl_sats = int(round(notional_sats * sl_dist_pct)) + total_cost_sats
 
         fee_ratio = expected_gross_tp_sats / max(float(total_cost_sats), 1.0)
+        net_expectancy_ratio = expected_net_tp_sats / max(float(total_cost_sats), 1.0)
         net_rr = expected_net_tp_sats / max(float(expected_loss_sl_sats), 1.0)
 
-        min_ratio = 2.40 if explorer_mode else cls.MIN_NET_REWARD_TO_FEE_RATIO
-        min_net_sats = max(16, int(total_cost_sats * 1.5)) if explorer_mode else max(38, int(round(total_cost_sats * 2.8)))
-        min_rr = 0.72 if explorer_mode else 1.05
+        min_ratio_exp = tm.get_float("expectancy", "min_expectancy_ratio_explorer", 2.40)
+        min_ratio_std = tm.get_float("expectancy", "min_expectancy_ratio", cls.MIN_NET_REWARD_TO_FEE_RATIO)
+        min_ratio = (min_ratio_exp if explorer_mode else min_ratio_std) + max(0.0, float(expectancy_boost))
+
+        min_net_floor_exp = tm.get_int("expectancy", "min_net_profit_sats_explorer", 16)
+        min_net_mult_exp = tm.get_float("expectancy", "min_net_to_cost_ratio_explorer", 1.5)
+        min_net_floor_std = tm.get_int("expectancy", "min_net_profit_sats", 38)
+        min_net_mult_std = tm.get_float("expectancy", "min_net_to_cost_ratio", 2.8)
+
+        min_net_sats = (
+            max(min_net_floor_exp, int(total_cost_sats * min_net_mult_exp))
+            if explorer_mode
+            else max(min_net_floor_std, int(round(total_cost_sats * min_net_mult_std)))
+        )
+        min_rr = (
+            tm.get_float("expectancy", "min_net_rr_explorer", 0.72)
+            if explorer_mode
+            else tm.get_float("expectancy", "min_net_rr", 1.05)
+        )
 
         is_viable = (
             expected_net_tp_sats >= min_net_sats
@@ -566,6 +596,8 @@ class SatsExpectancyGate:
             "net_tp_sats": expected_net_tp_sats,
             "net_sl_sats": expected_loss_sl_sats,
             "fee_ratio": round(fee_ratio, 2),
+            "net_expectancy_ratio": round(net_expectancy_ratio, 2),
+            "min_expectancy_ratio_applied": round(min_ratio, 2),
             "net_rr": round(net_rr, 2),
         }
 
@@ -606,3 +638,12 @@ def sync_brain_floor_with_reality(brain, true_equity, floor_ratio=0.75):
         brain.dirty = True
 
     return False, brain.peak_equity, brain.locked_floor
+
+
+try:
+    _tm_init = get_thresholds_manager()
+    SatsExpectancyGate.sync_from_thresholds(_tm_init)
+    _tm_init.register_callback(SatsExpectancyGate.sync_from_thresholds)
+except Exception:
+    pass
+
