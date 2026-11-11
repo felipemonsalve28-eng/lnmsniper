@@ -203,6 +203,28 @@
      - **8 de 8 pruebas de certificación superadas al 100%**.
      - Cero regresión en suites del bot: `test_terminal_bellman_fix.py` (4/4), `test_learning_quality_and_sats.py` (8/8) y `test_protocolo_v_reversal.py` (23/23).
 
+### Etapa 13: Bucle de Entrenamiento RL Acelerado y Generación de Cerebros Candidatos
+- **Estado:** **Etapas 1, 2, 3 y 4 completadas con 100% de éxito**.
+- **Módulos Desarrollados:**
+  1. **[`simulation/sim_training_environment.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/sim_training_environment.py):**
+     - Entorno de simulación RL coordinado paso a paso (`step`) que orquesta:
+       * Tiempo virtual sin pausas vía `SimClock`.
+       * Alimentador MTF `SimMarketFeed` con cálculo idéntico de indicadores (5m, 15m, 1h, 4h).
+       * Liquidaciones, stop loss con gap risk y comisiones taker reales vía `SimLNMExchange`.
+       * Recompensa de satoshis líquidos reales bajo **Schema v2** y supervisión matemática online.
+       * Controlador de coberturas `AdaptiveHedgeController` con Bellman terminal ($Q_{\text{future}} = 0.0$ en salida).
+       * Siembra de los 175 estados canónicos al inicializar cerebros nuevos.
+  2. **[`simulation/train_candidate_brain.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/train_candidate_brain.py):**
+     - Runner CLI para entrenamiento multi-episodio con decaimiento curricular de exploración $\epsilon$, generador estocástico de los 6 regímenes y exportación atómica de `q_brain_simulated_candidate.json` y `hedge_state_simulated_candidate.json` con sellos criptográficos SHA-256.
+  3. **[`test_simulation_training_loop.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_simulation_training_loop.py):**
+     - Suite unitaria que certifica el ciclo de vida, la ejecución de órdenes, el aprendizaje de Bellman y el aislamiento estricto de los cerebros de producción (`q_brain_advanced_lnm.json`).
+     - **4 de 4 pruebas pasadas al 100%**.
+  4. **Regresión Completa:**
+     - `test_simulation_engine.py`: **8 de 8 pruebas pasadas**.
+     - `test_terminal_bellman_fix.py`: **4 de 4 pruebas pasadas**.
+     - `test_learning_quality_and_sats.py`: **8 de 8 bloques pasados**.
+     - `test_protocolo_v_reversal.py`: **23 de 23 escenarios pasados al 100%**.
+
 ---
 
 ## 3. ARQUITECTURA DE ARCHIVOS CLAVE
