@@ -259,6 +259,25 @@
   2. [`simulation/train_candidate_brain.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/train_candidate_brain.py): Proceso estocástico continuo ($Open_t = Close_{t-1}$), argumento `--reset` para reinicio limpio canónico y generación estocástica variada por episodio para evitar sobreajuste de trayectoria fija.
   3. [`simulation/certify_and_promote_candidate.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/certify_and_promote_candidate.py): Extensión de caminos Monte Carlo a 350 velas (`bars_per_path=350`) garantizando que los 6 regímenes canónicos se exploren tras el periodo de calentamiento (`warmup=150`).
 
+### Etapa 16: Remediación Integral del Flujo de Simulación y Certificación (Plan Aprobado)
+- **Estado:** **Etapas 1, 2, 3 y 4 completadas con 100% de éxito**.
+- **Correcciones de Rigor Matemático y Fidelidad Implementadas (Commit `96110e3`):**
+  1. **Evaluación de Solo Lectura y Mutación Cero (P0-B):**
+     - Se incorporó `learning_enabled: bool = False` en [`simulation/sim_training_environment.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/sim_training_environment.py). Durante la certificación o dry-run Monte Carlo, `remember_and_train`, `save_candidate_brains` y `update_hedge_q` quedan completamente deshabilitados.
+     - [`simulation/certify_and_promote_candidate.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/certify_and_promote_candidate.py) opera sobre un directorio temporal aislado y verifica criptográficamente que `sha_pre == sha_post` en el archivo candidato.
+  2. **Reinicio Exhaustivo y Atómico (`--reset`) (P0-A):**
+     - [`simulation/train_candidate_brain.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/train_candidate_brain.py) elimina limpiamente el archivo principal y todas sus extensiones subsidiarias (`.bak`, `.sha256`, `.lock`, `.snapshot_guard.json*`), impidiendo que `AtomicBrainStore` restaure copias degradadas.
+  3. **Compuerta Estadística de Monte Carlo por Operación (P2-F):**
+     - Métricas calculadas estrictamente a nivel de trade individual (Profit Factor por trade, WinRate por trade, Drawdown pico-valle continuo real).
+     - Se exige significancia estadística ($N \ge 20$ trades en 50 caminos, $E[\text{NetSat}] > 0$ y Net PnL $> 0$). Si $N < 20$, se rechaza por evidencia insuficiente (una política que no opera o apenas toma 2 trades no puede certificarse).
+  4. **Alineación del Pipeline de Decisión y Riesgo con Producción (P1-E):**
+     - [`simulation/sim_training_environment.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/sim_training_environment.py) implementa `filter_and_rank_action` (filtros P0), modificadores paralelos MTF, dimensionamiento dinámico 1/4 Kelly según régimen de mercado ($1.2\% - 3.5\%$ de riesgo), compuerta de expectancy con slippage estimado y boost adaptativo.
+  5. **Soporte de Datasets Históricos Reales Extensos de Binance (Paso 5 - Opción A):**
+     - Nuevo descargador CLI [`simulation/download_historical_data.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/download_historical_data.py) y método paginado `fetch_binance_klines_paginated` en [`simulation/sim_market_feed.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/sim_market_feed.py) para descargar decenas de miles de velas reales de 1m y cachearlas en disco.
+     - En el entrenamiento por episodios, el entorno muestrea ventanas aleatorias del dataset real multi-semana, evitando el sobreajuste a micro-tendencias aisladas.
+  6. **Corrección de Mensajería del Supervisor:**
+     - En [`learning_quality_supervisor.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/learning_quality_supervisor.py), se corrige el formato de alerta cuando el detonante es `dominant_action_freq` y se homologan los nombres de telemetría a las estrategias reales (`LONG_TREND`, `LONG_REVERSION`, etc.).
+
 ---
 
 ## 3. ARQUITECTURA DE ARCHIVOS CLAVE
