@@ -225,6 +225,29 @@
      - `test_learning_quality_and_sats.py`: **8 de 8 bloques pasados**.
      - `test_protocolo_v_reversal.py`: **23 de 23 escenarios pasados al 100%**.
 
+### Etapa 14: Certificador de Robustez Monte Carlo y Promotor Atómico del Cerebro Candidato
+- **Estado:** **Etapas 1, 2, 3 y 4 completadas con 100% de éxito**.
+- **Módulos Desarrollados:**
+  1. **[`simulation/certify_and_promote_candidate.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/certify_and_promote_candidate.py):**
+     - Compuerta 1: Validación estructural Schema v2 (175 estados canónicos, $Q(s, 0) == 0.0$, 9 acciones discretas, acotamiento $[-2.0, 2.0]$ y cero NaNs).
+     - Compuerta 2: Prueba de estrés estocástico Monte Carlo (WinRate $\ge 48\%$, Profit Factor $\ge 1.20$, MaxDD $\le 8\%$, Risk of Ruin $\le 0.001$).
+     - Compuerta 3: Certificación de compatibilidad cuantitativa P0.
+     - Promotor atómico con respaldo obligatorio `.pre_promote_<ts>.bak`:
+       * Hacia Testnet: `env="testnet"`, $\epsilon = 0.18$.
+       * Hacia Mainnet: `env="mainnet"`, $\epsilon = 0.0$ (explotación pura sin exploración aleatoria).
+       * Reinicio seguro de `active_trades` y cola de IDs cerrados para arrancar limpio en producción.
+       * Generación de informe de auditoría `simulation/candidate_certification_report.json`.
+  2. **[`test_candidate_certification.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_candidate_certification.py):**
+     - Suite unitaria que valida la detección y rechazo de esquemas defectuosos, cálculo Monte Carlo y modo dry-run.
+     - **5 de 5 pruebas pasadas al 100%**.
+  3. **Regresión Completa del Repositorio:**
+     - `test_candidate_certification.py`: **5 de 5 pruebas pasadas**.
+     - `test_simulation_training_loop.py`: **4 de 4 pruebas pasadas**.
+     - `test_simulation_engine.py`: **8 de 8 pruebas pasadas**.
+     - `test_terminal_bellman_fix.py`: **4 de 4 pruebas pasadas**.
+     - `test_learning_quality_and_sats.py`: **8 de 8 bloques pasados**.
+     - `test_protocolo_v_reversal.py`: **23 de 23 escenarios pasados al 100%**.
+
 ---
 
 ## 3. ARQUITECTURA DE ARCHIVOS CLAVE
