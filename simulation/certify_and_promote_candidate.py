@@ -101,7 +101,7 @@ class CandidateBrainCertifier:
         brain_path: str,
         hedge_path: Optional[str] = None,
         num_paths: int = 50,
-        bars_per_path: int = 350,
+        bars_per_path: int = 450,
         initial_balance_sats: int = 100000,
         dataset_cache: Optional[str] = "simulation/data/binance_btc_1m.json",
     ) -> Tuple[bool, Dict[str, Any]]:
@@ -267,7 +267,7 @@ class CandidateBrainCertifier:
         candidate_hedge_path: Optional[str] = "hedge_state_simulated_candidate.json",
         target_env: str = "testnet",
         num_monte_carlo_paths: int = 50,
-        bars_per_path: int = 350,
+        bars_per_path: int = 450,
         dataset_cache: Optional[str] = "simulation/data/binance_btc_1m.json",
         dry_run: bool = False,
     ) -> Tuple[bool, str, Dict[str, Any]]:
@@ -388,7 +388,7 @@ def main():
     parser.add_argument("--candidate-hedge", default="hedge_state_simulated_candidate.json", help="Ruta al hedge store candidato")
     parser.add_argument("--target", default="testnet", choices=["testnet", "mainnet"], help="Entorno destino de promoción")
     parser.add_argument("--paths", type=int, default=50, help="Número de caminos Monte Carlo")
-    parser.add_argument("--bars-per-path", type=int, default=350, help="Número de velas por camino Monte Carlo")
+    parser.add_argument("--bars-per-path", type=int, default=450, help="Número de velas por camino Monte Carlo")
     parser.add_argument("--dataset-cache", default="simulation/data/binance_btc_1m.json", help="Ruta de caché del dataset Binance")
     parser.add_argument("--dry-run", action="store_true", help="Evalúa sin escribir en los archivos oficiales")
     args = parser.parse_args()

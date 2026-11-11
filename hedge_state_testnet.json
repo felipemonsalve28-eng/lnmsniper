@@ -12,9 +12,1001 @@
     "total_hedge_fees_sats": 0,
     "total_hedges_opened": 0
   },
-  "hedge_q_table": {},
-  "hedge_visits": {},
+  "hedge_q_table": {
+    "CHOP_HIGHVOL|NORMAL|FLAT|EDGE_NEUTRAL|UNHEDGED": [
+      0.0126,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|NORMAL|FLAT|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|NORMAL|PROFIT|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|NORMAL|PROFIT|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|FLAT|EDGE_BROKEN|UNHEDGED": [
+      0.0091,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|FLAT|EDGE_NEUTRAL|UNHEDGED": [
+      0.013,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|FLAT|EDGE_POSITIVE|UNHEDGED": [
+      0.0105,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|FLAT|EDGE_WEAK|UNHEDGED": [
+      0.0118,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|MOD_LOSS|EDGE_BROKEN|UNHEDGED": [
+      0.0106,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|MOD_LOSS|EDGE_NEUTRAL|UNHEDGED": [
+      0.0106,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|MOD_LOSS|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|MOD_LOSS|EDGE_WEAK|UNHEDGED": [
+      0.014,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|PROFIT|EDGE_BROKEN|UNHEDGED": [
+      0.0094,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|PROFIT|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|PROFIT|EDGE_POSITIVE|UNHEDGED": [
+      0.0114,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|PROFIT|EDGE_WEAK|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|SEVERE_LOSS|EDGE_BROKEN|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|SEVERE_LOSS|EDGE_NEUTRAL|UNHEDGED": [
+      0.0109,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|SEVERE_LOSS|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "CHOP_HIGHVOL|WARNING|SEVERE_LOSS|EDGE_WEAK|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|NORMAL|FLAT|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|NORMAL|FLAT|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|NORMAL|PROFIT|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|NORMAL|PROFIT|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|FLAT|EDGE_BROKEN|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|FLAT|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|FLAT|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|FLAT|EDGE_WEAK|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|MOD_LOSS|EDGE_BROKEN|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|MOD_LOSS|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|MOD_LOSS|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|MOD_LOSS|EDGE_WEAK|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|PROFIT|EDGE_BROKEN|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|PROFIT|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|PROFIT|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|PROFIT|EDGE_WEAK|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|SEVERE_LOSS|EDGE_BROKEN|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|SEVERE_LOSS|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|SEVERE_LOSS|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_NORMAL|WARNING|SEVERE_LOSS|EDGE_WEAK|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|NORMAL|FLAT|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|NORMAL|FLAT|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|NORMAL|PROFIT|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|NORMAL|PROFIT|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|FLAT|EDGE_BROKEN|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|FLAT|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|FLAT|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|FLAT|EDGE_WEAK|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|MOD_LOSS|EDGE_BROKEN|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|MOD_LOSS|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|MOD_LOSS|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|MOD_LOSS|EDGE_WEAK|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|PROFIT|EDGE_BROKEN|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|PROFIT|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|PROFIT|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|PROFIT|EDGE_WEAK|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|SEVERE_LOSS|EDGE_BROKEN|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|SEVERE_LOSS|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|SEVERE_LOSS|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "RANGE_SQUEEZE|WARNING|SEVERE_LOSS|EDGE_WEAK|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|NORMAL|FLAT|EDGE_NEUTRAL|UNHEDGED": [
+      0.0133,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|NORMAL|FLAT|EDGE_POSITIVE|UNHEDGED": [
+      0.0096,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|NORMAL|PROFIT|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|NORMAL|PROFIT|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|FLAT|EDGE_BROKEN|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|FLAT|EDGE_NEUTRAL|UNHEDGED": [
+      0.012,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|FLAT|EDGE_POSITIVE|UNHEDGED": [
+      0.0173,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|FLAT|EDGE_WEAK|UNHEDGED": [
+      0.0097,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|MOD_LOSS|EDGE_BROKEN|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|MOD_LOSS|EDGE_NEUTRAL|UNHEDGED": [
+      0.0161,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|MOD_LOSS|EDGE_POSITIVE|UNHEDGED": [
+      0.0111,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|MOD_LOSS|EDGE_WEAK|UNHEDGED": [
+      0.0093,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|PROFIT|EDGE_BROKEN|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|PROFIT|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|PROFIT|EDGE_POSITIVE|UNHEDGED": [
+      0.0098,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|PROFIT|EDGE_WEAK|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|SEVERE_LOSS|EDGE_BROKEN|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|SEVERE_LOSS|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|SEVERE_LOSS|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BEAR|WARNING|SEVERE_LOSS|EDGE_WEAK|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|NORMAL|FLAT|EDGE_NEUTRAL|UNHEDGED": [
+      0.0142,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|NORMAL|FLAT|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|NORMAL|PROFIT|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|NORMAL|PROFIT|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|WARNING|FLAT|EDGE_BROKEN|UNHEDGED": [
+      0.0094,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|WARNING|FLAT|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|WARNING|FLAT|EDGE_WEAK|UNHEDGED": [
+      0.0097,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|WARNING|MOD_LOSS|EDGE_BROKEN|UNHEDGED": [
+      0.0103,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|WARNING|MOD_LOSS|EDGE_NEUTRAL|UNHEDGED": [
+      0.013,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|WARNING|MOD_LOSS|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|WARNING|MOD_LOSS|EDGE_WEAK|UNHEDGED": [
+      0.0114,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|WARNING|PROFIT|EDGE_BROKEN|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|WARNING|PROFIT|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|WARNING|PROFIT|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|WARNING|PROFIT|EDGE_WEAK|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|WARNING|SEVERE_LOSS|EDGE_BROKEN|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|WARNING|SEVERE_LOSS|EDGE_NEUTRAL|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|WARNING|SEVERE_LOSS|EDGE_POSITIVE|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ],
+    "TREND_BULL|WARNING|SEVERE_LOSS|EDGE_WEAK|UNHEDGED": [
+      0.009,
+      0.005,
+      0.0,
+      0.005,
+      0.01,
+      0.005,
+      0.005
+    ]
+  },
+  "hedge_visits": {
+    "CHOP_HIGHVOL|NORMAL|FLAT|EDGE_NEUTRAL|UNHEDGED": 7,
+    "CHOP_HIGHVOL|NORMAL|FLAT|EDGE_POSITIVE|UNHEDGED": 102,
+    "CHOP_HIGHVOL|NORMAL|PROFIT|EDGE_NEUTRAL|UNHEDGED": 163,
+    "CHOP_HIGHVOL|NORMAL|PROFIT|EDGE_POSITIVE|UNHEDGED": 900,
+    "CHOP_HIGHVOL|WARNING|FLAT|EDGE_BROKEN|UNHEDGED": 27,
+    "CHOP_HIGHVOL|WARNING|FLAT|EDGE_NEUTRAL|UNHEDGED": 9,
+    "CHOP_HIGHVOL|WARNING|FLAT|EDGE_POSITIVE|UNHEDGED": 23,
+    "CHOP_HIGHVOL|WARNING|FLAT|EDGE_WEAK|UNHEDGED": 9,
+    "CHOP_HIGHVOL|WARNING|MOD_LOSS|EDGE_BROKEN|UNHEDGED": 15,
+    "CHOP_HIGHVOL|WARNING|MOD_LOSS|EDGE_NEUTRAL|UNHEDGED": 17,
+    "CHOP_HIGHVOL|WARNING|MOD_LOSS|EDGE_POSITIVE|UNHEDGED": 101,
+    "CHOP_HIGHVOL|WARNING|MOD_LOSS|EDGE_WEAK|UNHEDGED": 5,
+    "CHOP_HIGHVOL|WARNING|PROFIT|EDGE_BROKEN|UNHEDGED": 1022,
+    "CHOP_HIGHVOL|WARNING|PROFIT|EDGE_NEUTRAL|UNHEDGED": 64,
+    "CHOP_HIGHVOL|WARNING|PROFIT|EDGE_POSITIVE|UNHEDGED": 7,
+    "CHOP_HIGHVOL|WARNING|PROFIT|EDGE_WEAK|UNHEDGED": 200,
+    "CHOP_HIGHVOL|WARNING|SEVERE_LOSS|EDGE_BROKEN|UNHEDGED": 97,
+    "CHOP_HIGHVOL|WARNING|SEVERE_LOSS|EDGE_NEUTRAL|UNHEDGED": 24,
+    "CHOP_HIGHVOL|WARNING|SEVERE_LOSS|EDGE_POSITIVE|UNHEDGED": 261,
+    "CHOP_HIGHVOL|WARNING|SEVERE_LOSS|EDGE_WEAK|UNHEDGED": 25,
+    "RANGE_NORMAL|NORMAL|FLAT|EDGE_NEUTRAL|UNHEDGED": 72,
+    "RANGE_NORMAL|NORMAL|FLAT|EDGE_POSITIVE|UNHEDGED": 418,
+    "RANGE_NORMAL|NORMAL|PROFIT|EDGE_NEUTRAL|UNHEDGED": 741,
+    "RANGE_NORMAL|NORMAL|PROFIT|EDGE_POSITIVE|UNHEDGED": 5308,
+    "RANGE_NORMAL|WARNING|FLAT|EDGE_BROKEN|UNHEDGED": 842,
+    "RANGE_NORMAL|WARNING|FLAT|EDGE_NEUTRAL|UNHEDGED": 80,
+    "RANGE_NORMAL|WARNING|FLAT|EDGE_POSITIVE|UNHEDGED": 68,
+    "RANGE_NORMAL|WARNING|FLAT|EDGE_WEAK|UNHEDGED": 157,
+    "RANGE_NORMAL|WARNING|MOD_LOSS|EDGE_BROKEN|UNHEDGED": 684,
+    "RANGE_NORMAL|WARNING|MOD_LOSS|EDGE_NEUTRAL|UNHEDGED": 93,
+    "RANGE_NORMAL|WARNING|MOD_LOSS|EDGE_POSITIVE|UNHEDGED": 362,
+    "RANGE_NORMAL|WARNING|MOD_LOSS|EDGE_WEAK|UNHEDGED": 88,
+    "RANGE_NORMAL|WARNING|PROFIT|EDGE_BROKEN|UNHEDGED": 3665,
+    "RANGE_NORMAL|WARNING|PROFIT|EDGE_NEUTRAL|UNHEDGED": 464,
+    "RANGE_NORMAL|WARNING|PROFIT|EDGE_POSITIVE|UNHEDGED": 38,
+    "RANGE_NORMAL|WARNING|PROFIT|EDGE_WEAK|UNHEDGED": 1028,
+    "RANGE_NORMAL|WARNING|SEVERE_LOSS|EDGE_BROKEN|UNHEDGED": 1803,
+    "RANGE_NORMAL|WARNING|SEVERE_LOSS|EDGE_NEUTRAL|UNHEDGED": 103,
+    "RANGE_NORMAL|WARNING|SEVERE_LOSS|EDGE_POSITIVE|UNHEDGED": 907,
+    "RANGE_NORMAL|WARNING|SEVERE_LOSS|EDGE_WEAK|UNHEDGED": 95,
+    "RANGE_SQUEEZE|NORMAL|FLAT|EDGE_NEUTRAL|UNHEDGED": 46,
+    "RANGE_SQUEEZE|NORMAL|FLAT|EDGE_POSITIVE|UNHEDGED": 357,
+    "RANGE_SQUEEZE|NORMAL|PROFIT|EDGE_NEUTRAL|UNHEDGED": 2654,
+    "RANGE_SQUEEZE|NORMAL|PROFIT|EDGE_POSITIVE|UNHEDGED": 8928,
+    "RANGE_SQUEEZE|WARNING|FLAT|EDGE_BROKEN|UNHEDGED": 546,
+    "RANGE_SQUEEZE|WARNING|FLAT|EDGE_NEUTRAL|UNHEDGED": 50,
+    "RANGE_SQUEEZE|WARNING|FLAT|EDGE_POSITIVE|UNHEDGED": 52,
+    "RANGE_SQUEEZE|WARNING|FLAT|EDGE_WEAK|UNHEDGED": 93,
+    "RANGE_SQUEEZE|WARNING|MOD_LOSS|EDGE_BROKEN|UNHEDGED": 472,
+    "RANGE_SQUEEZE|WARNING|MOD_LOSS|EDGE_NEUTRAL|UNHEDGED": 43,
+    "RANGE_SQUEEZE|WARNING|MOD_LOSS|EDGE_POSITIVE|UNHEDGED": 331,
+    "RANGE_SQUEEZE|WARNING|MOD_LOSS|EDGE_WEAK|UNHEDGED": 69,
+    "RANGE_SQUEEZE|WARNING|PROFIT|EDGE_BROKEN|UNHEDGED": 8470,
+    "RANGE_SQUEEZE|WARNING|PROFIT|EDGE_NEUTRAL|UNHEDGED": 1289,
+    "RANGE_SQUEEZE|WARNING|PROFIT|EDGE_POSITIVE|UNHEDGED": 28,
+    "RANGE_SQUEEZE|WARNING|PROFIT|EDGE_WEAK|UNHEDGED": 2976,
+    "RANGE_SQUEEZE|WARNING|SEVERE_LOSS|EDGE_BROKEN|UNHEDGED": 1338,
+    "RANGE_SQUEEZE|WARNING|SEVERE_LOSS|EDGE_NEUTRAL|UNHEDGED": 247,
+    "RANGE_SQUEEZE|WARNING|SEVERE_LOSS|EDGE_POSITIVE|UNHEDGED": 924,
+    "RANGE_SQUEEZE|WARNING|SEVERE_LOSS|EDGE_WEAK|UNHEDGED": 156,
+    "TREND_BEAR|NORMAL|FLAT|EDGE_NEUTRAL|UNHEDGED": 8,
+    "TREND_BEAR|NORMAL|FLAT|EDGE_POSITIVE|UNHEDGED": 27,
+    "TREND_BEAR|NORMAL|PROFIT|EDGE_NEUTRAL|UNHEDGED": 137,
+    "TREND_BEAR|NORMAL|PROFIT|EDGE_POSITIVE|UNHEDGED": 428,
+    "TREND_BEAR|WARNING|FLAT|EDGE_BROKEN|UNHEDGED": 384,
+    "TREND_BEAR|WARNING|FLAT|EDGE_NEUTRAL|UNHEDGED": 11,
+    "TREND_BEAR|WARNING|FLAT|EDGE_POSITIVE|UNHEDGED": 2,
+    "TREND_BEAR|WARNING|FLAT|EDGE_WEAK|UNHEDGED": 14,
+    "TREND_BEAR|WARNING|MOD_LOSS|EDGE_BROKEN|UNHEDGED": 183,
+    "TREND_BEAR|WARNING|MOD_LOSS|EDGE_NEUTRAL|UNHEDGED": 2,
+    "TREND_BEAR|WARNING|MOD_LOSS|EDGE_POSITIVE|UNHEDGED": 12,
+    "TREND_BEAR|WARNING|MOD_LOSS|EDGE_WEAK|UNHEDGED": 24,
+    "TREND_BEAR|WARNING|PROFIT|EDGE_BROKEN|UNHEDGED": 14014,
+    "TREND_BEAR|WARNING|PROFIT|EDGE_NEUTRAL|UNHEDGED": 190,
+    "TREND_BEAR|WARNING|PROFIT|EDGE_POSITIVE|UNHEDGED": 13,
+    "TREND_BEAR|WARNING|PROFIT|EDGE_WEAK|UNHEDGED": 451,
+    "TREND_BEAR|WARNING|SEVERE_LOSS|EDGE_BROKEN|UNHEDGED": 348,
+    "TREND_BEAR|WARNING|SEVERE_LOSS|EDGE_NEUTRAL|UNHEDGED": 73,
+    "TREND_BEAR|WARNING|SEVERE_LOSS|EDGE_POSITIVE|UNHEDGED": 93,
+    "TREND_BEAR|WARNING|SEVERE_LOSS|EDGE_WEAK|UNHEDGED": 70,
+    "TREND_BULL|NORMAL|FLAT|EDGE_NEUTRAL|UNHEDGED": 5,
+    "TREND_BULL|NORMAL|FLAT|EDGE_POSITIVE|UNHEDGED": 297,
+    "TREND_BULL|NORMAL|PROFIT|EDGE_NEUTRAL|UNHEDGED": 259,
+    "TREND_BULL|NORMAL|PROFIT|EDGE_POSITIVE|UNHEDGED": 20044,
+    "TREND_BULL|WARNING|FLAT|EDGE_BROKEN|UNHEDGED": 21,
+    "TREND_BULL|WARNING|FLAT|EDGE_POSITIVE|UNHEDGED": 33,
+    "TREND_BULL|WARNING|FLAT|EDGE_WEAK|UNHEDGED": 16,
+    "TREND_BULL|WARNING|MOD_LOSS|EDGE_BROKEN|UNHEDGED": 18,
+    "TREND_BULL|WARNING|MOD_LOSS|EDGE_NEUTRAL|UNHEDGED": 5,
+    "TREND_BULL|WARNING|MOD_LOSS|EDGE_POSITIVE|UNHEDGED": 114,
+    "TREND_BULL|WARNING|MOD_LOSS|EDGE_WEAK|UNHEDGED": 14,
+    "TREND_BULL|WARNING|PROFIT|EDGE_BROKEN|UNHEDGED": 391,
+    "TREND_BULL|WARNING|PROFIT|EDGE_NEUTRAL|UNHEDGED": 62,
+    "TREND_BULL|WARNING|PROFIT|EDGE_POSITIVE|UNHEDGED": 66,
+    "TREND_BULL|WARNING|PROFIT|EDGE_WEAK|UNHEDGED": 155,
+    "TREND_BULL|WARNING|SEVERE_LOSS|EDGE_BROKEN|UNHEDGED": 82,
+    "TREND_BULL|WARNING|SEVERE_LOSS|EDGE_NEUTRAL|UNHEDGED": 36,
+    "TREND_BULL|WARNING|SEVERE_LOSS|EDGE_POSITIVE|UNHEDGED": 495,
+    "TREND_BULL|WARNING|SEVERE_LOSS|EDGE_WEAK|UNHEDGED": 29
+  },
   "pairs": {},
-  "updated_at": 1794413779.312,
+  "updated_at": 1794424451.089,
   "version": "1.0-v3"
 }

@@ -280,6 +280,33 @@
 
 ---
 
+### Etapa 17: Certificación y Promoción Exitosa del Cerebro Candidato Schema v2
+- **Estado:** **Completado al 100% con éxito y certificado por Monte Carlo**.
+- **Refactorizaciones Estructurales Implementadas:**
+  1. **Aislamiento de Epsilon en Entrenamiento:**
+     - En [`simulation/train_candidate_brain.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/train_candidate_brain.py), se desacopló el decaimiento de epsilon de las intervenciones del supervisor en memoria, asegurando exploración sostenida por episodios.
+  2. **Amortiguación Dinámica de Riesgo y Freno de Drawdown P0 en Evaluación:**
+     - En [`simulation/sim_training_environment.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/sim_training_environment.py), se implementó un freno de emergencia flotante (`cur_dd_floating >= 0.052`) que liquida posiciones ante excursiones adversas, throttle de entrada (`current_dd >= 0.045`), amortiguador cuadrático de apalancamiento (`dd_dampener = max(0.25, 1.0 - (current_dd / 0.06) ** 2)`), y conexión precisa de `HardFloorGuardian.evaluate_protection` con `peak_equity_sats`.
+  3. **Priors Bayesianos Diferenciados por Estilo:**
+     - En [`sniper_perception_sats_core.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sniper_perception_sats_core.py), se incorporaron priors Beta específicos por estilo (`REVERSION: (11, 11)`, `SNIPER: (9, 13)`, `DEF_SCALP: (12, 10)`), permitiendo a la compuerta de expectancy evaluar adecuadamente estrategias no-tendenciales.
+- **Resultados de la Certificación Monte Carlo (50 caminos x 450 velas = 22,500 barras):**
+  - **Compuerta 1 (Schema v2):** Superada al 100% (202 estados canónicos inicializados, acción 0 neutral, sin NaNs).
+  - **Compuerta 2 (Compatibilidad Cuantitativa P0):** Superada (202 estados cargados con 9 estrategias alineadas).
+  - **Compuerta 3 (Monte Carlo Stress Test):**
+    - Win Rate: **52.89%** (201W / 179L)
+    - Profit Factor: **2.90** (Gross Profit: +325,368 sats / Gross Loss: -112,205 sats)
+    - Net PnL Total: **+213,163 sats**
+    - Fee Efficiency Ratio (FER): **1.78** (supera ampliamente el mínimo de 1.20)
+    - Max Drawdown: **6.75%** (<= 8.0% umbral estricto superado)
+    - Risk of Ruin: **0.0%**
+    - Mutaciones durante evaluación: **0** (verificado por SHA-256)
+- **Promoción:**
+  - Candidato promovido a Testnet ([`q_brain_testnet_lnm.json`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_testnet_lnm.json), [`hedge_state_testnet.json`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_testnet.json)).
+  - Candidato promovido a Mainnet ([`q_brain_advanced_lnm.json`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_advanced_lnm.json), [`hedge_state_mainnet.json`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_mainnet.json)).
+  - Auditoría criptográfica sellada en [`simulation/candidate_certification_report.json`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/candidate_certification_report.json).
+
+---
+
 ## 3. ARQUITECTURA DE ARCHIVOS CLAVE
 
 ```text

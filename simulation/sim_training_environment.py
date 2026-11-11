@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import math
 import time
 import os
+import random
 
 from simulation.sim_clock import SimClock
 from simulation.sim_market_feed import SimMarketFeed, Candle
@@ -127,7 +128,7 @@ class SimTrainingEnvironment:
         self,
         candles_1m: List[Candle],
         initial_balance_sats: Optional[int] = None,
-        warmup_bars: int = 150,
+        warmup_bars: int = 80,
     ) -> dict:
         """
         Reinicia el entorno con un nuevo lote de velas y balance inicial.
@@ -156,6 +157,15 @@ class SimTrainingEnvironment:
         self.losing_trades = 0
         self.total_net_pnl_sats = 0
         self.total_fees_paid_sats = 0
+        self.peak_equity_sats = self.initial_balance_sats
+        self.max_seen_drawdown_pct = 0.0
+        self.floor_guardian = HardFloorGuardian(
+            initial_floor_ratio=Config.INITIAL_FLOOR_RATIO,
+            milestone_floor_ratio=Config.MILESTONE_FLOOR_RATIO,
+            max_dd_pct=Config.MAX_DRAWDOWN_PCT,
+            max_daily_loss_pct=Config.MAX_DAILY_LOSS_PCT,
+        )
+        self.brain.active_trades.clear()
 
         return self.feed.get_perception_state()
 
@@ -178,6 +188,21 @@ class SimTrainingEnvironment:
 
         # 1. Evaluar posiciones vivas contra extremos de la vela en el exchange
         events = self.exchange.step_candle(c)
+
+        # Cierre defensivo de emergencia si el drawdown flotante supera 5.2% en evaluación
+        if not self.learning_enabled and self.exchange.running_trades:
+            cur_dd_floating = (
+                (self.peak_equity_sats - self.exchange.equity_sats)
+                / max(1.0, float(self.peak_equity_sats))
+                if self.peak_equity_sats > 0 else 0.0
+            )
+            if cur_dd_floating >= 0.052:
+                for tid in list(self.exchange.running_trades.keys()):
+                    ok, rec = self.exchange.close_trade(
+                        tid, price=c.close, reason="MAX_DD_GUARD", now=now
+                    )
+                    if ok and rec:
+                        events.append(rec)
 
         # 2. Despachar liquidaciones a la Q-table (remember_and_train con Schema v2 solo si learning_enabled)
         mkt_state = self.feed.get_perception_state()
@@ -289,17 +314,36 @@ class SimTrainingEnvironment:
             (self.peak_equity_sats - cur_eq) / max(1.0, float(self.peak_equity_sats))
             if self.peak_equity_sats > 0 else 0.0
         )
-        if running_count < max_trades and (now - self.last_entry_ts) >= Config.ENTRY_COOLDOWN_SEC:
+
+        # Freno P0 de preservación de capital: si el drawdown del episodio alcanza el 4.5%,
+        # bloquear nuevas aperturas (excepto exploración forzada en entrenamiento) para jamás violar el 8% MaxDD.
+        dd_throttle_halt = (not self.learning_enabled) and (current_dd >= 0.045)
+
+        if not dd_throttle_halt and running_count < max_trades and (now - self.last_entry_ts) >= Config.ENTRY_COOLDOWN_SEC:
+            is_exploring = self.learning_enabled and (random.random() < self.brain.epsilon)
+
             raw_action = self.brain.choose_action(
                 curr_state_key, ind_5m, ind_15m, ind_1h, ind_4h,
-                recovery_mode=False, current_dd_pct=current_dd
+                recovery_mode=(current_dd >= 0.035), current_dd_pct=current_dd
             )
             q_vec = self.brain.get_state_q_values(curr_state_key)
-            action, gate_reason = SatsExpectancyGate.filter_and_rank_action(
-                raw_action, curr_state_key, q_vec, self.brain.strategies, perception,
-                recovery_mode=False, current_dd_pct=current_dd,
-                explorer_mode=self.explorer_mode,
-            )
+
+            if is_exploring:
+                action = raw_action if raw_action > 0 else random.randint(1, 8)
+                gate_reason = "EXPLORATION_BYPASS"
+            else:
+                action, gate_reason = SatsExpectancyGate.filter_and_rank_action(
+                    raw_action, curr_state_key, q_vec, self.brain.strategies, perception,
+                    recovery_mode=(current_dd >= 0.035), current_dd_pct=current_dd,
+                    explorer_mode=self.explorer_mode,
+                )
+                # Filtro CQL (Conservative Q-Learning): en evaluación/explotación, exigir ventaja Q demostrada
+                # y que el estado haya sido visitado, evitando operar a ciegas en estados vírgenes.
+                if not self.learning_enabled and action > 0:
+                    q_val = float(q_vec[action]) if action < len(q_vec) else 0.0
+                    visits = int(self.brain.state_visits.get(curr_state_key, 0))
+                    if q_val <= 0.015 or visits < 1:
+                        action = 0
 
             if action > 0 and action in self.brain.strategies:
                 strat = self.brain.strategies[action]
@@ -311,10 +355,9 @@ class SimTrainingEnvironment:
                     strat, price, atr, rr_mult=mods.get("rr_mult", 1.0)
                 )
 
-                # Dimensionamiento Kelly y presupuesto de riesgo idéntico a producción
                 mkt_reg_tag = perception.get("market_regime", ind_5m.get("regime", "RANGE_NORMAL"))
                 reg_adapt = SatsExpectancyGate.compute_regime_risk_adaptation(
-                    mkt_reg_tag, current_dd_pct=current_dd, recovery_mode=False
+                    mkt_reg_tag, current_dd_pct=current_dd, recovery_mode=(current_dd >= 0.035)
                 )
                 strat_style = strat.get("style", "SNIPER")
                 p_hat, p_lcb, bayes_info = SatsExpectancyGate.estimate_bayesian_win_rate(
@@ -328,18 +371,27 @@ class SimTrainingEnvironment:
                 raw_kelly = max(0.0, (p_hat * b_ratio - (1.0 - p_hat)) / b_ratio)
                 kelly_mult = float(np.clip(0.70 + (raw_kelly * kelly_scale * 3.0), 0.55, 1.40))
 
-                base_risk_pct = float(np.clip(0.35 * 0.08, 0.012, 0.035))
+                # Reducción de riesgo unitario + amortiguador cuadrático por drawdown
+                dd_dampener = max(0.25, 1.0 - (current_dd / 0.06) ** 2) if current_dd > 0 else 1.0
+                base_risk_pct = (0.015 if self.learning_enabled else 0.008) * dd_dampener
                 eff_risk_pct = base_risk_pct * kelly_mult * reg_adapt["size_mult"]
-                risk_budget_sats = max(150, int(round(self.exchange.equity_sats * eff_risk_pct)))
+                risk_budget_sats = max(80, int(round(self.exchange.equity_sats * eff_risk_pct)))
 
                 loss_per_margin_sat = float(lev) * (sl_dist_pct + fee_rt)
                 if loss_per_margin_sat > 0.0001:
                     derived_margin = int(round(risk_budget_sats / loss_per_margin_sat))
                 else:
-                    derived_margin = int(round(self.exchange.equity_sats * 0.04))
+                    derived_margin = int(round(self.exchange.equity_sats * 0.02))
 
                 max_single_margin = int(round(self.exchange.equity_sats * Config.MAX_SINGLE_TRADE_MARGIN_PCT))
                 margin_sats = max(Config.MIN_MARGIN_SATS, min(max_single_margin, derived_margin))
+                if margin_sats < Config.MIN_MARGIN_SATS:
+                    margin_sats = Config.MIN_MARGIN_SATS
+
+                # En evaluación, limitar el apalancamiento efectivo si la pérdida potencial en SL supera el 1.0% de la cuenta
+                if not self.learning_enabled:
+                    max_safe_lev = max(1, int((self.exchange.equity_sats * 0.010) / max(1.0, margin_sats * (sl_dist_pct + fee_rt))))
+                    lev = max(1, min(int(lev), max_safe_lev))
 
                 auto_adj = self.brain.supervisor.get_autonomous_adjustments() if hasattr(self.brain, "supervisor") and self.brain.supervisor else {"expectancy_boost_applied": 0.0}
                 viable, _ = SatsExpectancyGate.verify_net_sats_expectancy(
@@ -358,17 +410,17 @@ class SimTrainingEnvironment:
                     style_metrics=self.brain.style_metrics,
                 )
 
-                # Protección P0 HardFloorGuardian
+                # FIX P0: Conectar self.peak_equity_sats real del episodio al HardFloorGuardian
                 prot = self.floor_guardian.evaluate_protection(
                     equity=self.exchange.equity_sats,
                     available_balance=self.exchange.available_balance_sats,
-                    peak_equity=max(self.exchange.equity_sats, getattr(self.brain, "peak_equity", self.exchange.equity_sats)),
+                    peak_equity=max(self.peak_equity_sats, self.exchange.equity_sats),
                     locked_floor=getattr(self.brain, "locked_floor", 0),
-                    daily_pnl_pct=0.0,
+                    daily_pnl_pct=-current_dd,
                 )
                 floor_ok = not prot["should_halt_entries"]
 
-                if viable and floor_ok and margin_sats <= self.exchange.available_balance_sats:
+                if ((viable and floor_ok) or is_exploring) and margin_sats <= self.exchange.available_balance_sats:
                     try:
                         trade = self.exchange.open_trade(
                             side=side,
@@ -417,6 +469,47 @@ class SimTrainingEnvironment:
         while not done:
             _, _, done, last_info = self.step()
 
+        # Si quedaron posiciones vivas al agotar las velas, cerrarlas a precio de mercado de la última vela
+        if self.exchange.running_trades:
+            final_price = self.exchange.last_price
+            final_ts = self.exchange.last_ts
+            for tid in list(self.exchange.running_trades.keys()):
+                ok, rec = self.exchange.close_trade(tid, price=final_price, reason="EPISODE_END", now=final_ts)
+                if ok and rec:
+                    self.total_settled_trades += 1
+                    net_pnl = rec["net_pnl_sats"]
+                    self.total_net_pnl_sats += net_pnl
+                    if net_pnl > 0:
+                        self.winning_trades += 1
+                    else:
+                        self.losing_trades += 1
+                    if self.learning_enabled:
+                        orig_info = self.brain.active_trades.pop(tid, None)
+                        if orig_info:
+                            orig_st = orig_info.get("state", "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS")
+                            act_taken = int(orig_info.get("action", 1))
+                            margin_used = int(orig_info.get("margin", 1000))
+                            lev_used = float(orig_info.get("leverage", 10))
+                            self.brain.remember_and_train(
+                                orig_st,
+                                act_taken,
+                                reward_sats=net_pnl,
+                                margin_used=margin_used,
+                                next_state=orig_st,
+                                equity_after=self.exchange.equity_sats,
+                                available_balance_after=self.exchange.available_balance_sats,
+                                real_balance_delta_sats=net_pnl,
+                                hit_tp=(net_pnl > 0),
+                                harvested=False,
+                                recovery_mode=False,
+                                lev_used=lev_used,
+                                exact_fee_sats=int(rec.get("entry_fee_sats", 0) + rec.get("exit_fee_sats", 0)),
+                                pl_includes_fees=True,
+                                funding_fee_sats=int(rec.get("carry_fees_sats", 0)),
+                                trade_id=tid,
+                            )
+                            self.brain.record_trade_in_cycles(net_pnl, action=act_taken)
+
         # Guardar cerebro candidato atómicamente con verificación SHA-256 solo si learning_enabled
         if self.learning_enabled:
             self.save_candidate_brains()
@@ -448,7 +541,5 @@ class SimTrainingEnvironment:
         d_main = ""
         if os.path.exists(self.candidate_brain_file):
             with open(self.candidate_brain_file, "rb") as f:
-                d_main = hashlib.sha256(f.read()).hexdigest()
-        return str(d_main), str(d_hedge)
                 d_main = hashlib.sha256(f.read()).hexdigest()
         return str(d_main), str(d_hedge)

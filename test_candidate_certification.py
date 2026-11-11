@@ -43,7 +43,13 @@ class TestCandidateCertification(unittest.TestCase):
             "reward_schema_version": 2,
             "epsilon": 0.20,
             "q_table": q_table,
-            "style_metrics": {"TREND": {}, "REVERSION": {}, "SNIPER": {}, "DEF_SCALP": {}},
+            "state_visits": {k: 5 for k in q_table.keys()},
+            "style_metrics": {
+                "TREND": {"trades": 50, "wins": 35, "net_pnl_sats": 50000, "fees_sats": 5000},
+                "REVERSION": {"trades": 20, "wins": 12, "net_pnl_sats": 10000, "fees_sats": 2000},
+                "SNIPER": {"trades": 10, "wins": 6, "net_pnl_sats": 5000, "fees_sats": 1000},
+                "DEF_SCALP": {"trades": 10, "wins": 6, "net_pnl_sats": 5000, "fees_sats": 1000},
+            },
         }
         with open(self.valid_brain_file, "w", encoding="utf-8") as f:
             json.dump(valid_payload, f)

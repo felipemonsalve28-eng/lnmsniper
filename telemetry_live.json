@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-11-10T19:08:42Z",
+  "timestamp": "2026-11-11T19:25:40Z",
   "balance_sats": 25500,
   "equity_sats": 25500,
   "available_sats": 25500,
@@ -34,14 +34,14 @@
     "dominant_action_freq": 0.2933,
     "action_frequencies": {
       "HOLD": 0.2933,
-      "LONG_CONSERVATIVE": 0.0933,
-      "LONG_MODERATE": 0.0933,
-      "LONG_AGGRESSIVE": 0.0933,
-      "LONG_CONTRARIAN": 0.0933,
-      "SHORT_CONSERVATIVE": 0.0933,
-      "SHORT_MODERATE": 0.08,
-      "SHORT_AGGRESSIVE": 0.08,
-      "SHORT_REVERSION": 0.08
+      "LONG_TREND": 0.0933,
+      "LONG_REVERSION": 0.0933,
+      "LONG_SNIPER": 0.0933,
+      "LONG_DEF_SCALP": 0.0933,
+      "SHORT_TREND": 0.0933,
+      "SHORT_REVERSION": 0.08,
+      "SHORT_SNIPER": 0.08,
+      "SHORT_DEF_SCALP": 0.08
     },
     "avg_sats_per_trade_last20": 10.0,
     "policy_health": "DEGRADED_DEFENSIVE",

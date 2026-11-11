@@ -161,7 +161,9 @@ def main():
         print(f"✅ Reinicio canónico verificado: 0 cierres previos, {len(env.brain.q_table)} estados canónicos inicializados.")
 
     # 3. Bucle de entrenamiento por episodios
+    current_epsilon = float(args.epsilon)
     for ep in range(1, args.episodes + 1):
+        env.brain.epsilon = current_epsilon
         print(f"\n--- [EPISODIO {ep}/{args.episodes}] (Epsilon={env.brain.epsilon:.3f}) ---")
         if binance_candles is not None and len(binance_candles) >= args.bars:
             max_start = max(0, len(binance_candles) - args.bars)
@@ -185,7 +187,7 @@ def main():
         )
 
         # Decaimiento curricular de epsilon
-        env.brain.epsilon = max(0.04, round(env.brain.epsilon * float(args.decay), 4))
+        current_epsilon = max(0.04, round(current_epsilon * float(args.decay), 4))
 
     # 4. Guardado final y certificación criptográfica SHA-256
     d_main, d_hedge = env.save_candidate_brains()

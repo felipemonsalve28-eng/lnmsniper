@@ -21,6 +21,7 @@ logs/
 *.tmp.*
 *.sha256
 *.pid
+*.snapshot_guard*
 backups_audit*/
 backups_audit_*/
 wf_oos_temp_hedge_state*

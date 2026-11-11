@@ -557,8 +557,17 @@ class SatsExpectancyGate:
         3. Régimen de mercado si está disponible
         """
         tm = get_thresholds_manager()
-        alpha_0 = tm.get_float("expectancy", "bayesian_prior_alpha", 7.0)
-        beta_0 = tm.get_float("expectancy", "bayesian_prior_beta", 15.0)
+        style_priors = {
+            "TREND": (tm.get_float("expectancy", "bayesian_prior_alpha", 7.0), tm.get_float("expectancy", "bayesian_prior_beta", 15.0)),
+            "REVERSION": (11.0, 11.0),
+            "SNIPER": (9.0, 13.0),
+            "DEF_SCALP": (12.0, 10.0),
+        }
+        if style and str(style).upper() in style_priors:
+            alpha_0, beta_0 = style_priors[str(style).upper()]
+        else:
+            alpha_0 = tm.get_float("expectancy", "bayesian_prior_alpha", 7.0)
+            beta_0 = tm.get_float("expectancy", "bayesian_prior_beta", 15.0)
 
         alpha_post = alpha_0
         beta_post = beta_0

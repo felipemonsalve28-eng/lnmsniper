@@ -1,0 +1,33 @@
+{
+  "timestamp": "2026-11-11T14:19:29.495405",
+  "target_env": "mainnet",
+  "target_brain_file": "q_brain_advanced_lnm.json",
+  "target_hedge_file": "hedge_state_mainnet.json",
+  "sha256_brain": "2ca3ed8c677d70e149a9db74b41dcc6ebec37621f98bf4dfc71b95e8885847f0",
+  "sha256_hedge": "492b8fe4af68f4f1e80aebdc71af4f85f8c5cd71b7913e8a59c26ca2a4fbb430",
+  "schema_check": true,
+  "monte_carlo_metrics": {
+    "num_paths": 50,
+    "total_trades": 380,
+    "winning_trades": 201,
+    "losing_trades": 179,
+    "win_rate_pct": 52.89,
+    "gross_profit_sats": 325368,
+    "gross_loss_sats": 112205,
+    "net_pnl_total_sats": 213163,
+    "total_fees_sats": 119508,
+    "profit_factor": 2.9,
+    "fee_efficiency_ratio": 1.78,
+    "max_drawdown_pct": 6.75,
+    "risk_of_ruin": 0.0,
+    "candidate_sha256": "4483b5afa46193ea5668ba34e0c1a256f69c11f9f1cf3ef2032227c0a1c88967",
+    "mutations_detected": 0
+  },
+  "scenarios_check": {
+    "states_loaded": 202,
+    "sample_state_checked": "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS",
+    "action_0_neutral": true,
+    "strategies_count": 8,
+    "status": "PASS"
+  }
+}
