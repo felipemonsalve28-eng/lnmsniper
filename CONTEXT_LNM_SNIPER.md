@@ -181,6 +181,28 @@
      - `test_learning_quality_and_sats.py`: **8 de 8 bloques superados al 100%**.
      - `test_protocolo_v_reversal.py`: **23 de 23 escenarios superados al 100%**.
 
+### Etapa 12: Arquitectura del Motor del Simulador de Entrenamiento Offline
+- **Estado:** **Etapas 1, 2, 3 y 4 completadas con 100% de éxito**.
+- **Módulos Desarrollados con Rigor Matemático y Aislamiento Total:**
+  1. **[`simulation/sim_clock.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/sim_clock.py):**
+     - Reloj virtual determinista desacoplado de `time.time()` y `time.sleep()`.
+     - Control de eventos de periodicidad (ciclos 1h/4h y bloques de funding 8h) con cálculo por buckets $\lfloor t / T \rfloor$.
+  2. **[`simulation/sim_market_feed.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/sim_market_feed.py):**
+     - Ingestor y agregador multitemporal (MTFAggregator) que procesa velas de 1m y construye las series de 5m, 15m, 1h y 4h.
+     - Conexión idéntica con [`compute_indicators()`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py#L466) y [`MarketRegimeClassifier.classify()`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sniper_perception_sats_core.py#L52), garantizando cero divergencia en los estados observados.
+     - Ingesta de datos reales vía endpoint público de Binance (sin credenciales) y datasets locales.
+  3. **[`simulation/sim_lnm_exchange.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/sim_lnm_exchange.py):**
+     - Exchange virtual LN Markets API v3 con contabilidad exacta en satoshis.
+     - Comisiones taker exactas ($0.0010 \times \text{Notional}$ por lado).
+     - Slippage dinámico ponderado por ATR instantáneo.
+     - Carry / funding fees cada 8 horas (28,800 s).
+     - Precio de liquidación exacto a margen aislado ($1 \mp 0.99/\text{Lev}$).
+     - Ejecución de Stop Loss con modelado de riesgo de brecha (Gap Risk).
+     - Soporte para `cash_in` y `add_margin`.
+  4. **[`test_simulation_engine.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_simulation_engine.py):**
+     - **8 de 8 pruebas de certificación superadas al 100%**.
+     - Cero regresión en suites del bot: `test_terminal_bellman_fix.py` (4/4), `test_learning_quality_and_sats.py` (8/8) y `test_protocolo_v_reversal.py` (23/23).
+
 ---
 
 ## 3. ARQUITECTURA DE ARCHIVOS CLAVE
