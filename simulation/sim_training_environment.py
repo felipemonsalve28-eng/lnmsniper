@@ -21,7 +21,7 @@ from lnm_sniper_v6_advanced import (
 )
 from hedge_state_store import HedgeStateStore
 from adaptive_controller import AdaptiveHedgeController
-from guardian_execution_core import HardFloorGuardian
+from guardian_execution_core import HardFloorGuardian, compat_np as np
 from sniper_perception_sats_core import SatsExpectancyGate, MarketRegimeClassifier
 
 
@@ -38,6 +38,7 @@ class SimTrainingEnvironment:
         candidate_hedge_file: str = "hedge_state_simulated_candidate.json",
         initial_balance_sats: int = 100000,
         explorer_mode: bool = True,
+        learning_enabled: bool = True,
         taker_fee_rate: float = 0.0010,
         funding_rate_8h: float = 0.0001,
         default_slippage_bps: float = 1.5,
@@ -46,6 +47,7 @@ class SimTrainingEnvironment:
         self.candidate_hedge_file = str(candidate_hedge_file)
         self.initial_balance_sats = int(initial_balance_sats)
         self.explorer_mode = bool(explorer_mode)
+        self.learning_enabled = bool(learning_enabled)
 
         self.clock = SimClock(start_timestamp=1700000000.0)
         self.feed = SimMarketFeed()
@@ -80,6 +82,8 @@ class SimTrainingEnvironment:
         self.losing_trades: int = 0
         self.total_net_pnl_sats: int = 0
         self.total_fees_paid_sats: int = 0
+        self.peak_equity_sats: int = self.initial_balance_sats
+        self.max_seen_drawdown_pct: float = 0.0
 
     def _seed_canonical_states_if_needed(self) -> None:
         """Siembra los 175 estados canónicos si el cerebro candidato es nuevo."""
@@ -175,7 +179,7 @@ class SimTrainingEnvironment:
         # 1. Evaluar posiciones vivas contra extremos de la vela en el exchange
         events = self.exchange.step_candle(c)
 
-        # 2. Despachar liquidaciones a la Q-table (remember_and_train con Schema v2)
+        # 2. Despachar liquidaciones a la Q-table (remember_and_train con Schema v2 solo si learning_enabled)
         mkt_state = self.feed.get_perception_state()
         ind_5m = mkt_state["ind_5m"]
         ind_15m = mkt_state["ind_15m"]
@@ -206,26 +210,27 @@ class SimTrainingEnvironment:
                 else:
                     self.losing_trades += 1
 
-                self.brain.remember_and_train(
-                    orig_st,
-                    act_taken,
-                    reward_sats=net_pnl,
-                    margin_used=margin_used,
-                    next_state=curr_state_key,
-                    equity_after=self.exchange.equity_sats,
-                    available_balance_after=self.exchange.available_balance_sats,
-                    real_balance_delta_sats=net_pnl,
-                    hit_tp=hit_tp,
-                    harvested=False,
-                    recovery_mode=False,
-                    lev_used=lev_used,
-                    exact_fee_sats=int(ev.get("entry_fee_sats", 0) + ev.get("exit_fee_sats", 0)),
-                    pl_includes_fees=True,
-                    funding_fee_sats=int(ev.get("carry_fees_sats", 0)),
-                    trade_id=tid,
-                    predicted_q_entry=orig_info.get("entry_q", None),
-                )
-                self.brain.record_trade_in_cycles(net_pnl, action=act_taken)
+                if self.learning_enabled:
+                    self.brain.remember_and_train(
+                        orig_st,
+                        act_taken,
+                        reward_sats=net_pnl,
+                        margin_used=margin_used,
+                        next_state=curr_state_key,
+                        equity_after=self.exchange.equity_sats,
+                        available_balance_after=self.exchange.available_balance_sats,
+                        real_balance_delta_sats=net_pnl,
+                        hit_tp=hit_tp,
+                        harvested=False,
+                        recovery_mode=False,
+                        lev_used=lev_used,
+                        exact_fee_sats=int(ev.get("entry_fee_sats", 0) + ev.get("exit_fee_sats", 0)),
+                        pl_includes_fees=True,
+                        funding_fee_sats=int(ev.get("carry_fees_sats", 0)),
+                        trade_id=tid,
+                        predicted_q_entry=orig_info.get("entry_q", None),
+                    )
+                    self.brain.record_trade_in_cycles(net_pnl, action=act_taken)
 
         # 3. Supervisar coberturas mediante AdaptiveHedgeController
         for tid, t in list(self.exchange.running_trades.items()):
@@ -263,37 +268,80 @@ class SimTrainingEnvironment:
             prev_h_key = pair_ctx.get("last_hedge_state_key")
             prev_h_act = int(pair_ctx.get("last_hedge_action", 0))
             is_exit_transition = ("HEDGE_EXIT" in h_key) or (state_fsm == "HEDGE_EXIT")
-            if prev_h_key is not None:
+            if self.learning_enabled and prev_h_key is not None:
                 self.hedge_store.update_hedge_q(
                     prev_h_key, prev_h_act, 0.0, h_key, done=is_exit_transition
                 )
             pair_ctx["last_hedge_state_key"] = None if (is_exit_transition and not pair_econ["has_active_hedge"]) else h_key
 
-        # 4. Evaluar nuevas aperturas si hay capacidad de concurrencia y cooldown
+        # 4. Actualizar métrica de Drawdown continuo pico-valle
+        cur_eq = self.exchange.equity_sats
+        if cur_eq > self.peak_equity_sats:
+            self.peak_equity_sats = cur_eq
+        elif self.peak_equity_sats > 0:
+            cur_dd = (self.peak_equity_sats - cur_eq) / float(self.peak_equity_sats)
+            if cur_dd > self.max_seen_drawdown_pct:
+                self.max_seen_drawdown_pct = cur_dd
+
+        # 5. Evaluar nuevas aperturas si hay capacidad de concurrencia y cooldown
         max_trades = Config.MAX_CONCURRENT_TRADES
+        current_dd = (
+            (self.peak_equity_sats - cur_eq) / max(1.0, float(self.peak_equity_sats))
+            if self.peak_equity_sats > 0 else 0.0
+        )
         if running_count < max_trades and (now - self.last_entry_ts) >= Config.ENTRY_COOLDOWN_SEC:
             raw_action = self.brain.choose_action(
                 curr_state_key, ind_5m, ind_15m, ind_1h, ind_4h,
-                recovery_mode=False, current_dd_pct=0.0
+                recovery_mode=False, current_dd_pct=current_dd
             )
-            if raw_action > 0 and raw_action in self.brain.strategies:
-                strat = self.brain.strategies[raw_action]
+            q_vec = self.brain.get_state_q_values(curr_state_key)
+            action, gate_reason = SatsExpectancyGate.filter_and_rank_action(
+                raw_action, curr_state_key, q_vec, self.brain.strategies, perception,
+                recovery_mode=False, current_dd_pct=current_dd,
+                explorer_mode=self.explorer_mode,
+            )
+
+            if action > 0 and action in self.brain.strategies:
+                strat = self.brain.strategies[action]
                 price = float(ind_5m["price"])
                 atr = float(ind_5m["atr"])
                 side = strat["side"]
-                lev, sl, tp = calculate_strategy_order_params(strat, price, atr)
-
-                # Dimensionamiento Kelly
-                max_single_margin = int(round(self.exchange.equity_sats * Config.MAX_SINGLE_TRADE_MARGIN_PCT))
-                margin_sats = max(
-                    Config.MIN_MARGIN_SATS,
-                    min(
-                        max_single_margin,
-                        int(self.exchange.available_balance_sats * 0.05),
-                    ),
+                mods = self.brain.get_parallel_modifiers(ind_5m, ind_15m, ind_1h, ind_4h)
+                lev, sl, tp = calculate_strategy_order_params(
+                    strat, price, atr, rr_mult=mods.get("rr_mult", 1.0)
                 )
 
-                # Comprobar si pasa SatsExpectancyGate
+                # Dimensionamiento Kelly y presupuesto de riesgo idéntico a producción
+                mkt_reg_tag = perception.get("market_regime", ind_5m.get("regime", "RANGE_NORMAL"))
+                reg_adapt = SatsExpectancyGate.compute_regime_risk_adaptation(
+                    mkt_reg_tag, current_dd_pct=current_dd, recovery_mode=False
+                )
+                strat_style = strat.get("style", "SNIPER")
+                p_hat, p_lcb, bayes_info = SatsExpectancyGate.estimate_bayesian_win_rate(
+                    curr_state_key, action, strat_style, mkt_reg_tag, self.brain.style_metrics
+                )
+                sl_dist_pct = abs(price - sl) / max(price, 1.0)
+                fee_rt = THRESHOLDS_MANAGER.get_float("fees", "round_trip_fee_rate", 0.0020)
+                tp_dist_pct = abs(tp - price) / max(price, 1.0)
+                b_ratio = max(0.2, (tp_dist_pct - fee_rt) / max(0.0001, sl_dist_pct + fee_rt))
+                kelly_scale = THRESHOLDS_MANAGER.get_float("q_calibration", "fractional_kelly_scale", 0.25)
+                raw_kelly = max(0.0, (p_hat * b_ratio - (1.0 - p_hat)) / b_ratio)
+                kelly_mult = float(np.clip(0.70 + (raw_kelly * kelly_scale * 3.0), 0.55, 1.40))
+
+                base_risk_pct = float(np.clip(0.35 * 0.08, 0.012, 0.035))
+                eff_risk_pct = base_risk_pct * kelly_mult * reg_adapt["size_mult"]
+                risk_budget_sats = max(150, int(round(self.exchange.equity_sats * eff_risk_pct)))
+
+                loss_per_margin_sat = float(lev) * (sl_dist_pct + fee_rt)
+                if loss_per_margin_sat > 0.0001:
+                    derived_margin = int(round(risk_budget_sats / loss_per_margin_sat))
+                else:
+                    derived_margin = int(round(self.exchange.equity_sats * 0.04))
+
+                max_single_margin = int(round(self.exchange.equity_sats * Config.MAX_SINGLE_TRADE_MARGIN_PCT))
+                margin_sats = max(Config.MIN_MARGIN_SATS, min(max_single_margin, derived_margin))
+
+                auto_adj = self.brain.supervisor.get_autonomous_adjustments() if hasattr(self.brain, "supervisor") and self.brain.supervisor else {"expectancy_boost_applied": 0.0}
                 viable, _ = SatsExpectancyGate.verify_net_sats_expectancy(
                     price=price,
                     margin_sats=margin_sats,
@@ -301,10 +349,13 @@ class SimTrainingEnvironment:
                     sl_price=sl,
                     tp_price=tp,
                     explorer_mode=self.explorer_mode,
+                    slippage_bps=3.0,
+                    expectancy_boost=auto_adj.get("expectancy_boost_applied", 0.0),
                     state=curr_state_key,
-                    action=raw_action,
-                    style=strat["style"],
-                    regime=ind_5m.get("regime", "RANGE_NORMAL"),
+                    action=action,
+                    style=strat_style,
+                    regime=mkt_reg_tag,
+                    style_metrics=self.brain.style_metrics,
                 )
 
                 # Protección P0 HardFloorGuardian
@@ -331,13 +382,13 @@ class SimTrainingEnvironment:
                         )
                         tid = trade["id"]
                         self.brain.active_trades[tid] = {
-                            "action": raw_action,
+                            "action": action,
                             "style": strat["style"],
                             "margin": margin_sats,
                             "leverage": lev,
                             "state": curr_state_key,
                             "entry_time": now,
-                            "entry_q": float(self.brain.get_state_q_values(curr_state_key)[raw_action]),
+                            "entry_q": float(q_vec[action]) if action < len(q_vec) else 0.0,
                         }
                         self.last_entry_ts = now
                     except Exception:
@@ -366,8 +417,9 @@ class SimTrainingEnvironment:
         while not done:
             _, _, done, last_info = self.step()
 
-        # Guardar cerebro candidato atómicamente con verificación SHA-256
-        self.save_candidate_brains()
+        # Guardar cerebro candidato atómicamente con verificación SHA-256 solo si learning_enabled
+        if self.learning_enabled:
+            self.save_candidate_brains()
         return {
             "total_steps": self.step_count,
             "initial_balance_sats": self.initial_balance_sats,
@@ -378,19 +430,25 @@ class SimTrainingEnvironment:
             "winning_trades": self.winning_trades,
             "losing_trades": self.losing_trades,
             "win_rate_pct": round((self.winning_trades / max(1, self.total_settled_trades)) * 100.0, 2),
+            "max_drawdown_pct": round(self.max_seen_drawdown_pct * 100.0, 2),
             "total_fees_paid_sats": self.exchange.total_fees_paid_sats,
             "total_funding_paid_sats": self.exchange.total_funding_paid_sats,
             "epsilon_final": round(self.brain.epsilon, 4),
             "total_trained_transitions": self.brain.total_trained,
+            "closed_trades": list(self.exchange.closed_trades),
         }
 
     def save_candidate_brains(self) -> Tuple[str, str]:
-        """Guarda y sella criptográficamente los cerebros candidatos."""
+        """Guarda y sella criptográficamente los cerebros candidatos solo si learning_enabled."""
+        if not self.learning_enabled:
+            return "", ""
         self.brain.save_brain(force=True)
         d_hedge = self.hedge_store.save(force=True)
         import hashlib
         d_main = ""
         if os.path.exists(self.candidate_brain_file):
             with open(self.candidate_brain_file, "rb") as f:
+                d_main = hashlib.sha256(f.read()).hexdigest()
+        return str(d_main), str(d_hedge)
                 d_main = hashlib.sha256(f.read()).hexdigest()
         return str(d_main), str(d_hedge)

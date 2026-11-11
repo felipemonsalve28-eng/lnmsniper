@@ -49,14 +49,14 @@ DEFAULT_TELEMETRY_PATH = os.path.join(
 
 ACTION_TELEMETRY_NAMES: Dict[int, str] = {
     0: "HOLD",
-    1: "LONG_CONSERVATIVE",
-    2: "LONG_MODERATE",
-    3: "LONG_AGGRESSIVE",
-    4: "LONG_CONTRARIAN",
-    5: "SHORT_CONSERVATIVE",
-    6: "SHORT_MODERATE",
-    7: "SHORT_AGGRESSIVE",
-    8: "SHORT_REVERSION",
+    1: "LONG_TREND",
+    2: "LONG_REVERSION",
+    3: "LONG_SNIPER",
+    4: "LONG_DEF_SCALP",
+    5: "SHORT_TREND",
+    6: "SHORT_REVERSION",
+    7: "SHORT_SNIPER",
+    8: "SHORT_DEF_SCALP",
 }
 
 
@@ -562,12 +562,17 @@ class LearningQualitySupervisor:
                         else:
                             self.policy_collapse_reason = "SHORT_MONOPOLY_COLLAPSE"
 
+                        cond_msg = (
+                            f"H_norm={h_norm:.3f} < {min_norm_ent:.3f}"
+                            if h_norm < min_norm_ent
+                            else f"dom_freq={dom_freq*100:.1f}% > {max_dom_freq*100:.1f}%"
+                        )
                         self._emit_alert(
                             indicator="POLICY_ENTROPY",
                             severity="WARNING",
                             message=(
                                 f"Colapso de politica detectado ({self.policy_collapse_reason}): "
-                                f"H_norm={h_norm:.3f} < {min_norm_ent:.3f}, accion dominante="
+                                f"{cond_msg}, accion dominante="
                                 f"{metrics['dominant_action']} ({dom_freq*100:.1f}%). "
                                 f"Diagnostico registrado sin mutar Q-table."
                             ),

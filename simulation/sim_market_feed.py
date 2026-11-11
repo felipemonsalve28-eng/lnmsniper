@@ -12,6 +12,8 @@ import collections
 import json
 import math
 import requests
+import os
+import time
 
 from guardian_execution_core import compat_np as np
 from lnm_sniper_v6_advanced import compute_indicators
@@ -63,7 +65,7 @@ class MTFAggregator:
         "1h": 60 * 60,
         "4h": 4 * 60 * 60,
     }
-    MAX_HISTORY = 250  # Suficiente para EMA200 y SMA50
+    MAX_HISTORY = 300  # Suficiente para estabilizar completamente EMA200 y SMA50
 
     def __init__(self):
         self.history_1m: collections.deque = collections.deque(maxlen=self.MAX_HISTORY)
@@ -224,3 +226,64 @@ class SimMarketFeed:
         resp.raise_for_status()
         raw = resp.json()
         return [Candle.from_binance_row(r) for r in raw]
+
+    @staticmethod
+    def fetch_binance_klines_paginated(
+        symbol: str = "BTCUSDT",
+        interval: str = "1m",
+        total_bars: int = 20000,
+        end_time_ms: Optional[int] = None,
+        save_cache_path: Optional[str] = None,
+    ) -> List[Candle]:
+        """
+        Descarga de forma paginada y segura series históricas extensas de Binance API pública.
+        Soporta miles de velas sin violar límites de tasa (rate limits).
+        """
+        all_candles: List[Candle] = []
+        batch_limit = 1000
+        cur_end = int(end_time_ms) if end_time_ms else int(time.time() * 1000)
+
+        remaining = int(total_bars)
+        print(f"🌐 Descargando {total_bars:,} velas de {symbol} ({interval}) desde Binance API...")
+
+        while remaining > 0:
+            limit = min(batch_limit, remaining)
+            url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}&endTime={cur_end}"
+            resp = requests.get(url, timeout=12)
+            resp.raise_for_status()
+            rows = resp.json()
+            if not rows:
+                break
+
+            batch = [Candle.from_binance_row(r) for r in rows]
+            all_candles = batch + all_candles
+            remaining -= len(batch)
+            first_ts_ms = int(rows[0][0])
+            cur_end = first_ts_ms - 1
+            if len(batch) < limit:
+                break
+            time.sleep(0.10)
+
+        # Ordenar por timestamp y eliminar posibles duplicados
+        seen_ts = set()
+        deduped = []
+        for c in sorted(all_candles, key=lambda x: x.timestamp):
+            if c.timestamp not in seen_ts:
+                seen_ts.add(c.timestamp)
+                deduped.append(c)
+
+        if save_cache_path:
+            os.makedirs(os.path.dirname(os.path.abspath(save_cache_path)), exist_ok=True)
+            with open(save_cache_path, "w", encoding="utf-8") as f:
+                json.dump([c.__dict__ for c in deduped], f)
+            print(f"💾 Dataset histórico guardado en caché: {save_cache_path} ({len(deduped):,} velas).")
+
+        return deduped
+
+    @staticmethod
+    def load_candles_from_cache(path: str) -> List[Candle]:
+        if not os.path.exists(path):
+            return []
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return [Candle.from_dict(d) for d in raw]

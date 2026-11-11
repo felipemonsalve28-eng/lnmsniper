@@ -15,6 +15,7 @@ import random
 import shutil
 import hashlib
 import argparse
+import tempfile
 from datetime import datetime
 from typing import Dict, List, Tuple, Any, Optional
 
@@ -102,69 +103,102 @@ class CandidateBrainCertifier:
         num_paths: int = 50,
         bars_per_path: int = 350,
         initial_balance_sats: int = 100000,
+        dataset_cache: Optional[str] = "simulation/data/binance_btc_1m.json",
     ) -> Tuple[bool, Dict[str, Any]]:
         """
-        Compuerta 2: Somete el cerebro candidato a N caminos estocásticos aleatorios
-        en modo explotación pura (epsilon=0.0) para evaluar su expectativa matemática.
+        Compuerta 2: Somete el cerebro candidato a N caminos en modo explotación pura (epsilon=0.0)
+        y SIN APRENDIZAJE (learning_enabled=False), garantizando cero mutaciones en disco y memoria.
+        Evalúa rigurosamente sobre estadísticas por trade (N >= 20, WR >= 48% o PF >= 1.20, MaxDD <= 8%).
         """
         passed_schema, issues = cls.validate_schema(brain_path)
         if not passed_schema:
             return False, {"error": "Fallo de esquema previo", "issues": issues}
 
-        total_trades = 0
-        winning_trades = 0
-        losing_trades = 0
-        gross_profit_sats = 0
-        gross_loss_sats = 0
-        total_fees_sats = 0
-        total_funding_sats = 0
-        net_pnl_total_sats = 0
-        max_seen_dd_pct = 0.0
-        ruined_episodes = 0
+        with open(brain_path, "rb") as f:
+            sha_pre = hashlib.sha256(f.read()).hexdigest()
 
-        # Instanciar el entorno apuntando al cerebro candidato
+        # Aislar en directorio temporal para garantizar 0 escrituras accidentales
+        temp_dir = tempfile.mkdtemp(prefix="mc_eval_")
+        temp_brain = os.path.join(temp_dir, "eval_brain.json")
+        temp_hedge = os.path.join(temp_dir, "eval_hedge.json")
+        shutil.copy2(brain_path, temp_brain)
+
         h_file = hedge_path or "hedge_state_simulated_candidate.json"
-        env = SimTrainingEnvironment(
-            candidate_brain_file=brain_path,
-            candidate_hedge_file=h_file,
-            initial_balance_sats=initial_balance_sats,
-            explorer_mode=False,
-        )
-        # Modo de explotación pura para la prueba de robustez
-        env.brain.epsilon = 0.0
+        if os.path.exists(h_file):
+            shutil.copy2(h_file, temp_hedge)
+        else:
+            with open(temp_hedge, "w", encoding="utf-8") as f:
+                json.dump({"env": "eval", "pairs": {}}, f)
 
-        for path_idx in range(num_paths):
-            candles = generate_synthetic_multi_regime_candles(
-                num_bars=bars_per_path,
-                start_price=random.uniform(62000.0, 75000.0),
+        # Cargar dataset de Binance si está disponible para mezclar caminos reales y sintéticos
+        real_candles = []
+        if dataset_cache and os.path.exists(dataset_cache):
+            try:
+                from simulation.sim_market_feed import SimMarketFeed
+                real_candles = SimMarketFeed.load_candles_from_cache(dataset_cache)
+            except Exception:
+                pass
+
+        try:
+            env = SimTrainingEnvironment(
+                candidate_brain_file=temp_brain,
+                candidate_hedge_file=temp_hedge,
+                initial_balance_sats=initial_balance_sats,
+                explorer_mode=False,
+                learning_enabled=False,
             )
-            res = env.run_episode(candles, initial_balance=initial_balance_sats)
+            env.brain.epsilon = 0.0
 
-            t_cnt = res["total_settled_trades"]
-            total_trades += t_cnt
-            winning_trades += res["winning_trades"]
-            losing_trades += res["losing_trades"]
-            net_profit = res["net_profit_sats"]
-            net_pnl_total_sats += net_profit
-            total_fees_sats += res["total_fees_paid_sats"]
-            total_funding_sats += res["total_funding_paid_sats"]
+            all_closed_trades = []
+            max_seen_dd_pct = 0.0
+            ruined_episodes = 0
+            net_pnl_paths_sum = 0
+            total_fees_paid_sum = 0
 
-            if net_profit > 0:
-                gross_profit_sats += net_profit
-            else:
-                gross_loss_sats += abs(net_profit)
+            for path_idx in range(num_paths):
+                # Si tenemos datos de Binance reales, alternamos entre ventanas reales y caminos sintéticos
+                if real_candles and len(real_candles) >= bars_per_path and (path_idx % 2 == 0):
+                    max_s = len(real_candles) - bars_per_path
+                    s_idx = random.randint(0, max_s)
+                    candles = real_candles[s_idx : s_idx + bars_per_path]
+                else:
+                    candles = generate_synthetic_multi_regime_candles(
+                        num_bars=bars_per_path,
+                        start_price=random.uniform(62000.0, 75000.0),
+                    )
 
-            # Drawdown del camino
-            final_bal = res["final_balance_sats"]
-            if final_bal <= Config.MIN_MARGIN_SATS * 2:
-                ruined_episodes += 1
-            path_dd = max(0.0, (initial_balance_sats - final_bal) / float(initial_balance_sats))
-            if path_dd > max_seen_dd_pct:
-                max_seen_dd_pct = path_dd
+                res = env.run_episode(candles, initial_balance=initial_balance_sats)
+                path_trades = res.get("closed_trades", [])
+                all_closed_trades.extend(path_trades)
+
+                net_pnl_paths_sum += res["net_profit_sats"]
+                total_fees_paid_sum += res["total_fees_paid_sats"]
+
+                path_dd = (res.get("max_drawdown_pct", 0.0)) / 100.0
+                if path_dd > max_seen_dd_pct:
+                    max_seen_dd_pct = path_dd
+
+                if res["final_balance_sats"] <= Config.MIN_MARGIN_SATS * 2:
+                    ruined_episodes += 1
+
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        # Verificar integridad criptográfica absoluta del archivo original
+        with open(brain_path, "rb") as f:
+            sha_post = hashlib.sha256(f.read()).hexdigest()
+        assert sha_pre == sha_post, f"FATAL: Mutación detectada en {brain_path} durante Monte Carlo ({sha_pre} != {sha_post})"
+
+        total_trades = len(all_closed_trades)
+        winning_trades = sum(1 for t in all_closed_trades if t.get("net_pnl_sats", 0) > 0)
+        losing_trades = sum(1 for t in all_closed_trades if t.get("net_pnl_sats", 0) <= 0)
+        gross_profit_sats = sum(t["net_pnl_sats"] for t in all_closed_trades if t.get("net_pnl_sats", 0) > 0)
+        gross_loss_sats = sum(abs(t["net_pnl_sats"]) for t in all_closed_trades if t.get("net_pnl_sats", 0) < 0)
+        net_pnl_total_sats = sum(t.get("net_pnl_sats", 0) for t in all_closed_trades)
 
         win_rate_pct = round((winning_trades / max(1, total_trades)) * 100.0, 2)
         profit_factor = round(gross_profit_sats / max(1.0, float(gross_loss_sats)), 2)
-        fer = round(net_pnl_total_sats / max(1.0, float(total_fees_sats)), 2)
+        fer = round(net_pnl_total_sats / max(1.0, float(total_fees_paid_sum)), 2)
         risk_of_ruin = round(ruined_episodes / max(1, num_paths), 4)
 
         metrics = {
@@ -176,20 +210,26 @@ class CandidateBrainCertifier:
             "gross_profit_sats": gross_profit_sats,
             "gross_loss_sats": gross_loss_sats,
             "net_pnl_total_sats": net_pnl_total_sats,
-            "total_fees_sats": total_fees_sats,
+            "total_fees_sats": total_fees_paid_sum,
             "profit_factor": profit_factor,
             "fee_efficiency_ratio": fer,
             "max_drawdown_pct": round(max_seen_dd_pct * 100.0, 2),
             "risk_of_ruin": risk_of_ruin,
+            "candidate_sha256": sha_post,
+            "mutations_detected": 0,
         }
 
-        # Criterios de aprobación
-        # En caso de pocos trades en serie estocástica, evaluar coherencia económica
-        passed = (
-            risk_of_ruin <= cls.MAX_RISK_OF_RUIN
-            and max_seen_dd_pct <= cls.MAX_ALLOWABLE_DRAWDOWN_PCT
-            and (total_trades == 0 or win_rate_pct >= cls.MIN_WIN_RATE_PCT or profit_factor >= cls.MIN_PROFIT_FACTOR)
-        )
+        MIN_TRADES_REQUIRED = 20 if num_paths >= 25 else 0
+        if total_trades < MIN_TRADES_REQUIRED:
+            metrics["rejection_reason"] = f"EVIDENCIA_INSUFICIENTE: total_trades={total_trades} < {MIN_TRADES_REQUIRED}"
+            passed = False
+        else:
+            stat_ok = (win_rate_pct >= cls.MIN_WIN_RATE_PCT or profit_factor >= cls.MIN_PROFIT_FACTOR) and (net_pnl_total_sats > 0)
+            risk_ok = (risk_of_ruin <= cls.MAX_RISK_OF_RUIN and max_seen_dd_pct <= cls.MAX_ALLOWABLE_DRAWDOWN_PCT)
+            passed = bool(stat_ok and risk_ok)
+            if not passed:
+                metrics["rejection_reason"] = "UMBRAL_NO_ALCANZADO (WR/PF/MaxDD/NetPnL)"
+
         return passed, metrics
 
     @classmethod
@@ -228,6 +268,7 @@ class CandidateBrainCertifier:
         target_env: str = "testnet",
         num_monte_carlo_paths: int = 50,
         bars_per_path: int = 350,
+        dataset_cache: Optional[str] = "simulation/data/binance_btc_1m.json",
         dry_run: bool = False,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
@@ -266,6 +307,7 @@ class CandidateBrainCertifier:
             hedge_path=candidate_hedge_path,
             num_paths=num_monte_carlo_paths,
             bars_per_path=bars_per_path,
+            dataset_cache=dataset_cache,
         )
         if not mc_ok:
             print(f"❌ RECHAZADO: El cerebro no superó los umbrales de Monte Carlo: {mc_metrics}")
@@ -347,6 +389,7 @@ def main():
     parser.add_argument("--target", default="testnet", choices=["testnet", "mainnet"], help="Entorno destino de promoción")
     parser.add_argument("--paths", type=int, default=50, help="Número de caminos Monte Carlo")
     parser.add_argument("--bars-per-path", type=int, default=350, help="Número de velas por camino Monte Carlo")
+    parser.add_argument("--dataset-cache", default="simulation/data/binance_btc_1m.json", help="Ruta de caché del dataset Binance")
     parser.add_argument("--dry-run", action="store_true", help="Evalúa sin escribir en los archivos oficiales")
     args = parser.parse_args()
 
@@ -356,6 +399,7 @@ def main():
         target_env=args.target,
         num_monte_carlo_paths=args.paths,
         bars_per_path=args.bars_per_path,
+        dataset_cache=args.dataset_cache,
         dry_run=args.dry_run,
     )
     if not ok:

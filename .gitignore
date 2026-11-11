@@ -28,3 +28,6 @@ test_hedge_*
 
 # Archivos de recalibración opcionales
 recalibrated.json
+
+# Caché de datasets de simulación
+simulation/data/

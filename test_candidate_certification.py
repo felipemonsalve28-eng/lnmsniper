@@ -100,6 +100,22 @@ class TestCandidateCertification(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("DRY-RUN", msg)
 
+    def test_monte_carlo_zero_mutation_guarantee(self):
+        import hashlib
+        with open(self.valid_brain_file, "rb") as f:
+            sha_before = hashlib.sha256(f.read()).hexdigest()
+
+        ok, metrics = CandidateBrainCertifier.run_monte_carlo_stress_test(
+            brain_path=self.valid_brain_file,
+            num_paths=3,
+            bars_per_path=100,
+        )
+        with open(self.valid_brain_file, "rb") as f:
+            sha_after = hashlib.sha256(f.read()).hexdigest()
+
+        self.assertEqual(sha_before, sha_after, "El estrés Monte Carlo NUNCA debe modificar el archivo evaluado.")
+        self.assertEqual(metrics.get("mutations_detected", 0), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
