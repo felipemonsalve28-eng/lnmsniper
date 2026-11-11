@@ -255,6 +255,7 @@ class AdaptiveHedgeController:
         # Actualizar aprendizaje Q independiente de la transición anterior
         prev_h_key = pair_ctx.get("last_hedge_state_key")
         prev_h_act = int(pair_ctx.get("last_hedge_action", 0))
+        is_exit_transition = ("HEDGE_EXIT" in hedge_state_key) or (state == "HEDGE_EXIT")
         if prev_h_key is not None:
             r_h = cls.compute_hedge_reward(
                 prev_net_pl,
@@ -263,7 +264,9 @@ class AdaptiveHedgeController:
                 fee_paid_sats=0,
                 margin_sats=pair_ctx.get("orig_margin_sats", 1000),
             )
-            hedge_store.update_hedge_q(prev_h_key, prev_h_act, r_h, hedge_state_key)
+            hedge_store.update_hedge_q(
+                prev_h_key, prev_h_act, r_h, hedge_state_key, done=is_exit_transition
+            )
 
         act_id, act_name = cls.select_hedge_action(
             state, hedge_state_key, pair_ctx, pair_econ, edge_info, pred_sig, hedge_store
@@ -302,8 +305,12 @@ class AdaptiveHedgeController:
                 now=now,
             )
 
-        pair_ctx["last_hedge_state_key"] = hedge_state_key
-        pair_ctx["last_hedge_action"] = int(act_id)
+        if is_exit_transition and not pair_econ.get("has_active_hedge", False):
+            pair_ctx["last_hedge_state_key"] = None
+            pair_ctx["last_hedge_action"] = 0
+        else:
+            pair_ctx["last_hedge_state_key"] = hedge_state_key
+            pair_ctx["last_hedge_action"] = int(act_id)
         pair_ctx["last_combined_net_sats"] = curr_net_pl
         hedge_store.dirty = True
 

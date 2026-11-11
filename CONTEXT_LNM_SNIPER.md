@@ -153,6 +153,34 @@
   4. **[validate_walk_forward_oos.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/validate_walk_forward_oos.py):**
      - Certificación Walk-Forward Out-Of-Sample confirmada a lo largo de 6 regímenes y 72 episodios OOS. Hybrid Edge Hedging: Net=+1656 sats, MaxDD=0.53%, PF=1.46.
 
+### Etapa 11: Corrección de Estados Terminales en Bellman (Hedge Engine) y Reseteo Limpio de Cerebros
+- **Estado:** **Etapas 1, 2, 3 y 4 completadas con 100% de éxito**.
+- **Diagnóstico Matemático y Corrección Quirúrgica:**
+  1. **[hedge_state_store.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_store.py):**
+     - Se corrigió la ecuación de Bellman en `update_hedge_q`: anteriormente se extraía incondicionalmente `max_next = max(float(v) for v in q_ns)`, propagando valores futuros residuales de ciclos ya concluidos.
+     - Se añadió el parámetro `done=False` y detección defensiva `is_terminal = bool(done) or ("HEDGE_EXIT" in s) or ("HEDGE_EXIT" in ns)`.
+     - Cuando `is_terminal` es verdadero, se impone matemáticamente: `eff_gamma = 0.0` y `max_next = 0.0`, haciendo que la actualización sea estrictamente $Q(s, a) \leftarrow Q(s, a) + \alpha [R - Q(s, a)]$.
+  2. **[adaptive_controller.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/adaptive_controller.py):**
+     - Se implementó la bandera `is_exit_transition = ("HEDGE_EXIT" in hedge_state_key) or (state == "HEDGE_EXIT")` en `evaluate_and_manage_pair`.
+     - Se pasa explícitamente `done=is_exit_transition` hacia `hedge_store.update_hedge_q`.
+     - Al producirse la salida de cobertura (`is_exit_transition` con posición desarmada), se resetea el contexto del par (`last_hedge_state_key = None` y `last_hedge_action = 0`) para aislar completamente el siguiente ciclo de cobertura.
+  3. **[init_clean_brains.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/init_clean_brains.py):**
+     - Script atómico con verificación SHA-256 y respaldos con timestamp `.pre_clean_<timestamp>.bak`.
+     - Generación de cerebros limpios y calibrados Schema v2:
+       * `q_brain_advanced_lnm.json`: Mainnet limpio con 175 estados canónicos sembrados, $\epsilon = 0.0$, métricas de estilo en cero, y PnL neto en 0.
+       * `q_brain_testnet_lnm.json`: Testnet limpio con 175 estados canónicos, $\epsilon = 0.18$ para exploración activa.
+       * `hedge_state_mainnet.json` y `hedge_state_testnet.json`: Stores de cobertura limpios con métricas y buffers inicializados en cero.
+  4. **[test_terminal_bellman_fix.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_terminal_bellman_fix.py):**
+     - Suite unitaria dedicada que valida:
+       * `done=True` fuerza `max_next = 0.0`.
+       * Detección automática por substring `"HEDGE_EXIT"`.
+       * Propagación normal de $\gamma \max_{a'} Q(s', a')$ en transiciones no terminales.
+       * Integración con `AdaptiveHedgeController`.
+     - **Resultado:** **4 de 4 pruebas pasadas al 100%**.
+  5. **Regresión Completa:**
+     - `test_learning_quality_and_sats.py`: **8 de 8 bloques superados al 100%**.
+     - `test_protocolo_v_reversal.py`: **23 de 23 escenarios superados al 100%**.
+
 ---
 
 ## 3. ARQUITECTURA DE ARCHIVOS CLAVE

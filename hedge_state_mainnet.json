@@ -1,0 +1,20 @@
+{
+  "env": "mainnet",
+  "hedge_memory": [],
+  "hedge_metrics": {
+    "avoided_stopouts": 0,
+    "net_sats_saved_vs_sl": 0,
+    "premature_hedges": 0,
+    "regime_stats": {},
+    "successful_neutralizations": 0,
+    "successful_unwinds": 0,
+    "total_cashed_in_sats": 0,
+    "total_hedge_fees_sats": 0,
+    "total_hedges_opened": 0
+  },
+  "hedge_q_table": {},
+  "hedge_visits": {},
+  "pairs": {},
+  "updated_at": 1794413779.256,
+  "version": "1.0-v3"
+}

@@ -270,7 +270,7 @@ class HedgeStateStore:
             self.hedge_visits[k] = 0
         return self.hedge_q_table[k]
 
-    def update_hedge_q(self, state_key, action_idx, reward, next_state_key, alpha=0.20, gamma=0.88):
+    def update_hedge_q(self, state_key, action_idx, reward, next_state_key, alpha=0.20, gamma=0.88, done=False):
         if not state_key or not next_state_key:
             return 0.0
         s = str(state_key)
@@ -283,8 +283,10 @@ class HedgeStateStore:
         self.hedge_visits[s] = int(self.hedge_visits.get(s, 0)) + 1
 
         cur_q = float(q_s[a])
-        max_next = max(float(v) for v in q_ns)
-        new_q = max(-0.95, min(0.95, cur_q + float(alpha) * (r + float(gamma) * max_next - cur_q)))
+        is_terminal = bool(done) or ("HEDGE_EXIT" in s) or ("HEDGE_EXIT" in ns)
+        eff_gamma = 0.0 if is_terminal else float(gamma)
+        max_next = 0.0 if is_terminal else max(float(v) for v in q_ns)
+        new_q = max(-0.95, min(0.95, cur_q + float(alpha) * (r + eff_gamma * max_next - cur_q)))
         delta_q = abs(new_q - cur_q)
         self.hedge_q_table[s][a] = round(new_q, 4)
 
