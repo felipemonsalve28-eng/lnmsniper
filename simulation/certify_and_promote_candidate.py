@@ -99,7 +99,7 @@ class CandidateBrainCertifier:
         brain_path: str,
         hedge_path: Optional[str] = None,
         num_paths: int = 50,
-        bars_per_path: int = 250,
+        bars_per_path: int = 350,
         initial_balance_sats: int = 100000,
     ) -> Tuple[bool, Dict[str, Any]]:
         """
@@ -133,7 +133,10 @@ class CandidateBrainCertifier:
         env.brain.epsilon = 0.0
 
         for path_idx in range(num_paths):
-            candles = generate_synthetic_multi_regime_candles(num_bars=bars_per_path)
+            candles = generate_synthetic_multi_regime_candles(
+                num_bars=bars_per_path,
+                start_price=random.uniform(62000.0, 75000.0),
+            )
             res = env.run_episode(candles, initial_balance=initial_balance_sats)
 
             t_cnt = res["total_settled_trades"]
@@ -223,6 +226,7 @@ class CandidateBrainCertifier:
         candidate_hedge_path: Optional[str] = "hedge_state_simulated_candidate.json",
         target_env: str = "testnet",
         num_monte_carlo_paths: int = 50,
+        bars_per_path: int = 350,
         dry_run: bool = False,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
@@ -255,9 +259,12 @@ class CandidateBrainCertifier:
         print(f"✅ [COMPUERTA 2/3] Compatibilidad cuantitativa superada ({details['states_loaded']} estados).")
 
         # 3. Compuerta Monte Carlo
-        print(f"🔍 [COMPUERTA 3/3] Ejecutando Prueba de Estrés Estocástico Monte Carlo ({num_monte_carlo_paths} caminos)...")
+        print(f"🔍 [COMPUERTA 3/3] Ejecutando Prueba de Estrés Estocástico Monte Carlo ({num_monte_carlo_paths} caminos, {bars_per_path} velas/camino)...")
         mc_ok, mc_metrics = cls.run_monte_carlo_stress_test(
-            candidate_brain_path, hedge_path=candidate_hedge_path, num_paths=num_monte_carlo_paths
+            candidate_brain_path,
+            hedge_path=candidate_hedge_path,
+            num_paths=num_monte_carlo_paths,
+            bars_per_path=bars_per_path,
         )
         if not mc_ok:
             print(f"❌ RECHAZADO: El cerebro no superó los umbrales de Monte Carlo: {mc_metrics}")
@@ -338,6 +345,7 @@ def main():
     parser.add_argument("--candidate-hedge", default="hedge_state_simulated_candidate.json", help="Ruta al hedge store candidato")
     parser.add_argument("--target", default="testnet", choices=["testnet", "mainnet"], help="Entorno destino de promoción")
     parser.add_argument("--paths", type=int, default=50, help="Número de caminos Monte Carlo")
+    parser.add_argument("--bars-per-path", type=int, default=350, help="Número de velas por camino Monte Carlo")
     parser.add_argument("--dry-run", action="store_true", help="Evalúa sin escribir en los archivos oficiales")
     args = parser.parse_args()
 
@@ -346,6 +354,7 @@ def main():
         candidate_hedge_path=args.candidate_hedge,
         target_env=args.target,
         num_monte_carlo_paths=args.paths,
+        bars_per_path=args.bars_per_path,
         dry_run=args.dry_run,
     )
     if not ok:

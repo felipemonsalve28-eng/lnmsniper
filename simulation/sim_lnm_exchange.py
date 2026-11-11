@@ -13,6 +13,7 @@ Implementa con rigor matemático:
 """
 from typing import Dict, List, Optional, Tuple, Any
 import math
+import time
 
 
 class SimLNMExchange:
@@ -35,6 +36,7 @@ class SimLNMExchange:
 
         self.running_trades: Dict[str, dict] = {}
         self.closed_trades: List[dict] = []
+        self.run_id: str = f"{int(time.time() * 1000) % 10000000:07d}"
         self.trade_counter: int = 1000
 
         self.total_fees_paid_sats: int = 0
@@ -123,7 +125,7 @@ class SimLNMExchange:
             liq_price = entry_price * (1.0 + (0.99 / lev))
 
         self.trade_counter += 1
-        trade_id = f"sim-trade-{self.trade_counter}"
+        trade_id = f"sim-{self.run_id}-{self.trade_counter}"
 
         trade = {
             "id": trade_id,

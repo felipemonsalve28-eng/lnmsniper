@@ -19,8 +19,9 @@ from simulation.sim_training_environment import SimTrainingEnvironment
 
 def generate_synthetic_multi_regime_candles(num_bars: int = 1500, start_price: float = 70000.0) -> list:
     """
-    Genera una serie de velas sintéticas de 1m atravesando dinámicamente los 6 regímenes:
-    rango lateral, compresión, tendencia alcista, tendencia bajista y expansiones de volatilidad.
+    Genera una serie de velas sintéticas de 1m continuas (Open_t = Close_{t-1})
+    atravesando dinámicamente los 6 regímenes canónicos: rango lateral, compresión,
+    tendencia alcista, tendencia bajista y expansiones de volatilidad.
     """
     candles = []
     base_ts = 1700000000.0
@@ -29,7 +30,7 @@ def generate_synthetic_multi_regime_candles(num_bars: int = 1500, start_price: f
 
     regime_idx = 0
     bars_in_regime = 0
-    regime_duration = max(100, num_bars // len(regimes))
+    regime_duration = max(35, num_bars // len(regimes))
 
     for i in range(num_bars):
         reg = regimes[regime_idx]
@@ -58,17 +59,22 @@ def generate_synthetic_multi_regime_candles(num_bars: int = 1500, start_price: f
             drift = random.choice([-1.0, 1.0]) * random.uniform(15.0, 45.0)
             vol = random.uniform(30.0, 70.0)
 
-        cur_price = max(20000.0, cur_price + drift + random.gauss(0.0, vol))
-        high = cur_price + abs(random.gauss(0.0, vol * 0.75))
-        low = cur_price - abs(random.gauss(0.0, vol * 0.75))
-        open_p = cur_price - (drift * 0.5)
-        close_p = cur_price
+        # Proceso difusivo continuo: Open_t = Close_{t-1}
+        open_p = cur_price
+        delta = drift + random.gauss(0.0, vol)
+        close_p = max(20000.0, open_p + delta)
+        cur_price = close_p
+
+        wick_up = abs(random.gauss(0.0, max(vol * 0.6, 2.0)))
+        wick_down = abs(random.gauss(0.0, max(vol * 0.6, 2.0)))
+        high_p = max(open_p, close_p) + wick_up
+        low_p = max(1000.0, min(open_p, close_p) - wick_down)
 
         c = Candle(
             timestamp=base_ts + (i * 60.0),
             open=round(open_p, 2),
-            high=round(max(open_p, high, close_p), 2),
-            low=round(min(open_p, low, close_p), 2),
+            high=round(high_p, 2),
+            low=round(low_p, 2),
             close=round(close_p, 2),
             volume=round(random.uniform(0.5, 8.0), 3),
         )
@@ -83,6 +89,7 @@ def main():
     parser.add_argument("--episodes", type=int, default=3, help="Número de episodios de entrenamiento")
     parser.add_argument("--initial-balance", type=int, default=100000, help="Balance inicial en satoshis")
     parser.add_argument("--fetch-binance", action="store_true", help="Descarga velas reales de Binance API pública")
+    parser.add_argument("--reset", action="store_true", help="Reinicia el cerebro candidato desde estados canónicos neutros")
     parser.add_argument("--alpha", type=float, default=0.18, help="Tasa de aprendizaje alpha")
     parser.add_argument("--epsilon", type=float, default=0.25, help="Tasa inicial de exploración epsilon")
     parser.add_argument("--decay", type=float, default=0.88, help="Factor de decaimiento de epsilon por episodio")
@@ -93,15 +100,22 @@ def main():
     print(f"Episodios: {args.episodes} | Velas/Episodio: {args.bars} | Balance Inicial: {args.initial_balance:,} sats")
     print("=" * 80)
 
-    # 1. Preparar o generar datos de mercado
+    # 0. Si se solicita reinicio limpio, eliminar archivos temporales candidatos previos
+    if args.reset:
+        for f in ("q_brain_simulated_candidate.json", "hedge_state_simulated_candidate.json"):
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                    print(f"🧹 Reinicio limpio: '{f}' eliminado para re-inicialización canónica.")
+                except Exception as e:
+                    print(f"⚠️ No se pudo eliminar '{f}': {e}")
+
+    # 1. Preparar o descargar datos base si se requiere Binance
+    binance_candles = None
     if args.fetch_binance:
         print("🌐 Descargando velas históricas reales desde Binance API pública...")
-        candles = SimMarketFeed.fetch_binance_klines(symbol="BTCUSDT", interval="1m", limit=min(1000, args.bars))
-        print(f"✅ {len(candles)} velas descargadas exitosamente.")
-    else:
-        print("🎲 Generando serie sintética estocástica multirégimen...")
-        candles = generate_synthetic_multi_regime_candles(num_bars=args.bars)
-        print(f"✅ {len(candles)} velas generadas (cubriendo los 6 regímenes canónicos).")
+        binance_candles = SimMarketFeed.fetch_binance_klines(symbol="BTCUSDT", interval="1m", limit=min(1000, args.bars))
+        print(f"✅ {len(binance_candles)} velas descargadas exitosamente.")
 
     # 2. Inicializar el entorno de simulación
     env = SimTrainingEnvironment(
@@ -116,7 +130,14 @@ def main():
     # 3. Bucle de entrenamiento por episodios
     for ep in range(1, args.episodes + 1):
         print(f"\n--- [EPISODIO {ep}/{args.episodes}] (Epsilon={env.brain.epsilon:.3f}) ---")
-        summary = env.run_episode(candles, initial_balance=args.initial_balance)
+        if binance_candles is not None:
+            ep_candles = binance_candles
+        else:
+            ep_candles = generate_synthetic_multi_regime_candles(
+                num_bars=args.bars,
+                start_price=random.uniform(62000.0, 75000.0),
+            )
+        summary = env.run_episode(ep_candles, initial_balance=args.initial_balance)
 
         print(
             f"  Trades: {summary['total_settled_trades']} | "
