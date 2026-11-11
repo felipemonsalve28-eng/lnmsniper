@@ -248,6 +248,17 @@
      - `test_learning_quality_and_sats.py`: **8 de 8 bloques pasados**.
      - `test_protocolo_v_reversal.py`: **23 de 23 escenarios pasados al 100%**.
 
+### Etapa 15: Diagnóstico Cuantitativo y Refinamiento del Bucle Curricular
+- **Estado:** **Etapas 1, 2, 3 y 4 completadas con 100% de éxito**.
+- **Diagnóstico del Registro de Terminal del Usuario:**
+  1. *Entrenamiento Sintético (5 episodios x 3,000 velas):* Generó resultados sobresalientes (+1.07M a +1.47M sats por episodio, WinRate 56.1% - 60.8%).
+  2. *Entrenamiento Binance (3 episodios x 1,000 velas):* La serie descargada representó un mercado bajista persistente y unidireccional de 16 horas. La política, condicionada hacia largos, sufrió pérdidas consecutivas (-42k a -45k sats), degradando los pesos Q del archivo candidato `q_brain_simulated_candidate.json`.
+  3. *Certificación Monte Carlo:* La Compuerta 2 detectó con precisión matemática la degradación del candidato (2 operaciones ejecutadas, ambas en pérdida, WinRate 0.0%, DD 5.59%), **bloqueando la promoción a Testnet y preservando intactos los cerebros de producción**. La arquitectura de seguridad P0 funcionó al 100% de las especificaciones.
+- **Refinamientos Quirúrgicos Implementados:**
+  1. [`simulation/sim_lnm_exchange.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/sim_lnm_exchange.py): Identificadores de operación con prefijo único de ejecución (`sim-{run_id}-{counter}`), eliminando colisiones en la cola de idempotencia entre corridas.
+  2. [`simulation/train_candidate_brain.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/train_candidate_brain.py): Proceso estocástico continuo ($Open_t = Close_{t-1}$), argumento `--reset` para reinicio limpio canónico y generación estocástica variada por episodio para evitar sobreajuste de trayectoria fija.
+  3. [`simulation/certify_and_promote_candidate.py`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/certify_and_promote_candidate.py): Extensión de caminos Monte Carlo a 350 velas (`bars_per_path=350`) garantizando que los 6 regímenes canónicos se exploren tras el periodo de calentamiento (`warmup=150`).
+
 ---
 
 ## 3. ARQUITECTURA DE ARCHIVOS CLAVE
