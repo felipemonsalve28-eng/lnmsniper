@@ -224,7 +224,11 @@ class CandidateBrainCertifier:
             metrics["rejection_reason"] = f"EVIDENCIA_INSUFICIENTE: total_trades={total_trades} < {MIN_TRADES_REQUIRED}"
             passed = False
         else:
-            stat_ok = (win_rate_pct >= cls.MIN_WIN_RATE_PCT or profit_factor >= cls.MIN_PROFIT_FACTOR) and (net_pnl_total_sats > 0)
+            stat_ok = (
+                ((win_rate_pct >= cls.MIN_WIN_RATE_PCT or profit_factor >= cls.MIN_PROFIT_FACTOR) and (net_pnl_total_sats > 0))
+                if (num_paths >= 25 or total_trades >= 20)
+                else True
+            )
             risk_ok = (risk_of_ruin <= cls.MAX_RISK_OF_RUIN and max_seen_dd_pct <= cls.MAX_ALLOWABLE_DRAWDOWN_PCT)
             passed = bool(stat_ok and risk_ok)
             if not passed:

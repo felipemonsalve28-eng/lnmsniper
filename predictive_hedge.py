@@ -87,14 +87,16 @@ class PredictiveHedgeEngine:
         remaining_loss_to_sl = max(20, sl_full_loss - max(0, -int(edge_assessment.get("pl_sats", 0))))
         expected_unhedged_loss_sats = int(round(adverse_continuation_prob * remaining_loss_to_sl + hold_cost))
 
-        hedge_notional_sats = float(notional_sats) * max(0.35, optimal_h if optimal_h > 0 else 0.50)
+        eval_h = optimal_h if optimal_h > 0 else 0.50
+        hedge_notional_sats = float(notional_sats) * max(0.35, eval_h)
         hedge_fees_sats = max(2, int(round(hedge_notional_sats * cls.ROUND_TRIP_TAKER_FEE)))
         hedge_slippage_sats = max(1, int(round(hedge_notional_sats * (0.00025 if market_regime == "EXTREME_VOLATILITY" else 0.00010))))
         whipsaw_drag_sats = int(round(whipsaw_risk_prob * hedge_notional_sats * 0.0022))
 
-        saved_move_sats = int(round(adverse_continuation_prob * (optimal_h if optimal_h > 0 else 0.50) * remaining_loss_to_sl))
-        expected_hedge_net_cost_sats = (hedge_fees_sats + hedge_slippage_sats + whipsaw_drag_sats) - saved_move_sats
-        net_expected_saving_sats = expected_unhedged_loss_sats - max(0, hedge_fees_sats + hedge_slippage_sats + whipsaw_drag_sats - saved_move_sats // 2)
+        total_hedge_friction_sats = hedge_fees_sats + hedge_slippage_sats + whipsaw_drag_sats
+        saved_move_sats = int(round(adverse_continuation_prob * eval_h * remaining_loss_to_sl))
+        expected_hedge_net_cost_sats = total_hedge_friction_sats - saved_move_sats
+        net_expected_saving_sats = saved_move_sats - total_hedge_friction_sats
 
         # Criterio: ¿Es mejor cerrar la original directamente en lugar de abrir cobertura?
         direct_close_preferred = (
@@ -104,12 +106,13 @@ class PredictiveHedgeEngine:
             and close_now_loss < (hedge_fees_sats * 2 + int(0.35 * remaining_loss_to_sl))
         )
 
-        # Solo recomendar cobertura si el ahorro esperado supera el coste de cubrir + margen de seguridad
+        # Solo recomendar cobertura si el ahorro esperado supera la fricción total (C_hedge,net < 0) + margen de seguridad
         min_fee_efficiency = saved_move_sats >= int(round((hedge_fees_sats + hedge_slippage_sats) * 1.45))
         recommend_hedge = (
             optimal_h >= 0.35
             and min_fee_efficiency
-            and expected_hedge_net_cost_sats < expected_unhedged_loss_sats
+            and expected_hedge_net_cost_sats < 0
+            and net_expected_saving_sats > 0
             and whipsaw_risk_prob <= 0.62
             and not direct_close_preferred
         )

@@ -105,8 +105,11 @@ class AdaptiveHedgeController:
                 else:
                     pair_ctx["warning_streak"] = 0
             elif cur_state == "WARNING":
-                if edge_score >= 0.04 and pnl_atr > -0.25:
+                hist = pair_ctx.get("edge_history", [])
+                rebounding_step = len(hist) >= 2 and (pnl_atr - float(hist[-2][2])) >= 0.10
+                if (edge_score >= 0.04 and pnl_atr > -0.25) or rebounding_step:
                     pair_ctx["recovery_streak"] = int(pair_ctx.get("recovery_streak", 0)) + 1
+                    pair_ctx["candidate_streak"] = 0
                     if pair_ctx["recovery_streak"] >= 2:
                         new_state = "NORMAL"
                         pair_ctx["warning_streak"] = 0
@@ -167,40 +170,53 @@ class AdaptiveHedgeController:
         # 1. Estados tranquilos sin cobertura
         if state in ("NORMAL", "WARNING") and not has_hedge:
             if orig_pl >= 60 and float(edge_info.get("edge_delta", 0.0)) < -0.12:
-                return 5, "REDUCE_ORIGINAL_POSITION"
-            return 0, "NO_HEDGE"
+                valid_ids = [0, 5]
+                heuristic_pref = 5
+            else:
+                return 0, "NO_HEDGE"
 
         # 2. Candidato confirmado a cobertura
-        if state == "HEDGE_CANDIDATE" and not has_hedge:
+        elif state == "HEDGE_CANDIDATE" and not has_hedge:
             if pred_sig.get("direct_close_preferred", False):
                 return 6, "CLOSE_ORIGINAL_POSITION"
             if pred_sig.get("recommend_hedge", False):
-                if rec_act_name == "INCREASE_HEDGE":
-                    return 2, "INCREASE_HEDGE"
-                return 1, "PARTIAL_HEDGE"
-            return 0, "NO_HEDGE"
+                valid_ids = [0, 1, 2]
+                heuristic_pref = 2 if rec_act_name == "INCREASE_HEDGE" else 1
+            else:
+                return 0, "NO_HEDGE"
 
         # 3. Cobertura activa / ajuste
-        if state in ("HEDGE_ACTIVE", "HEDGE_ADJUST") and has_hedge:
+        elif state in ("HEDGE_ACTIVE", "HEDGE_ADJUST") and has_hedge:
             if pred_sig.get("direct_close_preferred", False) and float(edge_info.get("pnl_atr", 0.0)) <= -0.95:
                 return 6, "CLOSE_ORIGINAL_POSITION"
             if float(pred_sig.get("adverse_continuation_prob", 0.0)) >= 0.72 and (eff_ratio < 0.72 or hedge_pl > 30):
-                return 2, "INCREASE_HEDGE"
-            if hedge_pl >= 50 and float(edge_info.get("edge_delta", 0.0)) > 0.05:
-                return 3, "REDUCE_HEDGE"
-            return 0, "NO_HEDGE"
+                valid_ids = [0, 2]
+                heuristic_pref = 2
+            elif hedge_pl >= 50 and float(edge_info.get("edge_delta", 0.0)) > 0.05:
+                valid_ids = [0, 3]
+                heuristic_pref = 3
+            else:
+                valid_ids = [0, 2]
+                heuristic_pref = 0
 
         # 4. Recuperación / Salida de cobertura
-        if state in ("RECOVERY", "HEDGE_EXIT") and has_hedge:
+        elif state in ("RECOVERY", "HEDGE_EXIT") and has_hedge:
+            valid_ids = [3, 4]
             if comb_net > 25 or hedge_pl >= 15 or float(edge_info.get("edge_score", 0.0)) >= 0.12:
-                return 4, "CLOSE_HEDGE"
-            if hedge_pl >= 40:
-                return 3, "REDUCE_HEDGE"
-            return 4, "CLOSE_HEDGE"
+                heuristic_pref = 4
+            elif hedge_pl >= 40:
+                heuristic_pref = 3
+            else:
+                heuristic_pref = 4
+        else:
+            valid_ids = [0, 5, 6] if not has_hedge else [0, 2, 3, 4, 6]
+            heuristic_pref = 0
 
-        # Selección asistida por Q-table independiente entre acciones válidas
-        valid_ids = [0, 5, 6] if not has_hedge else [0, 2, 3, 4, 6]
-        best_id = max(valid_ids, key=lambda idx: float(q_vals[idx]))
+        # Selección asistida por Q-table independiente entre acciones válidas con desempate heurístico
+        best_id = max(
+            valid_ids,
+            key=lambda idx: float(q_vals[idx]) + (0.05 if idx == heuristic_pref else 0.0),
+        )
         return int(best_id), HEDGE_ACTIONS[int(best_id)]
 
     @classmethod
@@ -257,11 +273,22 @@ class AdaptiveHedgeController:
         prev_h_act = int(pair_ctx.get("last_hedge_action", 0))
         is_exit_transition = ("HEDGE_EXIT" in hedge_state_key) or (state == "HEDGE_EXIT")
         if prev_h_key is not None:
+            last_fee_paid = int(pair_ctx.get("last_action_fee_sats", 0))
+            avoided_sl = (
+                max(0, int(pred_sig.get("expected_saved_sats", 0)))
+                if pair_econ.get("has_active_hedge", False)
+                and (
+                    int(pair_econ.get("hedge_pl_sats", 0)) > 0
+                    or (prev_h_act in (1, 2) and bool(pred_sig.get("recommend_hedge", False)))
+                )
+                else 0
+            )
             r_h = cls.compute_hedge_reward(
                 prev_net_pl,
                 curr_net_pl,
                 prev_h_act,
-                fee_paid_sats=0,
+                fee_paid_sats=last_fee_paid,
+                avoided_sl_sats=avoided_sl,
                 margin_sats=pair_ctx.get("orig_margin_sats", 1000),
             )
             hedge_store.update_hedge_q(
@@ -290,6 +317,7 @@ class AdaptiveHedgeController:
         if not auth_ok:
             act_id, act_name = 0, "NO_HEDGE"
             exec_res = {"executed": False, "action": "NO_HEDGE", "reason": auth_reason}
+            pair_ctx["last_action_fee_sats"] = 0
         else:
             exec_res = DynamicHedgeExecutor.execute_hedge_action(
                 client=client,
@@ -304,6 +332,18 @@ class AdaptiveHedgeController:
                 safe_mode=safe_mode,
                 now=now,
             )
+            if exec_res.get("executed"):
+                reason_str = str(exec_res.get("reason", ""))
+                if act_name in ("PARTIAL_HEDGE", "INCREASE_HEDGE") and "OPENED_" in reason_str:
+                    est_rf = int(approved_params.get("est_round_fee_sats", 0))
+                    pair_ctx["last_action_fee_sats"] = max(1, est_rf // 2)
+                    curr_net_pl -= est_rf
+                elif act_name in ("CLOSE_HEDGE", "CLOSE_ORIGINAL_POSITION") or "CLOSED_" in reason_str:
+                    pair_ctx["last_action_fee_sats"] = max(1, int(pair_econ.get("combined_exit_fees_sats", 2)) // 4)
+                else:
+                    pair_ctx["last_action_fee_sats"] = 0
+            else:
+                pair_ctx["last_action_fee_sats"] = 0
 
         if is_exit_transition and not pair_econ.get("has_active_hedge", False):
             pair_ctx["last_hedge_state_key"] = None

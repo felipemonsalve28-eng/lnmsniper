@@ -14,6 +14,7 @@ import shutil
 import random
 import hashlib
 import threading
+from datetime import datetime
 from collections import deque
 import requests
 from requests.adapters import HTTPAdapter
@@ -171,7 +172,7 @@ class AtomicBrainStore:
                         pass
         return digest
 
-    def verify_file(self, path, strict_sha=False):
+    def verify_file(self, path, strict_sha=True):
         if not os.path.exists(path):
             return False, None
         try:
@@ -190,11 +191,6 @@ class AtomicBrainStore:
                 if expected_sha and actual_sha != expected_sha:
                     if strict_sha:
                         return False, None
-                    try:
-                        with open(self.sha_file, "w", encoding="utf-8") as wsf:
-                            wsf.write(actual_sha)
-                    except Exception:
-                        pass
                     return True, data
             return True, data
         except Exception:
@@ -202,14 +198,15 @@ class AtomicBrainStore:
 
     def load(self):
         with FileLockContext(self.filename, exclusive=False, timeout=4.0):
-            ok, data = self.verify_file(self.filename)
+            ok, data = self.verify_file(self.filename, strict_sha=True)
             if ok and data is not None:
                 return data
-            ok_bak, data_bak = self.verify_file(self.bak_file)
+            ok_bak, data_bak = self.verify_file(self.bak_file, strict_sha=False)
             if ok_bak and data_bak is not None:
                 try:
                     shutil.copy2(self.bak_file, self.filename)
-                    raw_bak = json.dumps(data_bak, indent=2, sort_keys=True, ensure_ascii=False).encode("utf-8")
+                    with open(self.filename, "rb") as rf:
+                        raw_bak = rf.read()
                     with open(self.sha_file, "w", encoding="utf-8") as wsf:
                         wsf.write(self._compute_bytes_sha256(raw_bak))
                 except Exception:
@@ -326,7 +323,29 @@ class InFlightOrderGuard:
                 t_side = str(t.get("side", "")).lower()
                 t_margin = int(t.get("margin") or 0)
                 t_lev = int(round(float(t.get("leverage") or 0)))
-                created_ts = float(t.get("created_at_ts") or 0.0)
+                raw_ts = (
+                    t.get("created_at_ts")
+                    or t.get("creation_ts")
+                    or t.get("open_ts")
+                    or t.get("created_at")
+                    or 0.0
+                )
+                created_ts = 0.0
+                if isinstance(raw_ts, str):
+                    try:
+                        created_ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).timestamp()
+                    except Exception:
+                        try:
+                            created_ts = float(raw_ts)
+                        except Exception:
+                            created_ts = 0.0
+                else:
+                    try:
+                        created_ts = float(raw_ts)
+                    except Exception:
+                        created_ts = 0.0
+                if created_ts > 1e11:
+                    created_ts /= 1000.0
                 if (
                     t_side == norm_side
                     and abs(t_margin - int(margin_sats)) <= 25
@@ -360,18 +379,26 @@ class InFlightOrderGuard:
 
 
 class HardFloorGuardian:
-    def __init__(self, initial_floor_ratio=0.75, milestone_floor_ratio=0.88, max_dd_pct=0.16, max_daily_loss_pct=0.11):
+    def __init__(
+        self,
+        initial_floor_ratio=0.75,
+        milestone_floor_ratio=0.88,
+        max_dd_pct=0.16,
+        max_daily_loss_pct=0.11,
+        kill_switch_dd_pct=0.22,
+    ):
         self.initial_floor_ratio = float(initial_floor_ratio)
         self.milestone_floor_ratio = float(milestone_floor_ratio)
         self.max_dd_pct = float(max_dd_pct)
         self.max_daily_loss_pct = float(max_daily_loss_pct)
+        self.kill_switch_dd_pct = float(kill_switch_dd_pct)
 
     def evaluate_protection(self, equity, available_balance, peak_equity, locked_floor, daily_pnl_pct):
         current_dd_pct = (peak_equity - equity) / max(peak_equity, 1) if peak_equity > 0 else 0.0
         floor_breached = locked_floor > 0 and equity <= locked_floor
         dd_breached = current_dd_pct >= self.max_dd_pct
         daily_breached = daily_pnl_pct <= -abs(self.max_daily_loss_pct)
-        should_liquidate = floor_breached or (current_dd_pct >= 0.22)
+        should_liquidate = floor_breached or (current_dd_pct >= self.kill_switch_dd_pct)
         should_halt_entries = should_liquidate or dd_breached or daily_breached
         reason = "OK"
         if floor_breached:

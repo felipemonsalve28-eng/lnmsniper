@@ -224,6 +224,18 @@ def sync_dual_brains(
     if os.path.exists(mainnet_path):
         shutil.copy2(mainnet_path, ts_bak)
 
+    # Re-verificar estado vivo de Mainnet justo antes de persistir para eliminar condición de carrera TOCTOU
+    latest_main = main_store.load()
+    if isinstance(latest_main, dict) and "q_table" in latest_main:
+        latest_active = latest_main.get("active_trades", {})
+        if isinstance(latest_active, dict) and len(latest_active) > 0:
+            print(
+                f"⏸️ [NUTRICIÓN ABORTADA TOCTOU] Mainnet abrió {len(latest_active)} operación(es) durante el cálculo. "
+                f"Se cancela la escritura para proteger active_trades."
+            )
+            return False
+        main_data = latest_main
+
     main_data["q_table"] = q_main
     main_data["state_visits"] = v_main
     digest = main_store.save(main_data)

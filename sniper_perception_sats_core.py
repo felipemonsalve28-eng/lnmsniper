@@ -149,6 +149,7 @@ class ShortTermPerceptionEngine:
         self.override_side = None
         self.override_since = 0.0
         self.override_until = 0.0
+        self.override_initial_strength = 0.0
         self.override_strength = 0.0
         self.override_reason = "OFF"
         self.last_flip_time = 0.0
@@ -274,7 +275,8 @@ class ShortTermPerceptionEngine:
                     self.last_flip_time = now
             if self.override_side == "BULL":
                 self.override_until = now + 480.0
-                self.override_strength = min(2.5, max(1.0, abs(vel_ema)))
+                self.override_initial_strength = min(2.5, max(1.0, abs(vel_ema)))
+                self.override_strength = self.override_initial_strength
                 self.override_reason = f"V_BULL(v={vel_ema:+.2f}ATR|rsi5={rsi_5m:.0f}|brk={int(px['breakout_bull'])})"
         elif v_bear_trigger and not v_bull_trigger:
             if self.override_side != "BEAR":
@@ -284,24 +286,29 @@ class ShortTermPerceptionEngine:
                     self.last_flip_time = now
             if self.override_side == "BEAR":
                 self.override_until = now + 480.0
-                self.override_strength = min(2.5, max(1.0, abs(vel_ema)))
+                self.override_initial_strength = min(2.5, max(1.0, abs(vel_ema)))
+                self.override_strength = self.override_initial_strength
                 self.override_reason = f"V_BEAR(v={vel_ema:+.2f}ATR|rsi5={rsi_5m:.0f}|brk={int(px['breakout_bear'])})"
         else:
             if self.override_side is not None:
                 elapsed = max(0.0, now - self.override_since)
                 decay_factor = max(0.0, 1.0 - (elapsed / 480.0))
-                self.override_strength = round(self.override_strength * decay_factor, 3)
+                base_strength = self.override_initial_strength if self.override_initial_strength > 0.0 else self.override_strength
+                self.override_strength = round(base_strength * decay_factor, 3)
 
                 if now >= self.override_until or self.override_strength < 0.35:
                     self.override_side = None
+                    self.override_initial_strength = 0.0
                     self.override_strength = 0.0
                     self.override_reason = "OFF_DECAY"
                 elif self.override_side == "BULL" and (vel_ema < 0.15 or comp_v < 0.05 or rsi_5m < 49.0):
                     self.override_side = None
+                    self.override_initial_strength = 0.0
                     self.override_strength = 0.0
                     self.override_reason = "OFF_MOMENTUM_LOST"
                 elif self.override_side == "BEAR" and (vel_ema > -0.15 or comp_v > -0.05 or rsi_5m > 51.0):
                     self.override_side = None
+                    self.override_initial_strength = 0.0
                     self.override_strength = 0.0
                     self.override_reason = "OFF_MOMENTUM_LOST"
 
@@ -569,6 +576,15 @@ class SatsExpectancyGate:
             alpha_0 = tm.get_float("expectancy", "bayesian_prior_alpha", 7.0)
             beta_0 = tm.get_float("expectancy", "bayesian_prior_beta", 15.0)
 
+        norm_regime = str(regime or "").upper()
+        norm_style = str(style or "").upper()
+        z_lcb = 1.25
+        if norm_regime in ("EXTREME_VOLATILITY", "CHOP_HIGHVOL"):
+            beta_0 += 3.0
+            z_lcb = 1.45
+        elif norm_regime == "RANGE_SQUEEZE" and norm_style == "TREND":
+            beta_0 += 2.5
+
         alpha_post = alpha_0
         beta_post = beta_0
 
@@ -584,7 +600,7 @@ class SatsExpectancyGate:
         p_hat = alpha_post / max(1.0, n_eff)
         var_p = (p_hat * (1.0 - p_hat)) / max(1.0, n_eff + 1.0)
         sigma_p = math.sqrt(max(0.0, var_p))
-        p_lcb = max(0.05, min(0.95, p_hat - 1.25 * sigma_p))
+        p_lcb = max(0.05, min(0.95, p_hat - z_lcb * sigma_p))
 
         return round(p_hat, 4), round(p_lcb, 4), {
             "alpha_post": round(alpha_post, 2),
@@ -625,8 +641,10 @@ class SatsExpectancyGate:
         slippage_sats = max(0, int(round(notional_sats * (float(slippage_bps) / 10000.0))))
         total_cost_sats = fee_sats + funding_sats + spread_sats + slippage_sats
 
-        tp_dist_pct = abs(float(tp_price) - price) / price
-        sl_dist_pct = abs(price - float(sl_price)) / price
+        tp_price_f = max(1.0, float(tp_price))
+        sl_price_f = max(1.0, float(sl_price))
+        tp_dist_pct = abs(tp_price_f - price) / tp_price_f
+        sl_dist_pct = abs(price - sl_price_f) / sl_price_f
 
         expected_gross_tp_sats = int(round(notional_sats * tp_dist_pct))
         expected_gross_sl_sats = int(round(notional_sats * sl_dist_pct))
@@ -669,9 +687,13 @@ class SatsExpectancyGate:
         )
 
         probabilistic_ok = (
-            (p_hat >= p_star)
+            (p_hat >= p_star and expected_net_sats >= 0.0)
             if explorer_mode
-            else (p_lcb >= required_p or expected_net_lcb_sats > 0.0 or expected_net_sats >= min_net_sats * 0.5)
+            else (
+                p_lcb >= required_p
+                and expected_net_lcb_sats > 0.0
+                and expected_net_sats >= (min_net_sats * 0.25)
+            )
         )
 
         is_viable = (

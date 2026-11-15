@@ -19,6 +19,7 @@ class HedgeRiskManager:
 
     TAKER_FEE = 0.0010
     MIN_MARGIN_SATS = 1000
+    MIN_HEDGE_LEVERAGE = 1
     MAX_HEDGE_RATIO = 1.00
     MAX_HEDGE_LEVERAGE = 35
 
@@ -74,7 +75,7 @@ class HedgeRiskManager:
             return False, f"BLOCKED_MAX_HEDGE_RATIO_REACHED(h={current_ratio:.2f})", {}
 
         orig_notional = max(1000, int(pair_ctx.get("orig_notional_sats", 20000)))
-        orig_lev = max(15.0, float(pair_ctx.get("orig_leverage", 25.0)))
+        orig_lev = max(1.0, float(pair_ctx.get("orig_leverage", 25.0)))
         target_ratio = float(predictive_signal.get("optimal_hedge_ratio", 0.50))
         if act == "PARTIAL_HEDGE":
             target_ratio = max(0.38, min(0.65, target_ratio if target_ratio > 0 else 0.50))
@@ -91,36 +92,26 @@ class HedgeRiskManager:
         price = max(1.0, float(ind_5m.get("price", 70000.0)))
         atr = max(1.0, float(ind_5m.get("atr", price * 0.002)))
         atr_pct = atr / price
-        safe_lev_from_atr = int(min(cls.MAX_HEDGE_LEVERAGE, max(15, round(0.25 / max(atr_pct, 0.002)))))
-        hedge_lev = int(min(orig_lev, safe_lev_from_atr, cls.MAX_HEDGE_LEVERAGE))
+        safe_lev_from_atr = int(min(cls.MAX_HEDGE_LEVERAGE, max(cls.MIN_HEDGE_LEVERAGE, round(0.25 / max(atr_pct, 0.002)))))
+        hedge_lev = int(max(cls.MIN_HEDGE_LEVERAGE, min(orig_lev, safe_lev_from_atr, cls.MAX_HEDGE_LEVERAGE)))
         hedge_margin_sats = max(cls.MIN_MARGIN_SATS, int(round(desired_hedge_notional / max(1, hedge_lev))))
         actual_hedge_notional = hedge_margin_sats * hedge_lev
 
-        # Verificar que el lote mínimo (1000 sats) no provoque sobrecobertura > 1.15x
+        # Verificar que el lote mínimo (1000 sats) no provoque sobrecobertura > 1.05x
         projected_total_ratio = (float(pair_econ.get("hedge_notional_sats", 0)) + actual_hedge_notional) / float(orig_notional)
-        if projected_total_ratio > 1.15:
-            # Reducir apalancamiento al mínimo permitido para ajustar nocional
-            hedge_lev = 15
+        if projected_total_ratio > 1.05:
+            max_allowed_notional = max(0.0, float(orig_notional) * 1.05 - float(pair_econ.get("hedge_notional_sats", 0)))
+            hedge_lev = max(cls.MIN_HEDGE_LEVERAGE, int(max_allowed_notional // float(hedge_margin_sats)))
             actual_hedge_notional = hedge_margin_sats * hedge_lev
             projected_total_ratio = (float(pair_econ.get("hedge_notional_sats", 0)) + actual_hedge_notional) / float(orig_notional)
-            if projected_total_ratio > 1.25:
+            if projected_total_ratio > 1.05:
                 return False, f"BLOCKED_MIN_LOT_OVERHEDGES(proj_h={projected_total_ratio:.2f})", {}
 
-        # 4. Suficiencia de margen libre y exposición máxima del portafolio
+        # 4. Suficiencia de margen libre, subordinación worst-case al HardFloorGuardian y exposición máxima
         est_entry_fee = max(1, int(round(actual_hedge_notional * cls.TAKER_FEE)))
         est_round_fee = est_entry_fee * 2
         if available_balance_sats < (hedge_margin_sats * 2 + est_entry_fee):
             return False, f"BLOCKED_INSUFFICIENT_FREE_MARGIN(avail={available_balance_sats}<req={hedge_margin_sats*2+est_entry_fee})", {}
-
-        locked_margin = int(portfolio_snap.get("locked_margin_sats", 0))
-        max_total_exp = 0.58 if explorer_mode else 0.48
-        if (locked_margin + hedge_margin_sats) / max(1.0, float(account_equity_sats)) > max_total_exp:
-            return False, "BLOCKED_PORTFOLIO_HEDGE_MARGIN_CAP", {}
-
-        # 5. Garantizar que el coste esperado de la cobertura sea menor que la pérdida esperada sin cubrir
-        exp_unhedged_loss = int(predictive_signal.get("expected_unhedged_loss_sats", 0))
-        if not explorer_mode and exp_unhedged_loss < int(round(est_round_fee * 1.30)):
-            return False, f"BLOCKED_HEDGE_COST_EXCEEDS_UNHEDGED_RISK(fee={est_round_fee}>=loss={exp_unhedged_loss})", {}
 
         orig_side = str(pair_ctx.get("orig_side", "buy")).lower()
         hedge_side = "sell" if orig_side == "buy" else "buy"
@@ -134,6 +125,33 @@ class HedgeRiskManager:
         else:
             hedge_sl = round(price + sl_dist, 1)
             hedge_tp = round(price - tp_dist, 1)
+
+        hedge_sl_loss_sats = int(round(actual_hedge_notional * (sl_dist / max(1.0, hedge_sl))))
+        emergency_exit_fees = int(round((orig_notional + actual_hedge_notional) * cls.TAKER_FEE))
+        if locked_floor_sats > 0 and (
+            account_equity_sats - est_entry_fee - hedge_sl_loss_sats - emergency_exit_fees - safety_buffer
+        ) <= locked_floor_sats:
+            return (
+                False,
+                f"BLOCKED_HARD_FLOOR_WHIPSAW_RISK(eq={account_equity_sats}-sl={hedge_sl_loss_sats}<=floor={locked_floor_sats}+{safety_buffer})",
+                {},
+            )
+
+        locked_margin = int(portfolio_snap.get("locked_margin_sats", 0))
+        max_total_exp = 0.58 if explorer_mode else 0.48
+        if (locked_margin + hedge_margin_sats) / max(1.0, float(account_equity_sats)) > max_total_exp:
+            return False, "BLOCKED_PORTFOLIO_HEDGE_MARGIN_CAP", {}
+
+        # 5. Garantizar que el ahorro esperado supere al menos 1.45x las comisiones de ida y vuelta y sea neto positivo
+        expected_saved_sats = int(
+            predictive_signal.get(
+                "expected_saved_sats",
+                predictive_signal.get("expected_unhedged_loss_sats", 0),
+            )
+        )
+        net_saving_sats = int(predictive_signal.get("net_expected_saving_sats", expected_saved_sats - est_round_fee))
+        if not explorer_mode and (expected_saved_sats < int(round(est_round_fee * 1.45)) or net_saving_sats <= 0):
+            return False, f"BLOCKED_HEDGE_COST_EXCEEDS_UNHEDGED_RISK(fee={est_round_fee}>=saved={expected_saved_sats})", {}
 
         return True, f"AUTHORIZED_{act}", {
             "hedge_side": hedge_side,

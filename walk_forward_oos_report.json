@@ -274,22 +274,22 @@
     },
     "5_HYBRID_EDGE_HEDGING_COMPLETO": {
       "trades_executed": 54,
-      "total_net_sats": 1656,
+      "total_net_sats": 1524,
       "max_dd_sats": 530,
       "max_dd_pct": 0.53,
-      "profit_factor": 1.456,
-      "sharpe": 1.152,
-      "sortino": 1.711,
-      "calmar": 3.125,
+      "profit_factor": 1.405,
+      "sharpe": 1.056,
+      "sortino": 1.567,
+      "calmar": 2.875,
       "win_rate_pct": 61.11,
-      "expectancy_sats": 30.67,
-      "avg_recovery_cycles": 3.18,
-      "total_fees_sats": 5472,
+      "expectancy_sats": 28.22,
+      "avg_recovery_cycles": 3.27,
+      "total_fees_sats": 5454,
       "total_funding_sats": 414,
-      "total_slippage_sats": 723,
+      "total_slippage_sats": 720,
       "hedges_activated": 12,
       "profitable_hedges_pct": 100.0,
-      "loss_avoided_vs_sl_sats": 2193,
+      "loss_avoided_vs_sl_sats": 2061,
       "hedge_worsened_cases": 0,
       "by_regime": {
         "RANGE_SQUEEZE": {
@@ -329,9 +329,9 @@
         },
         "EXTREME_VOLATILITY": {
           "trades_executed": 9,
-          "net_sats": 609,
+          "net_sats": 477,
           "hedges_activated": 3,
-          "loss_avoided_sats": 444,
+          "loss_avoided_sats": 312,
           "hedge_worsened_cases": 0
         }
       }

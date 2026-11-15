@@ -22,6 +22,8 @@ from lnm_sniper_v6_advanced import (
 )
 from hedge_state_store import HedgeStateStore
 from adaptive_controller import AdaptiveHedgeController
+from edge_monitor import EdgeMonitor
+from predictive_hedge import PredictiveHedgeEngine
 from guardian_execution_core import HardFloorGuardian, compat_np as np
 from sniper_perception_sats_core import SatsExpectancyGate, MarketRegimeClassifier
 
@@ -117,11 +119,17 @@ class SimTrainingEnvironment:
         for r in regimes:
             for o in oscillators:
                 for e in expansions:
-                    for m in ("CHOP", "BULL"):
-                        norm_s = AutonomousGoalBrain._normalize_state_key(f"{r}|{o}|{e}|{m}|EMA_TRANS")
-                        if norm_s not in self.brain.q_table:
-                            self.brain.q_table[norm_s] = self.brain._init_q_vector(norm_s)
-                            self.brain.state_visits[norm_s] = 0
+                    for m in macros:
+                        valid_emas = (
+                            ("EMA_TRANS", "FULL_BULL", "BULL_DIP")
+                            if m == "BULL"
+                            else (("EMA_TRANS", "FULL_BEAR", "BEAR_RALLY") if m == "BEAR" else ("EMA_TRANS",))
+                        )
+                        for em in valid_emas:
+                            norm_s = AutonomousGoalBrain._normalize_state_key(f"{r}|{o}|{e}|{m}|{em}")
+                            if norm_s not in self.brain.q_table:
+                                self.brain.q_table[norm_s] = self.brain._init_q_vector(norm_s)
+                                self.brain.state_visits[norm_s] = 0
         self.brain.dirty = True
 
     def reset(
@@ -189,8 +197,22 @@ class SimTrainingEnvironment:
         # 1. Evaluar posiciones vivas contra extremos de la vela en el exchange
         events = self.exchange.step_candle(c)
 
+        # Actualizar excursiones MFE/MAE en tiempo real para posiciones abiertas
+        if hasattr(self.brain, "supervisor") and self.brain.supervisor is not None:
+            for live_tid, live_t in self.exchange.running_trades.items():
+                live_meta = self.brain.active_trades.get(live_tid)
+                if isinstance(live_meta, dict):
+                    est_rt_fee = float(live_t.get("notional_sats", 10000)) * (2.0 * self.exchange.taker_fee_rate)
+                    carry_f = float(live_t.get("sum_carry_fees", 0))
+                    net_unr = float(live_t.get("pl", 0)) - est_rt_fee - carry_f
+                    exc = self.brain.supervisor.update_open_position_excursion(
+                        live_tid, net_unr, margin_sats=float(live_t.get("margin", 1000))
+                    )
+                    live_meta["mfe_sats"] = exc["mfe_sats"]
+                    live_meta["mae_sats"] = exc["mae_sats"]
+
         # Cierre defensivo de emergencia si el drawdown flotante supera 5.2% en evaluación
-        if not self.learning_enabled and self.exchange.running_trades:
+        if not self.explorer_mode and self.exchange.running_trades:
             cur_dd_floating = (
                 (self.peak_equity_sats - self.exchange.equity_sats)
                 / max(1.0, float(self.peak_equity_sats))
@@ -226,6 +248,9 @@ class SimTrainingEnvironment:
                 margin_used = int(orig_info.get("margin", 1000))
                 lev_used = float(orig_info.get("leverage", 10))
                 hit_tp = bool(ev.get("close_reason") == "TAKE_PROFIT")
+                dur_ticks = max(1.0, float(ev.get("duration_s", 60.0)) / 60.0)
+                mae_tracked = float(orig_info.get("mae_sats", max(0, -net_pnl)))
+                mfe_tracked = float(orig_info.get("mfe_sats", max(0, net_pnl)))
 
                 self.total_settled_trades += 1
                 step_net_sats += net_pnl
@@ -253,6 +278,9 @@ class SimTrainingEnvironment:
                         pl_includes_fees=True,
                         funding_fee_sats=int(ev.get("carry_fees_sats", 0)),
                         trade_id=tid,
+                        mae_sats=mae_tracked,
+                        mfe_sats=mfe_tracked,
+                        duration_ticks=dur_ticks,
                         predicted_q_entry=orig_info.get("entry_q", None),
                     )
                     self.brain.record_trade_in_cycles(net_pnl, action=act_taken)
@@ -262,24 +290,20 @@ class SimTrainingEnvironment:
             if t.get("_is_hedge", False):
                 continue
             pair_ctx = self.hedge_store.get_or_create_pair(t, now=now)
+            prev_net_pl = int(pair_ctx.get("last_combined_net_sats", t.get("pl", 0)))
             pair_econ = {
-                "combined_net_pl_sats": t.get("pl", 0),
+                "combined_net_pl_sats": int(t.get("pl", 0)),
                 "has_active_hedge": bool(pair_ctx.get("hedge_trade_id")),
                 "effective_hedge_ratio": float(pair_ctx.get("hedge_ratio", 0.0)),
                 "hedge_pl_sats": 0,
-                "orig_pl_sats": t.get("pl", 0),
+                "orig_pl_sats": int(t.get("pl", 0)),
             }
-            edge_info = {
-                "market_regime": ind_5m.get("regime", "RANGE_NORMAL"),
-                "pnl_atr": float(t.get("pl", 0)) / max(1.0, float(ind_5m.get("atr", 100.0))),
-                "edge_score": float(perception.get("composite_vel_atr", 0.0)),
-                "edge_delta": 0.0,
-            }
-            pred_sig = {
-                "adverse_continuation_prob": 0.45,
-                "recommend_hedge": False,
-                "recommended_action_name": "NO_HEDGE",
-            }
+            edge_info = EdgeMonitor.evaluate_position_edge(
+                t, pair_ctx, ind_5m, ind_15m, ind_1h, perception=perception, q_val_action=0.0, now=now
+            )
+            pred_sig = PredictiveHedgeEngine.forecast_adverse_risk(
+                edge_info, ind_5m, ind_15m, ind_1h, perception=perception
+            )
             state_fsm = self.hedge_controller._transition_state_with_hysteresis(
                 pair_ctx, pair_econ, edge_info, pred_sig, now
             )
@@ -294,10 +318,18 @@ class SimTrainingEnvironment:
             prev_h_act = int(pair_ctx.get("last_hedge_action", 0))
             is_exit_transition = ("HEDGE_EXIT" in h_key) or (state_fsm == "HEDGE_EXIT")
             if self.learning_enabled and prev_h_key is not None:
+                r_h = self.hedge_controller.compute_hedge_reward(
+                    prev_net_pl,
+                    pair_econ["combined_net_pl_sats"],
+                    prev_h_act,
+                    fee_paid_sats=0,
+                    margin_sats=int(t.get("margin", 1000)),
+                )
                 self.hedge_store.update_hedge_q(
-                    prev_h_key, prev_h_act, 0.0, h_key, done=is_exit_transition
+                    prev_h_key, prev_h_act, r_h, h_key, done=is_exit_transition
                 )
             pair_ctx["last_hedge_state_key"] = None if (is_exit_transition and not pair_econ["has_active_hedge"]) else h_key
+            pair_ctx["last_combined_net_sats"] = pair_econ["combined_net_pl_sats"]
 
         # 4. Actualizar métrica de Drawdown continuo pico-valle
         cur_eq = self.exchange.equity_sats
@@ -317,7 +349,7 @@ class SimTrainingEnvironment:
 
         # Freno P0 de preservación de capital: si el drawdown del episodio alcanza el 4.5%,
         # bloquear nuevas aperturas (excepto exploración forzada en entrenamiento) para jamás violar el 8% MaxDD.
-        dd_throttle_halt = (not self.learning_enabled) and (current_dd >= 0.045)
+        dd_throttle_halt = (not self.explorer_mode) and (current_dd >= 0.045)
 
         if not dd_throttle_halt and running_count < max_trades and (now - self.last_entry_ts) >= Config.ENTRY_COOLDOWN_SEC:
             is_exploring = self.learning_enabled and (random.random() < self.brain.epsilon)
@@ -339,7 +371,7 @@ class SimTrainingEnvironment:
                 )
                 # Filtro CQL (Conservative Q-Learning): en evaluación/explotación, exigir ventaja Q demostrada
                 # y que el estado haya sido visitado, evitando operar a ciegas en estados vírgenes.
-                if not self.learning_enabled and action > 0:
+                if not self.explorer_mode and action > 0:
                     q_val = float(q_vec[action]) if action < len(q_vec) else 0.0
                     visits = int(self.brain.state_visits.get(curr_state_key, 0))
                     if q_val <= 0.015 or visits < 1:
@@ -373,7 +405,7 @@ class SimTrainingEnvironment:
 
                 # Reducción de riesgo unitario + amortiguador cuadrático por drawdown
                 dd_dampener = max(0.25, 1.0 - (current_dd / 0.06) ** 2) if current_dd > 0 else 1.0
-                base_risk_pct = (0.015 if self.learning_enabled else 0.008) * dd_dampener
+                base_risk_pct = (0.015 if self.explorer_mode else 0.008) * dd_dampener
                 eff_risk_pct = base_risk_pct * kelly_mult * reg_adapt["size_mult"]
                 risk_budget_sats = max(80, int(round(self.exchange.equity_sats * eff_risk_pct)))
 
@@ -388,8 +420,8 @@ class SimTrainingEnvironment:
                 if margin_sats < Config.MIN_MARGIN_SATS:
                     margin_sats = Config.MIN_MARGIN_SATS
 
-                # En evaluación, limitar el apalancamiento efectivo si la pérdida potencial en SL supera el 1.0% de la cuenta
-                if not self.learning_enabled:
+                # En modo no explorador, limitar el apalancamiento efectivo si la pérdida potencial en SL supera el 1.0% de la cuenta
+                if not self.explorer_mode:
                     max_safe_lev = max(1, int((self.exchange.equity_sats * 0.010) / max(1.0, margin_sats * (sl_dist_pct + fee_rt))))
                     lev = max(1, min(int(lev), max_safe_lev))
 

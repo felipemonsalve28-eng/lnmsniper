@@ -27,12 +27,14 @@ class SimLNMExchange:
         taker_fee_rate: float = 0.0010,
         funding_rate_8h: float = 0.0001,
         default_slippage_bps: float = 1.5,
+        inverse_contract_math: bool = False,
     ):
         self.initial_balance_sats = int(initial_balance_sats)
         self.balance_sats = int(initial_balance_sats)
         self.taker_fee_rate = float(taker_fee_rate)
         self.funding_rate_8h = float(funding_rate_8h)
         self.default_slippage_bps = float(default_slippage_bps)
+        self.inverse_contract_math = bool(inverse_contract_math)
 
         self.running_trades: Dict[str, dict] = {}
         self.closed_trades: List[dict] = []
@@ -118,11 +120,17 @@ class SimLNMExchange:
         self.balance_sats -= entry_fee
         self.total_fees_paid_sats += entry_fee
 
-        # 4. Precio de liquidación exacto con margen de mantenimiento (0.99 para 1% de buffer)
-        if side_norm == "b":
-            liq_price = entry_price * (1.0 - (0.99 / lev))
+        # 4. Precio de liquidación con margen de mantenimiento (0.99 para 1% de buffer)
+        if self.inverse_contract_math:
+            if side_norm == "b":
+                liq_price = entry_price / (1.0 + (0.99 / lev))
+            else:
+                liq_price = entry_price / max(0.05, 1.0 - (0.99 / lev))
         else:
-            liq_price = entry_price * (1.0 + (0.99 / lev))
+            if side_norm == "b":
+                liq_price = entry_price * (1.0 - (0.99 / lev))
+            else:
+                liq_price = entry_price * (1.0 + (0.99 / lev))
 
         self.trade_counter += 1
         trade_id = f"sim-{self.run_id}-{self.trade_counter}"
@@ -138,6 +146,7 @@ class SimLNMExchange:
             "takeprofit": round(float(takeprofit), 2) if takeprofit else 0.0,
             "liquidation": round(liq_price, 2),
             "pl": 0,
+            "cashed_in_sats": 0,
             "sum_carry_fees": 0,
             "notional_sats": notional_sats,
             "entry_fee_sats": entry_fee,
@@ -162,27 +171,32 @@ class SimLNMExchange:
             return False, None
 
         trade = self.running_trades.pop(tid)
-        exit_price = float(price if price is not None else self.last_price)
+        exit_price = max(1.0, float(price if price is not None else self.last_price))
         cur_ts = float(now if now is not None else self.last_ts)
 
         notional = trade["notional_sats"]
         entry_price = trade["entry_price"]
         side = trade["side"]
+        cashed_in_sats = int(trade.get("cashed_in_sats", 0))
 
-        # PnL Bruto
+        # PnL Bruto total respecto al precio de entrada
+        denom_price = exit_price if self.inverse_contract_math else entry_price
         if side == "b":
-            gross_pnl = int(round(notional * ((exit_price - entry_price) / entry_price)))
+            gross_pnl = int(round(notional * ((exit_price - entry_price) / denom_price)))
         else:
-            gross_pnl = int(round(notional * ((entry_price - exit_price) / entry_price)))
+            gross_pnl = int(round(notional * ((entry_price - exit_price) / denom_price)))
+
+        remaining_gross_pnl = gross_pnl - cashed_in_sats
 
         # Comisión Taker de Salida
         exit_fee = max(1, int(round(notional * self.taker_fee_rate)))
         self.total_fees_paid_sats += exit_fee
 
-        # PnL Neto de la operación cerrada
-        net_trade_pnl = gross_pnl - exit_fee
-        self.balance_sats += net_trade_pnl
-        self.total_realized_pnl_sats += (net_trade_pnl - trade["entry_fee_sats"] - trade["sum_carry_fees"])
+        # PnL Neto remanente acreditado al balance al cerrar (sin duplicar lo ya cobrado en cash_in)
+        net_remaining_pnl = remaining_gross_pnl - exit_fee
+        self.balance_sats += net_remaining_pnl
+        total_net_pnl = gross_pnl - exit_fee - trade["entry_fee_sats"] - trade["sum_carry_fees"]
+        self.total_realized_pnl_sats += total_net_pnl
 
         closed_rec = {
             "id": tid,
@@ -192,10 +206,11 @@ class SimLNMExchange:
             "entry_price": entry_price,
             "exit_price": round(exit_price, 2),
             "gross_pnl_sats": gross_pnl,
+            "cashed_in_sats": cashed_in_sats,
             "entry_fee_sats": trade["entry_fee_sats"],
             "exit_fee_sats": exit_fee,
             "carry_fees_sats": trade["sum_carry_fees"],
-            "net_pnl_sats": net_trade_pnl - trade["entry_fee_sats"] - trade["sum_carry_fees"],
+            "net_pnl_sats": total_net_pnl,
             "close_reason": reason,
             "open_ts": trade["open_ts"],
             "close_ts": cur_ts,
@@ -217,6 +232,7 @@ class SimLNMExchange:
             return False, None
 
         t["pl"] = cur_pl - amt
+        t["cashed_in_sats"] = int(t.get("cashed_in_sats", 0)) + amt
         self.balance_sats += amt
         self.cashed_in_total_sats += amt
         return True, {"id": tid, "cashed_in": amt, "remaining_pl": t["pl"]}
@@ -233,10 +249,16 @@ class SimLNMExchange:
         # Recalcular nuevo apalancamiento efectivo y precio de liquidación
         new_lev = max(1.0, float(t["notional_sats"]) / float(t["margin"]))
         entry = t["entry_price"]
-        if t["side"] == "b":
-            t["liquidation"] = round(entry * (1.0 - (0.99 / new_lev)), 2)
+        if self.inverse_contract_math:
+            if t["side"] == "b":
+                t["liquidation"] = round(entry / (1.0 + (0.99 / new_lev)), 2)
+            else:
+                t["liquidation"] = round(entry / max(0.05, 1.0 - (0.99 / new_lev)), 2)
         else:
-            t["liquidation"] = round(entry * (1.0 + (0.99 / new_lev)), 2)
+            if t["side"] == "b":
+                t["liquidation"] = round(entry * (1.0 - (0.99 / new_lev)), 2)
+            else:
+                t["liquidation"] = round(entry * (1.0 + (0.99 / new_lev)), 2)
 
         return True, {"id": tid, "new_margin": t["margin"], "new_liquidation": t["liquidation"]}
 
@@ -248,7 +270,7 @@ class SimLNMExchange:
         c_open = float(candle.open)
         c_high = float(candle.high)
         c_low = float(candle.low)
-        c_close = float(candle.close)
+        c_close = max(1.0, float(candle.close))
         c_ts = float(candle.timestamp)
 
         self.last_price = c_close
@@ -267,7 +289,7 @@ class SimLNMExchange:
                 self.balance_sats -= carry_sats
                 self.total_funding_paid_sats += carry_sats
 
-        # 2. Evaluar Liquidaciones, Stop Losses y Take Profits
+        # 2. Evaluar Stop Losses, Liquidaciones y Take Profits respetando la trayectoria intra-vela
         for tid in list(self.running_trades.keys()):
             if tid not in self.running_trades:
                 continue
@@ -277,19 +299,50 @@ class SimLNMExchange:
             tp = float(t.get("takeprofit", 0.0))
             liq = float(t["liquidation"])
 
-            # A. Comprobar Liquidación (Prioridad P0 absoluta)
+            gap_to_liq = (c_open <= liq) if side == "b" else (c_open >= liq)
+            sl_protects_before_liq = (
+                sl > 0.0
+                and not gap_to_liq
+                and ((side == "b" and sl > liq) or (side == "s" and sl < liq))
+            )
+
+            # Si existe SL válido por encima/debajo de liquidación y no hubo gap directo a liquidación,
+            # el precio cruza primero el Stop Loss antes de alcanzar el nivel de liquidación.
+            if sl_protects_before_liq:
+                is_sl_hit = (c_low <= sl) if side == "b" else (c_high >= sl)
+                if is_sl_hit:
+                    fill_price = min(c_open, sl) if side == "b" else max(c_open, sl)
+                    ok, rec = self.close_trade(tid, price=fill_price, reason="STOP_LOSS", now=c_ts)
+                    if ok:
+                        events_triggered.append(rec)
+                    continue
+
+            # A. Comprobar Liquidación
             is_liquidated = (c_low <= liq) if side == "b" else (c_high >= liq)
             if is_liquidated:
-                # Pérdida total del margen
                 trade_obj = self.running_trades.pop(tid)
                 net_loss = trade_obj["margin"]
+                cashed_in_sats = int(trade_obj.get("cashed_in_sats", 0))
                 self.balance_sats -= net_loss
-                self.total_realized_pnl_sats -= (net_loss + trade_obj["entry_fee_sats"])
+                total_liq_net = cashed_in_sats - net_loss - trade_obj["entry_fee_sats"] - trade_obj["sum_carry_fees"]
+                self.total_realized_pnl_sats += total_liq_net
                 rec = {
                     "id": tid,
-                    "close_reason": "LIQUIDATION",
+                    "side": side,
+                    "margin": trade_obj["margin"],
+                    "leverage": trade_obj["leverage"],
+                    "entry_price": trade_obj["entry_price"],
                     "exit_price": liq,
-                    "net_pnl_sats": -net_loss - trade_obj["entry_fee_sats"],
+                    "gross_pnl_sats": cashed_in_sats - net_loss,
+                    "cashed_in_sats": cashed_in_sats,
+                    "entry_fee_sats": trade_obj["entry_fee_sats"],
+                    "exit_fee_sats": 0,
+                    "carry_fees_sats": trade_obj["sum_carry_fees"],
+                    "net_pnl_sats": total_liq_net,
+                    "close_reason": "LIQUIDATION",
+                    "open_ts": trade_obj["open_ts"],
+                    "close_ts": c_ts,
+                    "duration_s": max(0.0, c_ts - trade_obj["open_ts"]),
                 }
                 self.closed_trades.append(rec)
                 events_triggered.append(rec)
@@ -299,11 +352,7 @@ class SimLNMExchange:
             if sl > 0:
                 is_sl_hit = (c_low <= sl) if side == "b" else (c_high >= sl)
                 if is_sl_hit:
-                    # En caso de gap de apertura que salte el SL, se ejecuta al precio de apertura real
-                    if side == "b":
-                        fill_price = min(c_open, sl)
-                    else:
-                        fill_price = max(c_open, sl)
+                    fill_price = min(c_open, sl) if side == "b" else max(c_open, sl)
                     ok, rec = self.close_trade(tid, price=fill_price, reason="STOP_LOSS", now=c_ts)
                     if ok:
                         events_triggered.append(rec)
@@ -318,12 +367,14 @@ class SimLNMExchange:
                         events_triggered.append(rec)
                     continue
 
-            # D. Actualizar PnL flotante sobre velas vivas
+            # D. Actualizar PnL flotante sobre velas vivas (descontando cosechas parciales previas)
             notional = t["notional_sats"]
             entry = t["entry_price"]
+            denom_price = c_close if self.inverse_contract_math else entry
             if side == "b":
-                t["pl"] = int(round(notional * ((c_close - entry) / entry)))
+                raw_pl = int(round(notional * ((c_close - entry) / denom_price)))
             else:
-                t["pl"] = int(round(notional * ((entry - c_close) / entry)))
+                raw_pl = int(round(notional * ((entry - c_close) / denom_price)))
+            t["pl"] = raw_pl - int(t.get("cashed_in_sats", 0))
 
         return events_triggered

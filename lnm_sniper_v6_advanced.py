@@ -158,12 +158,14 @@ class Config:
     @classmethod
     def configure_environment(cls, env_name="mainnet"):
         env = str(env_name or "mainnet").strip().lower()
+        base_dir = os.path.dirname(os.path.abspath(__file__))
         if env in ("testnet", "test", "explorer"):
             cls.ENV_MODE = "testnet"
             cls.EXPLORER_MODE = True
             cls.BASE_URL = os.getenv("LNM_TESTNET_BASE_URL", "https://api.signet.lnmarkets.com/v3")
             cls.BRAIN_FILE = "q_brain_testnet_lnm.json"
             cls.HEDGE_STATE_FILE = "hedge_state_testnet.json"
+            cls.TELEMETRY_FILE = "telemetry_live_testnet.json"
             cls.MAX_CONCURRENT_TRADES = 10
             cls.SOFT_EXPOSURE_LIMIT = 0.45
             cls.ENTRY_COOLDOWN_SEC = 18.0
@@ -177,9 +179,18 @@ class Config:
             cls.BASE_URL = os.getenv("LNM_MAINNET_BASE_URL", "https://api.lnmarkets.com/v3")
             cls.BRAIN_FILE = "q_brain_advanced_lnm.json"
             cls.HEDGE_STATE_FILE = "hedge_state_mainnet.json"
+            cls.TELEMETRY_FILE = "telemetry_live.json"
             cls.MAX_CONCURRENT_TRADES = 5
             cls.SOFT_EXPOSURE_LIMIT = 0.38
             cls.ENTRY_COOLDOWN_SEC = 35.0
+            cls.RISK_NORMAL = 0.06
+            cls.RISK_WARMUP = 0.04
+            cls.MAX_DRAWDOWN_PCT = 0.16
+            cls.KILL_SWITCH_DD_PCT = 0.22
+        try:
+            TELEMETRY_DISPATCHER.filepath = os.path.join(base_dir, cls.TELEMETRY_FILE)
+        except Exception:
+            pass
 
 
 try:
@@ -1365,14 +1376,7 @@ class AutonomousGoalBrain:
         current_q = float(self.q_table[norm_s][a])
         max_future_q = max(self.q_table[norm_ns])
         raw_td = float(r) + (eff_gamma * max_future_q) - current_q
-
-        # En transición terminal (eff_gamma=0), raw_td = r - current_q converge al valor
-        # esperado real E[R]. Si force_negative_on_loss está activo y current_q ya era menor
-        # que r < 0, acotamos a 0.0 para no subir Q en una pérdida ni hundirlo artificialmente.
-        if force_negative_on_loss and float(r) < 0.0 and raw_td > 0.0:
-            signed_td = 0.0
-        else:
-            signed_td = raw_td
+        signed_td = raw_td
 
         self._last_td_error = signed_td
 
@@ -1388,7 +1392,7 @@ class AutonomousGoalBrain:
         q_min = self.thresholds.get_float("q_calibration", "q_clip_min", -2.0)
         q_max = self.thresholds.get_float("q_calibration", "q_clip_max", 2.0)
         new_q = float(np.clip(current_q + lr * signed_td, q_min, q_max))
-        if check_guard and force_negative_on_loss and float(r) < 0.0 and new_q >= current_q and current_q > q_min:
+        if force_negative_on_loss and float(r) < 0.0 and current_q >= 0.0 and new_q >= current_q:
             new_q = max(q_min, current_q - max(0.0005, abs(lr * float(r) * 0.25)))
         self._last_delta_q = abs(new_q - current_q)
         self.q_table[norm_s][a] = round(new_q, 4)
@@ -1618,6 +1622,7 @@ class AutonomousGoalBrain:
             margin_sats=int(margin_used),
             mfe_sats=mfe_val,
             mae_sats=mae_val,
+            econ_reward_sats=econ_reward_sats,
         )
 
         reg_change = 1.0 if norm_s.split("|")[0] != norm_ns.split("|")[0] else 0.0
@@ -2049,8 +2054,10 @@ def execute_strategy_guardian(
         entry = float(trade.get("price") or trade.get("entryPrice") or lnm_price)
         current_sl = float(trade.get("stoploss") or 0.0)
         liq = float(trade.get("liquidation") or 0.0)
-        fee_offset = entry * (2.4 * Config.TAKER_FEE)
-        est_round_fee_sats = max(2, int(round(margin * lev * 2.0 * Config.TAKER_FEE)))
+        carry_sats = max(0, int(round(float(trade.get("sum_carry_fees") or trade.get("funding_fees") or 0))))
+        notional_sats = max(1.0, float(margin) * float(lev))
+        fee_offset = entry * ((2.4 * Config.TAKER_FEE) + (carry_sats / notional_sats))
+        est_round_fee_sats = max(2, int(round(notional_sats * 2.0 * Config.TAKER_FEE))) + carry_sats
 
         action_id = int(trade_meta.get("action", 2 if side == "buy" else 6))
         strat = brain.strategies.get(action_id, brain.strategies[2 if side == "buy" else 6])
@@ -2186,16 +2193,18 @@ def execute_strategy_guardian(
         step_min = max(10.0, 0.12 * atr)
         if side == "buy":
             be_floor = entry + fee_offset
-            raw_sl = max(be_floor, lnm_price - slack)
+            be_floor_int = int(math.ceil(be_floor))
+            raw_sl = max(float(be_floor_int), lnm_price - slack)
             target_sl = int(round(min(raw_sl, lnm_price - 18.0)))
-            if target_sl >= int(round(be_floor * 0.9995)) and target_sl > (liq + 15.0) and target_sl > int(round(current_sl + step_min)):
+            if target_sl >= be_floor_int and target_sl > (liq + 15.0) and target_sl > int(round(current_sl + step_min)):
                 confirm_and_update_stoploss(client, brain, tid, target_sl, side, entry, fee_offset, trade_meta)
         elif side == "sell":
             be_ceil = entry - fee_offset
-            raw_sl = min(be_ceil, lnm_price + slack)
+            be_ceil_int = int(math.floor(be_ceil))
+            raw_sl = min(float(be_ceil_int), lnm_price + slack)
             target_sl = int(round(max(raw_sl, lnm_price + 18.0)))
             liq_ok = (liq <= 0.0) or (target_sl < (liq - 15.0))
-            if target_sl <= int(round(be_ceil * 1.0005)) and liq_ok and (current_sl == 0.0 or target_sl < int(round(current_sl - step_min))):
+            if target_sl <= be_ceil_int and liq_ok and (current_sl == 0.0 or target_sl < int(round(current_sl - step_min))):
                 confirm_and_update_stoploss(client, brain, tid, target_sl, side, entry, fee_offset, trade_meta)
     except Exception as e:
         print(f"[GUARDIÁN AVISO] {trade.get('id','')[:6]}: {e}")
@@ -2219,7 +2228,8 @@ def evaluate_open_trades_online(brain, running, ind_5m, current_state, now):
         margin_sats = float(trade.get("margin") or meta.get("margin", 1000.0))
         lev_f = float(trade.get("leverage") or meta.get("leverage", 25.0))
         est_round_fee = margin_sats * lev_f * (2.0 * Config.TAKER_FEE)
-        net_unrealized_sats = max(0.0, pl_sats - est_round_fee) if pl_sats > 0.0 else pl_sats
+        carry_sats = max(0.0, float(trade.get("sum_carry_fees") or trade.get("funding_fees") or 0.0))
+        net_unrealized_sats = pl_sats - est_round_fee - carry_sats
         if hasattr(brain, "supervisor") and brain.supervisor is not None:
             exc_rec = brain.supervisor.update_open_position_excursion(tid, net_unrealized_sats, margin_sats=margin_sats)
             meta["mfe_sats"] = exc_rec["mfe_sats"]
@@ -2364,8 +2374,10 @@ def compute_situational_order_params(
 
     sl_dist = min(desired_sl_dist, max_safe_sl_dist)
 
-    min_tp_dist = max(sl_dist * max(1.30, combined_rr), price * 0.0080)
-    orig_tp_dist = abs(float(raw_tp) - price) if raw_tp else (sl_dist * 1.65)
+    strat_rr = float(strat.get("rr", 1.50))
+    adjusted_rr = max(1.30, strat_rr * float(combined_rr))
+    min_tp_dist = max(sl_dist * adjusted_rr, price * 0.0080)
+    orig_tp_dist = abs(float(raw_tp) - price) if raw_tp else (sl_dist * max(1.65, adjusted_rr))
     tp_dist = max(min_tp_dist, orig_tp_dist)
 
     if is_long:
@@ -2542,8 +2554,19 @@ def run_integrated_guardian_and_hedge_cycle(
             )
             new_h_state = hedge_dec.get("state", "NORMAL")
             exec_info = hedge_dec.get("execution", {})
+            pair_econ_dec = hedge_dec.get("pair_economics", {})
+            if exec_info.get("executed") and hedge_dec.get("selected_action_name") in ("CLOSE_HEDGE", "REDUCE_HEDGE"):
+                h_pl_realized = int(pair_econ_dec.get("hedge_pl_sats", 0))
+                h_notional = int(pair_econ_dec.get("hedge_notional_sats", 0))
+                h_fee_est = max(2, int(round(h_notional * 2.0 * Config.TAKER_FEE)))
+                if hedge_dec.get("selected_action_name") == "REDUCE_HEDGE":
+                    h_pl_realized = int(round(h_pl_realized * 0.5))
+                    h_fee_est = max(1, h_fee_est // 2)
+                t_meta["realized_hedge_net_sats"] = int(t_meta.get("realized_hedge_net_sats", 0)) + (h_pl_realized - h_fee_est)
+                t_meta["realized_hedge_fee_sats"] = int(t_meta.get("realized_hedge_fee_sats", 0)) + h_fee_est
+                brain.dirty = True
             if exec_info.get("executed") or (new_h_state != prev_h_state and new_h_state != "NORMAL"):
-                eff_r = hedge_dec.get("pair_economics", {}).get("effective_hedge_ratio", 0.0)
+                eff_r = pair_econ_dec.get("effective_hedge_ratio", 0.0)
                 adv_p = hedge_dec.get("predictive_signal", {}).get("adverse_continuation_prob", 0.0)
                 print(
                     f"  🛡️ [HEDGE ENGINE] {tid[:6]} | {prev_h_state} ➔ {new_h_state} | "
@@ -2702,30 +2725,35 @@ def process_settlement_queue(
             balance = int(client.get_user(force_refresh=False).get("balance", 0))
             beat_anchor = recovery_anchor_equity is not None and balance >= int(round(recovery_anchor_equity * 1.03))
 
+            realized_hedge_net = int(info.get("realized_hedge_net_sats", 0))
+            realized_hedge_fee = int(info.get("realized_hedge_fee_sats", 0))
+            total_net_pnl_sats = int(econ["net_pnl_sats"]) + realized_hedge_net
+            total_taker_fee_sats = int(econ["taker_fee_sats"]) + realized_hedge_fee
+
             hit_tp_real = bool(ct_obj.get("takeprofit_wi")) or (
-                econ["net_pnl_sats"] > m_used * 0.16 and not bool(ct_obj.get("stoploss_wi"))
+                total_net_pnl_sats > m_used * 0.16 and not bool(ct_obj.get("stoploss_wi"))
             )
             entry_ts = float(info.get("entry_time", now))
             dur_ticks = max(1.0, (now - entry_ts) / tick_ref_sec)
             mae_tracked = float(info.get("mae_sats", 0.0))
-            mfe_tracked = float(info.get("mfe_sats", max(0, econ["net_pnl_sats"])))
+            mfe_tracked = float(info.get("mfe_sats", max(0, total_net_pnl_sats)))
             pred_q = info.get("entry_q", None)
 
             brain.remember_and_train(
                 orig_st,
                 act_taken,
-                pl,
+                pl + realized_hedge_net,
                 m_used,
                 state,
                 equity_after=balance,
                 available_balance_after=balance,
-                real_balance_delta_sats=econ["net_pnl_sats"],
+                real_balance_delta_sats=total_net_pnl_sats,
                 hit_tp=hit_tp_real,
                 harvested=was_harvested,
                 recovery_mode=in_rec,
                 exited_recovery_bonus=beat_anchor,
                 lev_used=lev_used,
-                exact_fee_sats=econ["taker_fee_sats"],
+                exact_fee_sats=total_taker_fee_sats,
                 pl_includes_fees=True,
                 funding_fee_sats=funding_fee,
                 slippage_sats=econ["slippage_sats"],
@@ -2735,7 +2763,7 @@ def process_settlement_queue(
                 duration_ticks=dur_ticks,
                 predicted_q_entry=pred_q,
             )
-            if econ["net_pnl_sats"] < 0:
+            if total_net_pnl_sats < 0:
                 consecutive_losses += 1
                 risk_multiplier = max(0.55, risk_multiplier * Config.ANTI_MARTINGALE_FACTOR)
                 if consecutive_losses >= Config.CONSECUTIVE_LOSS_LIMIT and not Config.EXPLORER_MODE:
@@ -2897,7 +2925,10 @@ def evaluate_and_dispatch_entries(
             b_ratio = max(0.2, (tp_dist_pct - fee_rt) / max(0.0001, sl_dist_pct + fee_rt))
             kelly_scale = THRESHOLDS_MANAGER.get_float("q_calibration", "fractional_kelly_scale", 0.25)
             raw_kelly = max(0.0, (p_hat * b_ratio - (1.0 - p_hat)) / b_ratio)
-            kelly_mult = float(np.clip(0.70 + (raw_kelly * kelly_scale * 3.0), 0.55, 1.40))
+            if raw_kelly <= 0.0:
+                kelly_mult = 0.55
+            else:
+                kelly_mult = float(np.clip(0.70 + (raw_kelly * kelly_scale * 3.0), 0.55, 1.40))
             if recovery_mode and not Config.EXPLORER_MODE:
                 kelly_mult = min(kelly_mult, 0.72)
 
@@ -2913,6 +2944,10 @@ def evaluate_and_dispatch_entries(
 
             max_single_margin = int(round(equity * Config.MAX_SINGLE_TRADE_MARGIN_PCT))
             margin_sats = max(Config.MIN_MARGIN_SATS, min(max_single_margin, derived_margin))
+            if margin_sats > derived_margin and derived_margin > 0:
+                adjusted_lev = max(1, int(round((float(derived_margin) * float(lev)) / float(margin_sats))))
+                if adjusted_lev < lev:
+                    lev = adjusted_lev
 
             est_entry_fee = max(1, int(round(margin_sats * lev * Config.TAKER_FEE)))
             exp_ok, exp_reason, proj_exp = SatsExpectancyGate.verify_projected_exposure(
@@ -3036,6 +3071,7 @@ def evaluate_and_dispatch_entries(
                         time.sleep(1.2)
                         verify_running = client.get_running_trades(force_refresh=True)
                         hedge_tid_set = hedge_store.get_all_hedge_trade_ids() if Config.ENABLE_HYBRID_HEDGE else set()
+                        matched_post_timeout = False
                         for vt in verify_running:
                             vtid = str(vt["id"])
                             if vtid not in brain.active_trades and vtid not in hedge_tid_set:
@@ -3046,7 +3082,9 @@ def evaluate_and_dispatch_entries(
                                 adopted_meta["entry_q"] = float(q_val)
                                 brain.active_trades[vtid] = adopted_meta
                                 brain.dirty = True
-                        client.order_guard.clear_intent(intent_fp)
+                                matched_post_timeout = True
+                        if matched_post_timeout:
+                            client.order_guard.clear_intent(intent_fp)
                         brain.save_brain(force=False)
 
     return action_taken, last_entry_time
@@ -3086,6 +3124,7 @@ def main():
         milestone_floor_ratio=Config.MILESTONE_FLOOR_RATIO,
         max_dd_pct=Config.MAX_DRAWDOWN_PCT,
         max_daily_loss_pct=Config.MAX_DAILY_LOSS_PCT,
+        kill_switch_dd_pct=getattr(Config, "KILL_SWITCH_DD_PCT", 0.22),
     )
     hedge_store = HedgeStateStore(
         env_mode=Config.ENV_MODE,
@@ -3152,10 +3191,21 @@ def main():
                 mtf_cache.invalidate("4h")
 
             running = client.get_running_trades(force_refresh=True)
+            live_id_set = {str(x["id"]) for x in (running or []) if isinstance(x, dict) and "id" in x}
+            prelim_closed = [tid for tid in list(brain.active_trades.keys()) if str(tid) not in live_id_set]
+
+            user = client.get_user(force_refresh=bool(prelim_closed) or (last_known_balance is None))
+            balance = int(user.get("balance", 0))
+            if last_known_balance is None:
+                last_known_balance = balance
+
+            prelim_equity, _, _ = compute_account_equity(balance, running)
+            lnm_price = client.get_ticker_price()
+
             running, portfolio_state = reconcile_portfolio_with_hedges(
                 client, brain, hedge_store, running,
-                equity_sats=last_known_balance or 30000,
-                btc_price=70000.0,
+                equity_sats=max(1, prelim_equity or last_known_balance or 30000),
+                btc_price=max(1.0, float(lnm_price or 70000.0)),
                 now=now,
                 safe_mode=safe_mode,
             )
@@ -3163,11 +3213,6 @@ def main():
             hedge_running = list(portfolio_state["hedge_trades_map"].values())
             primary_id_set = {str(x["id"]) for x in primary_running}
             closed_ids = [tid for tid in list(brain.active_trades.keys()) if str(tid) not in primary_id_set]
-
-            user = client.get_user(force_refresh=bool(closed_ids) or (last_known_balance is None))
-            balance = int(user.get("balance", 0))
-            if last_known_balance is None:
-                last_known_balance = balance
 
             if len(primary_running) > Config.MAX_CONCURRENT_TRADES:
                 primary_running = enforce_concurrency_cap(client, brain, primary_running)
@@ -3181,7 +3226,6 @@ def main():
                 continue
 
             brain.check_and_advance_goal(balance)
-            lnm_price = client.get_ticker_price()
 
             proc_t0 = time.perf_counter()
             ind_5m = mtf_cache.get_indicators_fast("5m", lnm_price)
@@ -3310,7 +3354,12 @@ def main():
                 pause_until = now + 2700
                 peak_equity = equity
                 brain.peak_equity = equity
-                brain.locked_floor = int(round(equity * Config.INITIAL_FLOOR_RATIO))
+                milestone_floor = (
+                    int(round(brain.current_target * Config.MILESTONE_FLOOR_RATIO / 1.40))
+                    if getattr(brain, "milestone_level", 1) > 1
+                    else 0
+                )
+                brain.locked_floor = max(milestone_floor, int(round(equity * Config.INITIAL_FLOOR_RATIO)))
                 brain.dirty = True
                 brain.save_brain(force=True)
                 hedge_store.save(force=True)

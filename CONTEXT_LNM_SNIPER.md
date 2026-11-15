@@ -2,8 +2,8 @@
 ## LNM SNIPER v7.3+ (EDICIÓN SATS REALES, OBSERVABILIDAD Y UMBRALES DINÁMICOS)
 
 > **Archivo de Contexto Persistente para Agentes Autónomos e Ingenieros**  
-> **Última Actualización:** 2026-11-10  
-> **Último Commit en GitHub:** `10ae129` (`master -> origin/master`)  
+> **Última Actualización:** 2026-11-15  
+> **Último Commit en GitHub:** `9ec81a7` (`master -> origin/master`)  
 > **Directiva de Operación:** [AGENT_MAINTENANCE_DIRECTIVE.md](file:///c:/Users/mberm/OneDrive/Documentos/sniper/AGENT_MAINTENANCE_DIRECTIVE.md)
 
 ---
@@ -12,13 +12,13 @@
 
 | Componente | Estado | Ubicación / Referencia |
 | :--- | :--- | :--- |
-| **Rama Git** | `master` (100% limpia y sincronizada con `origin/master`) | Commit `10ae129` |
+| **Rama Git** | `master` (Plan Maestro de 9 Tareas / 25 Hallazgos F-01 a F-25 certificado) | Base `9ec81a7` |
 | **Entorno Primario** | Producción (`mainnet`) | LN Markets API v3 (`https://api.lnmarkets.com/v3`) |
 | **Límite de Posiciones** | Máximo 5 posiciones simultáneas | Enforzado en [lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py) |
-| **Piso Duro Unificado** | 75% inicial -> 88% de meta | [HardFloorGuardian](file:///c:/Users/mberm/OneDrive/Documentos/sniper/guardian_execution_core.py) |
-| **Cerebro Activo** | 175 estados discretizados, 336 cierres, SHA-256 verificado | [q_brain_advanced_lnm.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_advanced_lnm.json) |
+| **Piso Duro Unificado** | 75% inicial -> 88% de meta (preserva hitos post Kill-Switch) | [HardFloorGuardian](file:///c:/Users/mberm/OneDrive/Documentos/sniper/guardian_execution_core.py) |
+| **Cerebro Activo** | 202 estados discretizados, 989 cierres, SHA-256 estricto (`strict_sha=True`) | [q_brain_advanced_lnm.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_advanced_lnm.json) |
 | **Fuente de Umbrales** | 10 categorías formales con Hot-Reload atómico | [config/learning_thresholds.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/config/learning_thresholds.json) |
-| **Telemetría en Vivo** | Headless atómica activa (exporta cada $\le 5\text{ s}$) | [telemetry_live.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/telemetry_live.json) |
+| **Telemetría en Vivo** | Headless atómica con FileLock exclusivo y aislamiento Mainnet/Testnet | [telemetry_live.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/telemetry_live.json) / `telemetry_live_testnet.json` |
 | **Compatibilidad Móvil** | Cero dependencias C/C++ pesadas, $O(1)$ en memoria | Android Termux y Linux/Ubuntu |
 
 ---
@@ -304,6 +304,39 @@
   - Candidato promovido a Testnet ([`q_brain_testnet_lnm.json`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_testnet_lnm.json), [`hedge_state_testnet.json`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_testnet.json)).
   - Candidato promovido a Mainnet ([`q_brain_advanced_lnm.json`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_advanced_lnm.json), [`hedge_state_mainnet.json`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_mainnet.json)).
   - Auditoría criptográfica sellada en [`simulation/candidate_certification_report.json`](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/candidate_certification_report.json).
+
+---
+
+### Etapa 18: Auditoría Matemática Integral y Remediación de 25 Hallazgos (F-01 a F-25 — Plan Maestro de 9 Tareas)
+- **Estado:** **Etapas 1, 3, 4 y 5 completadas y certificadas al 100%**.
+- **Objetivo Matemático Central:** Maximización monótona de $\mathbb{E}[\Delta B_{\text{avail}}] > 0$ en satoshis líquidos retirables (`available_balance_sats`), eliminando fugas contables, cortocircuitos lógicos y sesgos de aprendizaje.
+- **Decisiones de Diseño y Correcciones Implementadas (Tareas 1 a 9):**
+  1. **Tarea 1 — Núcleo de Ejecución y Persistencia ([guardian_execution_core.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/guardian_execution_core.py)):**
+     - `AtomicBrainStore.verify_file` y `load` usan `strict_sha=True` por defecto y eliminan la auto-reparación silenciosa del `.sha256` bajo lock compartido (`F-12`).
+     - `InFlightOrderGuard.can_send_order` extrae timestamps multi-clave (`created_at_ts`, `creation_ts`, `open_ts`, `created_at` ISO-8601) convirtiendo milisegundos (`> 1e11`) a segundos (`F-13`).
+     - `HardFloorGuardian` parametriza `kill_switch_dd_pct` desde `Config.KILL_SWITCH_DD_PCT` (`F-14`).
+  2. **Tarea 2 — Supervisión de Aprendizaje y Telemetría ([learning_quality_supervisor.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/learning_quality_supervisor.py)):**
+     - `record_closed_trade` recibe `econ_reward_sats` para calcular $Q_{\text{bias}} = Q_{\text{entry, sats}} - R_{\text{econ, sats}}$ en unidades homogéneas y exige que tanto la operación actual como la media móvil superen `overestimation_alert_sats` (`F-05`).
+     - `AtomicTelemetryDispatcher.publish` protege la escritura y `os.replace` con `FileLockContext(exclusive=True)` (`F-16`).
+  3. **Tarea 3 — Riesgo de Cobertura ([hedge_risk_manager.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_risk_manager.py)):**
+     - `MIN_HEDGE_LEVERAGE = 1`, ajuste dinámico de apalancamiento ante lote mínimo de `1000 sats` para impedir sobrecobertura (`projected_total_ratio <= 1.05`), validación worst-case del SL de cobertura frente a `locked_floor_sats` y exigencia de `expected_saved_sats >= round(est_round_fee * 1.45)` con ahorro neto positivo (`F-07`, `F-08`).
+  4. **Tarea 4 — Contabilidad de Par Cubierto ([portfolio_hedge.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/portfolio_hedge.py)):**
+     - `evaluate_pair_economics` deduce las comisiones Taker de apertura y cierre de ambas patas ($0.10\%$ entrada + $0.10\%$ salida en primaria y cobertura) más `carry_fees` tanto en `combined_net_pl_sats` como en `combined_breakeven_price` (`F-02`).
+  5. **Tarea 5 — Cobertura Predictiva ([predictive_hedge.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/predictive_hedge.py)):**
+     - Exige estrictamente $C_{\text{hedge, net}} = (F_{\text{hedge}} + S_{\text{hedge}} + D_{\text{whipsaw}}) - M_{\text{saved}} < 0$ y $\text{NetSaving}_{\text{sats}} = M_{\text{saved}} - (F_{\text{hedge}} + S_{\text{hedge}} + D_{\text{whipsaw}}) > 0$ con $M_{\text{saved}} = \text{round}(p_{\text{adv}} \cdot h^* \cdot L_{\text{rem}})$ (`F-03`).
+  6. **Tarea 6 — Controlador Adaptativo ([adaptive_controller.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/adaptive_controller.py)):**
+     - Consulta activa de `hedge_q_table` sobre las acciones candidatas válidas con desempate heurístico (`+0.05`), reinicio de `candidate_streak` ante rebotes en V ($\Delta \text{PnL}_{\text{ATR}} \ge +0.10$) y propagación de `fee_paid_sats` y `avoided_sl_sats` reales a `compute_hedge_reward` alineando la línea base de `last_combined_net_sats` (`F-06`).
+  7. **Tarea 7 — Percepción y Compuerta Bayesiana ([sniper_perception_sats_core.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sniper_perception_sats_core.py)):**
+     - Decaimiento lineal sobre `override_initial_strength` (`F-21`), conexión del parámetro `regime` al prior Beta-Binomial (`F-20`), convexidad de futuros inversos ($1/P_{\text{tp}}, 1/P_{\text{sl}}$) y conjunción lógica estricta `and` en `verify_net_sats_expectancy` (`F-01`, `F-04`).
+  8. **Tarea 8 — Orquestador Principal ([lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py)):**
+     - Aislamiento de telemetría por entorno (`F-16`), eliminación del truncamiento negativo en `_update_q` (`F-18`), paso de `econ_reward_sats` al supervisor (`F-05`), redondeo conservador `ceil`/`floor` e inclusión de `carry_sats` en breakeven y PnL flotante (`F-15`), conexión de `combined_rr` (`F-19`), consolidación de PnL/comisiones de coberturas cerradas en la liquidación de la primaria (`F-11`), reducción de Kelly a `0.55x` cuando $f^* \le 0$ y ajuste de apalancamiento en lote mínimo (`F-09`), preservación de `intent_fp` tras timeout HTTP (`F-22`), orden de inicialización en `main()` y preservación de `milestone_floor` tras Kill-Switch (`F-14`, `F-17`, `F-23`).
+  9. **Tarea 9 — Simulador, Entrenamiento, Certificación y Sync ([simulation/sim_lnm_exchange.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/sim_lnm_exchange.py), [simulation/sim_training_environment.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/sim_training_environment.py), [simulation/certify_and_promote_candidate.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/certify_and_promote_candidate.py), [sync_brains_dual.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sync_brains_dual.py)):**
+     - Matemática opcional de futuros inversos (`inverse_contract_math`), control de `cashed_in_sats` sin doble conteo y prioridad de SL sobre liquidación sin gap (`F-01`, `F-24`); sembrado completo de estados canónicos, actualización MFE/MAE, escudos gobernados por `not self.explorer_mode` y entrenamiento Q de cobertura en simulación (`F-25`); validación estadística `stat_ok and risk_ok` en certificación Monte Carlo (`F-10`); y recarga pre-escritura en `sync_brains_dual.py` contra condiciones TOCTOU (`F-12`).
+- **Resultados de Certificación (Etapa 4):**
+  - `test_simulation_engine.py`, `test_terminal_bellman_fix.py`, `test_candidate_certification.py`, `test_simulation_training_loop.py`: **22/22 pruebas superadas (OK)**.
+  - `test_protocolo_v_reversal.py`: **23/23 escenarios cuantitativos y Walk-Forward OOS superados** (`Hybrid Net=+1524 sats`, `MaxDD=0.53%`, `PF=1.41`, `Evitado=2061 sats`, `Empeoró=0`).
+  - `test_learning_quality_and_sats.py`: **8/8 escenarios superados al 100%**.
+  - `q_brain_advanced_lnm.json` y `hedge_state_mainnet.json` verificados intactos (0 mutaciones).
 
 ---
 

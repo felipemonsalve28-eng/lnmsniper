@@ -92,19 +92,21 @@ class PortfolioHedgeCoordinator:
         orig_notional = int(round(orig_margin * orig_lev))
         orig_entry = float(orig_trade.get("price") or orig_trade.get("entryPrice") or price)
         orig_pl = int(orig_trade.get("pl") or 0)
+        orig_entry_fee = max(1, int(round(orig_notional * cls.TAKER_FEE)))
         orig_exit_fee = max(1, int(round(orig_notional * cls.TAKER_FEE)))
         orig_carry = int(round(float(orig_trade.get("sum_carry_fees") or orig_trade.get("funding_fees") or 0)))
 
         if hedge_trade is None:
-            net_pl = orig_pl - orig_exit_fee - max(0, orig_carry) + int(pair_ctx.get("cumulative_cashed_in_sats", 0))
-            fee_offset_pct = 2.2 * cls.TAKER_FEE
+            orig_total_fees = orig_entry_fee + orig_exit_fee + max(0, orig_carry)
+            net_pl = orig_pl - orig_total_fees + int(pair_ctx.get("cumulative_cashed_in_sats", 0))
+            fee_offset_pct = 2.2 * cls.TAKER_FEE + (max(0, orig_carry) / max(1.0, float(orig_notional)))
             be_price = orig_entry * (1.0 + fee_offset_pct) if orig_side == "buy" else orig_entry * (1.0 - fee_offset_pct)
             return {
                 "has_active_hedge": False,
                 "orig_pl_sats": orig_pl,
                 "hedge_pl_sats": 0,
                 "combined_gross_pl_sats": orig_pl,
-                "combined_exit_fees_sats": orig_exit_fee,
+                "combined_exit_fees_sats": orig_total_fees,
                 "combined_net_pl_sats": net_pl,
                 "effective_hedge_ratio": 0.0,
                 "net_pair_notional_sats": orig_notional if orig_side == "buy" else -orig_notional,
@@ -117,12 +119,20 @@ class PortfolioHedgeCoordinator:
         hedge_notional = int(round(hedge_margin * hedge_lev))
         hedge_entry = float(hedge_trade.get("price") or hedge_trade.get("entryPrice") or price)
         hedge_pl = int(hedge_trade.get("pl") or 0)
+        hedge_entry_fee = max(1, int(round(hedge_notional * cls.TAKER_FEE)))
         hedge_exit_fee = max(1, int(round(hedge_notional * cls.TAKER_FEE)))
         hedge_carry = int(round(float(hedge_trade.get("sum_carry_fees") or hedge_trade.get("funding_fees") or 0)))
 
         cashed_in = int(pair_ctx.get("cumulative_cashed_in_sats", 0))
         combined_gross = orig_pl + hedge_pl + cashed_in
-        combined_fees = orig_exit_fee + hedge_exit_fee + max(0, orig_carry) + max(0, hedge_carry)
+        combined_fees = (
+            orig_entry_fee
+            + orig_exit_fee
+            + hedge_entry_fee
+            + hedge_exit_fee
+            + max(0, orig_carry)
+            + max(0, hedge_carry)
+        )
         combined_net = combined_gross - combined_fees
 
         eff_ratio = hedge_notional / max(float(orig_notional), 1.0)

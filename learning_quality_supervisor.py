@@ -39,6 +39,7 @@ import time
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from learning_thresholds_manager import LearningThresholdsManager, get_thresholds_manager
+from guardian_execution_core import FileLockContext
 
 logger = logging.getLogger("SniperLearningSupervisor")
 
@@ -319,6 +320,7 @@ class LearningQualitySupervisor:
         margin_sats: int,
         mfe_sats: Optional[float] = None,
         mae_sats: Optional[float] = None,
+        econ_reward_sats: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Actualiza incrementalmente Q-Bias en satoshis, Fee-Efficiency Ratio (FER)
@@ -343,7 +345,7 @@ class LearningQualitySupervisor:
             self.realized_sats_window.append(float(net_sats))
 
             # -----------------------------------------------------------------
-            # B. Q-Bias en Satoshis: Q_entry_sats - Net_Sats_Realized
+            # B. Q-Bias en Satoshis: Q_entry_sats - Target_Econ_Sats
             # -----------------------------------------------------------------
             q_scale = self.thresholds.get_float("q_calibration", "q_to_sats_scale", 100.0)
             q_warmup = self.thresholds.get_int("q_calibration", "warmup_min_samples", 3)
@@ -354,11 +356,16 @@ class LearningQualitySupervisor:
 
             if predicted_q_entry is not None:
                 q_entry_sats = _safe_float(predicted_q_entry, 0.0) * q_scale
-                q_bias_trade = q_entry_sats - float(net_sats)
+                target_sats = (
+                    _safe_float(econ_reward_sats, float(net_sats))
+                    if econ_reward_sats is not None
+                    else float(net_sats)
+                )
+                q_bias_trade = q_entry_sats - target_sats
                 self.q_bias_window.append(q_bias_trade)
 
                 mean_q_bias = sum(self.q_bias_window) / float(len(self.q_bias_window))
-                if mean_q_bias > over_alert:
+                if q_bias_trade > over_alert and mean_q_bias > over_alert:
                     self.q_bias_overestimation_streak += 1
                     self.q_bias_recovery_streak = 0
                 else:
@@ -371,6 +378,7 @@ class LearningQualitySupervisor:
                         self.q_bias_status = "OVERESTIMATING"
                         if (
                             not self.q_bias_defense_active
+                            and len(self.q_bias_window) >= max(q_warmup, q_persist_req)
                             and self.q_bias_overestimation_streak >= q_persist_req
                         ):
                             self.q_bias_defense_active = True
@@ -913,14 +921,15 @@ class AtomicTelemetryDispatcher:
 
             tmp_path = f"{self.filepath}.tmp.{os.getpid()}.{threading.get_ident()}"
             try:
-                with open(tmp_path, "w", encoding="utf-8") as fh:
-                    json.dump(payload, fh, indent=2, ensure_ascii=False)
-                    fh.flush()
-                    try:
-                        os.fsync(fh.fileno())
-                    except OSError:
-                        pass
-                os.replace(tmp_path, self.filepath)
+                with FileLockContext(self.filepath, exclusive=True, timeout=2.0, raise_on_timeout=False):
+                    with open(tmp_path, "w", encoding="utf-8") as fh:
+                        json.dump(payload, fh, indent=2, ensure_ascii=False)
+                        fh.flush()
+                        try:
+                            os.fsync(fh.fileno())
+                        except OSError:
+                            pass
+                    os.replace(tmp_path, self.filepath)
                 self._last_write_ts = now
                 self.writes_count += 1
                 return True
