@@ -197,19 +197,88 @@ class SimTrainingEnvironment:
         # 1. Evaluar posiciones vivas contra extremos de la vela en el exchange
         events = self.exchange.step_candle(c)
 
-        # Actualizar excursiones MFE/MAE en tiempo real para posiciones abiertas
-        if hasattr(self.brain, "supervisor") and self.brain.supervisor is not None:
-            for live_tid, live_t in self.exchange.running_trades.items():
-                live_meta = self.brain.active_trades.get(live_tid)
-                if isinstance(live_meta, dict):
-                    est_rt_fee = float(live_t.get("notional_sats", 10000)) * (2.0 * self.exchange.taker_fee_rate)
-                    carry_f = float(live_t.get("sum_carry_fees", 0))
-                    net_unr = float(live_t.get("pl", 0)) - est_rt_fee - carry_f
-                    exc = self.brain.supervisor.update_open_position_excursion(
-                        live_tid, net_unr, margin_sats=float(live_t.get("margin", 1000))
+        mkt_state = self.feed.get_perception_state()
+        ind_5m = mkt_state["ind_5m"]
+        ind_15m = mkt_state["ind_15m"]
+        ind_1h = mkt_state["ind_1h"]
+        ind_4h = mkt_state["ind_4h"]
+        perception = mkt_state["perception"]
+        cur_atr = max(1.0, float(ind_5m.get("atr", c.close * 0.002)))
+
+        # Actualizar excursiones MFE/MAE y ejecutar Guardián de bloqueo de ganancias / cosecha (homólogo a producción)
+        for live_tid, live_t in list(self.exchange.running_trades.items()):
+            live_meta = self.brain.active_trades.get(live_tid)
+            notional_f = float(live_t.get("notional_sats", 10000))
+            est_rt_fee = notional_f * (2.0 * self.exchange.taker_fee_rate)
+            carry_f = float(live_t.get("sum_carry_fees", 0))
+            net_unr = float(live_t.get("pl", 0)) - est_rt_fee - carry_f
+
+            if isinstance(live_meta, dict) and hasattr(self.brain, "supervisor") and self.brain.supervisor is not None:
+                exc = self.brain.supervisor.update_open_position_excursion(
+                    live_tid, net_unr, margin_sats=float(live_t.get("margin", 1000))
+                )
+                live_meta["mfe_sats"] = exc["mfe_sats"]
+                live_meta["mae_sats"] = exc["mae_sats"]
+
+            if isinstance(live_meta, dict):
+                act_id = int(live_meta.get("action", 1))
+                strat_cfg = self.brain.strategies.get(act_id, {})
+                entry_p = max(1.0, float(live_t.get("entry_price", c.close)))
+                is_long = str(live_t.get("side", "b")).startswith("b")
+                rt_fee_rate = (2.0 * self.exchange.taker_fee_rate) + (carry_f / max(1.0, notional_f))
+
+                harvest_atr = float(strat_cfg.get("harvest_atr", 1.15))
+                trail_trig_atr = float(strat_cfg.get("trail_trig_atr", 0.75))
+
+                atr_pct = cur_atr / entry_p
+                harvest_rate = max(rt_fee_rate * 2.40, atr_pct * harvest_atr)
+                trig_rate = max(rt_fee_rate * 1.80, atr_pct * trail_trig_atr * 0.75)
+                lock_net_rate = rt_fee_rate * 1.62
+
+                fav_p = float(c.high) if is_long else float(c.low)
+                fav_pct = ((fav_p - entry_p) / entry_p) if is_long else ((entry_p - fav_p) / entry_p)
+
+                # A. Cosecha neta de beneficio (Guardian Harvest) cuando la excursión favorable supera objetivo táctico y costos
+                if fav_pct >= harvest_rate:
+                    harvest_exec_p = (
+                        min(float(c.high), round(entry_p * (1.0 + harvest_rate), 1))
+                        if is_long
+                        else max(float(c.low), round(entry_p * (1.0 - harvest_rate), 1))
                     )
-                    live_meta["mfe_sats"] = exc["mfe_sats"]
-                    live_meta["mae_sats"] = exc["mae_sats"]
+                    ok_h, rec_h = self.exchange.close_trade(
+                        live_tid, price=harvest_exec_p, reason="TAKE_PROFIT", now=now
+                    )
+                    if ok_h and rec_h:
+                        events.append(rec_h)
+                    continue
+
+                # B. Bloqueo de Stop Loss en ganancia neta (Breakeven + Trailing Lock)
+                if fav_pct >= trig_rate:
+                    cur_sl = float(live_t.get("stoploss", 0.0))
+                    if is_long:
+                        trig_p = entry_p * (1.0 + trig_rate)
+                        lock_sl = float(math.ceil(entry_p * (1.0 + lock_net_rate) + max(0.0, (fav_p - trig_p) * 0.65)))
+                        if float(c.close) <= lock_sl:
+                            ok_l, rec_l = self.exchange.close_trade(
+                                live_tid, price=lock_sl, reason="TAKE_PROFIT", now=now
+                            )
+                            if ok_l and rec_l:
+                                events.append(rec_l)
+                            continue
+                        if lock_sl > cur_sl:
+                            live_t["stoploss"] = lock_sl
+                    else:
+                        trig_p = entry_p * (1.0 - trig_rate)
+                        lock_sl = float(math.floor(entry_p * (1.0 - lock_net_rate) - max(0.0, (trig_p - fav_p) * 0.65)))
+                        if float(c.close) >= lock_sl:
+                            ok_l, rec_l = self.exchange.close_trade(
+                                live_tid, price=lock_sl, reason="TAKE_PROFIT", now=now
+                            )
+                            if ok_l and rec_l:
+                                events.append(rec_l)
+                            continue
+                        if cur_sl <= 0.0 or lock_sl < cur_sl:
+                            live_t["stoploss"] = lock_sl
 
         # Cierre defensivo de emergencia si el drawdown flotante supera 5.2% en evaluación
         if not self.explorer_mode and self.exchange.running_trades:
@@ -227,13 +296,6 @@ class SimTrainingEnvironment:
                         events.append(rec)
 
         # 2. Despachar liquidaciones a la Q-table (remember_and_train con Schema v2 solo si learning_enabled)
-        mkt_state = self.feed.get_perception_state()
-        ind_5m = mkt_state["ind_5m"]
-        ind_15m = mkt_state["ind_15m"]
-        ind_1h = mkt_state["ind_1h"]
-        ind_4h = mkt_state["ind_4h"]
-        perception = mkt_state["perception"]
-
         running_count = len(self.exchange.running_trades)
         curr_state_key = self.brain.discretize_state(ind_5m, ind_15m, ind_1h, ind_4h, running_count)
 
@@ -283,7 +345,6 @@ class SimTrainingEnvironment:
                         duration_ticks=dur_ticks,
                         predicted_q_entry=orig_info.get("entry_q", None),
                     )
-                    self.brain.record_trade_in_cycles(net_pnl, action=act_taken)
 
         # 3. Supervisar coberturas mediante AdaptiveHedgeController
         for tid, t in list(self.exchange.running_trades.items()):
@@ -350,8 +411,10 @@ class SimTrainingEnvironment:
         # Freno P0 de preservación de capital: si el drawdown del episodio alcanza el 4.5%,
         # bloquear nuevas aperturas (excepto exploración forzada en entrenamiento) para jamás violar el 8% MaxDD.
         dd_throttle_halt = (not self.explorer_mode) and (current_dd >= 0.045)
+        rem_bars = len(self.feed.candles_1m) - self.feed.cursor
+        min_rem_bars = min(35, max(5, len(self.feed.candles_1m) // 12))
 
-        if not dd_throttle_halt and running_count < max_trades and (now - self.last_entry_ts) >= Config.ENTRY_COOLDOWN_SEC:
+        if not dd_throttle_halt and rem_bars >= min_rem_bars and running_count < max_trades and (now - self.last_entry_ts) >= Config.ENTRY_COOLDOWN_SEC:
             is_exploring = self.learning_enabled and (random.random() < self.brain.epsilon)
 
             raw_action = self.brain.choose_action(
@@ -360,123 +423,147 @@ class SimTrainingEnvironment:
             )
             q_vec = self.brain.get_state_q_values(curr_state_key)
 
+            # Construir orden de evaluación de candidatos alineados con el régimen
             if is_exploring:
-                action = raw_action if raw_action > 0 else random.randint(1, 8)
-                gate_reason = "EXPLORATION_BYPASS"
+                cand_order = list(range(1, 9))
+                random.shuffle(cand_order)
             else:
-                action, gate_reason = SatsExpectancyGate.filter_and_rank_action(
-                    raw_action, curr_state_key, q_vec, self.brain.strategies, perception,
-                    recovery_mode=(current_dd >= 0.035), current_dd_pct=current_dd,
-                    explorer_mode=self.explorer_mode,
-                )
-                # Filtro CQL (Conservative Q-Learning): en evaluación/explotación, exigir ventaja Q demostrada
-                # y que el estado haya sido visitado, evitando operar a ciegas en estados vírgenes.
-                if not self.explorer_mode and action > 0:
-                    q_val = float(q_vec[action]) if action < len(q_vec) else 0.0
-                    visits = int(self.brain.state_visits.get(curr_state_key, 0))
-                    if q_val <= 0.015 or visits < 1:
-                        action = 0
+                ranked_by_q = sorted(range(1, 9), key=lambda a: float(q_vec[a]) if a < len(q_vec) else -1.0, reverse=True)
+                cand_order = []
+                if raw_action > 0:
+                    cand_order.append(raw_action)
+                for a in ranked_by_q:
+                    if a not in cand_order:
+                        cand_order.append(a)
 
-            if action > 0 and action in self.brain.strategies:
-                strat = self.brain.strategies[action]
+            prot = self.floor_guardian.evaluate_protection(
+                equity=self.exchange.equity_sats,
+                available_balance=self.exchange.available_balance_sats,
+                peak_equity=max(self.peak_equity_sats, self.exchange.equity_sats),
+                locked_floor=getattr(self.brain, "locked_floor", 0),
+                daily_pnl_pct=-current_dd,
+            )
+            floor_ok = not prot["should_halt_entries"]
+
+            if floor_ok:
                 price = float(ind_5m["price"])
                 atr = float(ind_5m["atr"])
-                side = strat["side"]
                 mods = self.brain.get_parallel_modifiers(ind_5m, ind_15m, ind_1h, ind_4h)
-                lev, sl, tp = calculate_strategy_order_params(
-                    strat, price, atr, rr_mult=mods.get("rr_mult", 1.0)
-                )
-
                 mkt_reg_tag = perception.get("market_regime", ind_5m.get("regime", "RANGE_NORMAL"))
                 reg_adapt = SatsExpectancyGate.compute_regime_risk_adaptation(
                     mkt_reg_tag, current_dd_pct=current_dd, recovery_mode=(current_dd >= 0.035)
                 )
-                strat_style = strat.get("style", "SNIPER")
-                p_hat, p_lcb, bayes_info = SatsExpectancyGate.estimate_bayesian_win_rate(
-                    curr_state_key, action, strat_style, mkt_reg_tag, self.brain.style_metrics
-                )
-                sl_dist_pct = abs(price - sl) / max(price, 1.0)
                 fee_rt = THRESHOLDS_MANAGER.get_float("fees", "round_trip_fee_rate", 0.0020)
-                tp_dist_pct = abs(tp - price) / max(price, 1.0)
-                b_ratio = max(0.2, (tp_dist_pct - fee_rt) / max(0.0001, sl_dist_pct + fee_rt))
                 kelly_scale = THRESHOLDS_MANAGER.get_float("q_calibration", "fractional_kelly_scale", 0.25)
-                raw_kelly = max(0.0, (p_hat * b_ratio - (1.0 - p_hat)) / b_ratio)
-                kelly_mult = float(np.clip(0.70 + (raw_kelly * kelly_scale * 3.0), 0.55, 1.40))
-
-                # Reducción de riesgo unitario + amortiguador cuadrático por drawdown
                 dd_dampener = max(0.25, 1.0 - (current_dd / 0.06) ** 2) if current_dd > 0 else 1.0
-                base_risk_pct = (0.015 if self.explorer_mode else 0.008) * dd_dampener
-                eff_risk_pct = base_risk_pct * kelly_mult * reg_adapt["size_mult"]
-                risk_budget_sats = max(80, int(round(self.exchange.equity_sats * eff_risk_pct)))
-
-                loss_per_margin_sat = float(lev) * (sl_dist_pct + fee_rt)
-                if loss_per_margin_sat > 0.0001:
-                    derived_margin = int(round(risk_budget_sats / loss_per_margin_sat))
-                else:
-                    derived_margin = int(round(self.exchange.equity_sats * 0.02))
-
-                max_single_margin = int(round(self.exchange.equity_sats * Config.MAX_SINGLE_TRADE_MARGIN_PCT))
-                margin_sats = max(Config.MIN_MARGIN_SATS, min(max_single_margin, derived_margin))
-                if margin_sats < Config.MIN_MARGIN_SATS:
-                    margin_sats = Config.MIN_MARGIN_SATS
-
-                # En modo no explorador, limitar el apalancamiento efectivo si la pérdida potencial en SL supera el 1.0% de la cuenta
-                if not self.explorer_mode:
-                    max_safe_lev = max(1, int((self.exchange.equity_sats * 0.010) / max(1.0, margin_sats * (sl_dist_pct + fee_rt))))
-                    lev = max(1, min(int(lev), max_safe_lev))
-
+                base_risk_pct = (0.015 if self.explorer_mode else 0.012) * dd_dampener
                 auto_adj = self.brain.supervisor.get_autonomous_adjustments() if hasattr(self.brain, "supervisor") and self.brain.supervisor else {"expectancy_boost_applied": 0.0}
-                viable, _ = SatsExpectancyGate.verify_net_sats_expectancy(
-                    price=price,
-                    margin_sats=margin_sats,
-                    lev=lev,
-                    sl_price=sl,
-                    tp_price=tp,
-                    explorer_mode=self.explorer_mode,
-                    slippage_bps=3.0,
-                    expectancy_boost=auto_adj.get("expectancy_boost_applied", 0.0),
-                    state=curr_state_key,
-                    action=action,
-                    style=strat_style,
-                    regime=mkt_reg_tag,
-                    style_metrics=self.brain.style_metrics,
-                )
+                vel_ema = float(perception.get("vel_ema_atr", 0.0)) if isinstance(perception, dict) else 0.0
 
-                # FIX P0: Conectar self.peak_equity_sats real del episodio al HardFloorGuardian
-                prot = self.floor_guardian.evaluate_protection(
-                    equity=self.exchange.equity_sats,
-                    available_balance=self.exchange.available_balance_sats,
-                    peak_equity=max(self.peak_equity_sats, self.exchange.equity_sats),
-                    locked_floor=getattr(self.brain, "locked_floor", 0),
-                    daily_pnl_pct=-current_dd,
-                )
-                floor_ok = not prot["should_halt_entries"]
+                evaluated_acts = set()
+                for cand_a in cand_order:
+                    action, _ = SatsExpectancyGate.filter_and_rank_action(
+                        cand_a, curr_state_key, q_vec, self.brain.strategies, perception,
+                        recovery_mode=(current_dd >= 0.035), current_dd_pct=current_dd,
+                        explorer_mode=False,
+                    )
+                    if action <= 0 or action in evaluated_acts or action not in self.brain.strategies:
+                        continue
+                    evaluated_acts.add(action)
 
-                if ((viable and floor_ok) or is_exploring) and margin_sats <= self.exchange.available_balance_sats:
-                    try:
-                        trade = self.exchange.open_trade(
-                            side=side,
-                            margin=margin_sats,
-                            leverage=lev,
-                            stoploss=sl,
-                            takeprofit=tp,
-                            price=price,
-                            atr=atr,
-                            now=now,
-                        )
-                        tid = trade["id"]
-                        self.brain.active_trades[tid] = {
-                            "action": action,
-                            "style": strat["style"],
-                            "margin": margin_sats,
-                            "leverage": lev,
-                            "state": curr_state_key,
-                            "entry_time": now,
-                            "entry_q": float(q_vec[action]) if action < len(q_vec) else 0.0,
-                        }
-                        self.last_entry_ts = now
-                    except Exception:
-                        pass
+                    if not self.explorer_mode:
+                        q_val = float(q_vec[action]) if action < len(q_vec) else 0.0
+                        if q_val <= 0.0:
+                            continue
+
+                    strat = self.brain.strategies[action]
+                    side = strat["side"]
+
+                    # Filtro de confluencia microestructural: exigir vela de confirmación y evitar centro de rango sin dirección
+                    if side == "buy":
+                        if float(c.close) <= float(c.open):
+                            continue
+                        if "|MID|" in curr_state_key and "|CHOP|" in curr_state_key and float(ind_5m["ema9"]) <= float(ind_5m["ema21"]):
+                            continue
+                        if vel_ema < -0.15:
+                            continue
+                    else:
+                        if float(c.close) >= float(c.open):
+                            continue
+                        if "|MID|" in curr_state_key and "|CHOP|" in curr_state_key and float(ind_5m["ema9"]) >= float(ind_5m["ema21"]):
+                            continue
+                        if vel_ema > 0.15:
+                            continue
+
+                    strat_style = strat.get("style", "SNIPER")
+                    eff_rr_mult = max(1.12, float(mods.get("rr_mult", 1.0)))
+                    lev, sl, tp = calculate_strategy_order_params(
+                        strat, price, atr, rr_mult=eff_rr_mult
+                    )
+
+                    p_hat, p_lcb, _ = SatsExpectancyGate.estimate_bayesian_win_rate(
+                        curr_state_key, action, strat_style, mkt_reg_tag, self.brain.style_metrics
+                    )
+                    sl_dist_pct = abs(price - sl) / max(price, 1.0)
+                    tp_dist_pct = abs(tp - price) / max(price, 1.0)
+                    b_ratio = max(0.2, (tp_dist_pct - fee_rt) / max(0.0001, sl_dist_pct + fee_rt))
+                    raw_kelly = max(0.0, (p_hat * b_ratio - (1.0 - p_hat)) / b_ratio)
+                    kelly_mult = float(np.clip(0.70 + (raw_kelly * kelly_scale * 3.0), 0.55, 1.40))
+
+                    eff_risk_pct = base_risk_pct * kelly_mult * reg_adapt["size_mult"]
+                    risk_budget_sats = max(120, int(round(self.exchange.equity_sats * eff_risk_pct)))
+
+                    loss_per_margin_sat = float(lev) * (sl_dist_pct + fee_rt)
+                    if loss_per_margin_sat > 0.0001:
+                        derived_margin = int(round(risk_budget_sats / loss_per_margin_sat))
+                    else:
+                        derived_margin = int(round(self.exchange.equity_sats * 0.02))
+
+                    max_single_margin = int(round(self.exchange.equity_sats * Config.MAX_SINGLE_TRADE_MARGIN_PCT))
+                    margin_sats = max(Config.MIN_MARGIN_SATS, min(max_single_margin, derived_margin))
+
+                    viable, _ = SatsExpectancyGate.verify_net_sats_expectancy(
+                        price=price,
+                        margin_sats=margin_sats,
+                        lev=lev,
+                        sl_price=sl,
+                        tp_price=tp,
+                        explorer_mode=self.explorer_mode,
+                        slippage_bps=float(self.exchange.default_slippage_bps),
+                        expectancy_boost=auto_adj.get("expectancy_boost_applied", 0.0),
+                        state=curr_state_key,
+                        action=action,
+                        style=strat_style,
+                        regime=mkt_reg_tag,
+                        style_metrics=self.brain.style_metrics,
+                    )
+
+                    if viable and margin_sats <= self.exchange.available_balance_sats:
+                        try:
+                            trade = self.exchange.open_trade(
+                                side=side,
+                                margin=margin_sats,
+                                leverage=lev,
+                                stoploss=sl,
+                                takeprofit=tp,
+                                price=price,
+                                atr=atr,
+                                now=now,
+                            )
+                            tid = trade["id"]
+                            self.brain.active_trades[tid] = {
+                                "action": action,
+                                "style": strat["style"],
+                                "margin": margin_sats,
+                                "leverage": lev,
+                                "state": curr_state_key,
+                                "entry_time": now,
+                                "entry_q": float(q_vec[action]) if action < len(q_vec) else 0.0,
+                            }
+                            self.last_entry_ts = now
+                            break
+                        except Exception:
+                            pass
 
         done = (self.exchange.balance_sats <= Config.MIN_MARGIN_SATS * 2) or not self.feed.has_next()
         info = {
@@ -540,7 +627,6 @@ class SimTrainingEnvironment:
                                 funding_fee_sats=int(rec.get("carry_fees_sats", 0)),
                                 trade_id=tid,
                             )
-                            self.brain.record_trade_in_cycles(net_pnl, action=act_taken)
 
         # Guardar cerebro candidato atómicamente con verificación SHA-256 solo si learning_enabled
         if self.learning_enabled:

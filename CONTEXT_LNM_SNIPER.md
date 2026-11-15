@@ -3,7 +3,7 @@
 
 > **Archivo de Contexto Persistente para Agentes Autónomos e Ingenieros**  
 > **Última Actualización:** 2026-11-15  
-> **Último Commit en GitHub:** `9ec81a7` (`master -> origin/master`)  
+> **Último Commit Base:** `e663b19` (`master`, etapa 18 auditada y certificada)  
 > **Directiva de Operación:** [AGENT_MAINTENANCE_DIRECTIVE.md](file:///c:/Users/mberm/OneDrive/Documentos/sniper/AGENT_MAINTENANCE_DIRECTIVE.md)
 
 ---
@@ -12,11 +12,11 @@
 
 | Componente | Estado | Ubicación / Referencia |
 | :--- | :--- | :--- |
-| **Rama Git** | `master` (Plan Maestro de 9 Tareas / 25 Hallazgos F-01 a F-25 certificado) | Base `9ec81a7` |
+| **Rama Git** | `master` (Etapa 19: Reentrenamiento 18M y promoción certificada a `mainnet`) | Base `e663b19` |
 | **Entorno Primario** | Producción (`mainnet`) | LN Markets API v3 (`https://api.lnmarkets.com/v3`) |
 | **Límite de Posiciones** | Máximo 5 posiciones simultáneas | Enforzado en [lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py) |
 | **Piso Duro Unificado** | 75% inicial -> 88% de meta (preserva hitos post Kill-Switch) | [HardFloorGuardian](file:///c:/Users/mberm/OneDrive/Documentos/sniper/guardian_execution_core.py) |
-| **Cerebro Activo** | 202 estados discretizados, 989 cierres, SHA-256 estricto (`strict_sha=True`) | [q_brain_advanced_lnm.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_advanced_lnm.json) |
+| **Cerebro Activo** | `334` estados discretizados, `2,994` cierres (`epsilon=0.0`), Schema v2, SHA-256 estricto (`strict_sha=True`) | [q_brain_advanced_lnm.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_advanced_lnm.json) / [hedge_state_mainnet.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_mainnet.json) (`206` estados Q) |
 | **Fuente de Umbrales** | 10 categorías formales con Hot-Reload atómico | [config/learning_thresholds.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/config/learning_thresholds.json) |
 | **Telemetría en Vivo** | Headless atómica con FileLock exclusivo y aislamiento Mainnet/Testnet | [telemetry_live.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/telemetry_live.json) / `telemetry_live_testnet.json` |
 | **Compatibilidad Móvil** | Cero dependencias C/C++ pesadas, $O(1)$ en memoria | Android Termux y Linux/Ubuntu |
@@ -337,6 +337,23 @@
   - `test_protocolo_v_reversal.py`: **23/23 escenarios cuantitativos y Walk-Forward OOS superados** (`Hybrid Net=+1524 sats`, `MaxDD=0.53%`, `PF=1.41`, `Evitado=2061 sats`, `Empeoró=0`).
   - `test_learning_quality_and_sats.py`: **8/8 escenarios superados al 100%**.
   - `q_brain_advanced_lnm.json` y `hedge_state_mainnet.json` verificados intactos (0 mutaciones).
+
+### Etapa 19: Reentrenamiento Histórico de 18 Meses (`--reset`), Calibración EMA/Guardián y Promoción Certificada a Mainnet
+- **Estado:** **Completada, certificada por Monte Carlo y promovida atómicamente a `mainnet`**.
+- **Dataset Histórico:** `788,400` velas reales de 1m de `BTCUSDT` descargadas en caché local ([binance_btc_1m.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/data/binance_btc_1m.json), excluida de Git vía `.gitignore`).
+- **Ajustes Implementados:**
+  1. **[lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py):** En `calc_ema`, uso de `p_eff = max(1, int(period))` sin truncar por longitud de serie corta, evitando que `ema9 == ema21 == ema50 == ema200` durante las primeras barras de `1h`/`4h`.
+  2. **[simulation/sim_market_feed.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/sim_market_feed.py):** Vela ancla inicial en `MTFAggregator.get_arrays` cuando `len(hist) == 1`.
+  3. **[simulation/sim_training_environment.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/sim_training_environment.py):** Guardián táctico intra-vela (`harvest_rate`, `trig_rate`, `lock_net_rate`), evaluación ordenada por ranking Q filtrada con `SatsExpectancyGate.filter_and_rank_action(..., explorer_mode=False)`, filtro de confluencia microestructural y eliminación de doble conteo en `record_trade_in_cycles`.
+  4. **[simulation/train_candidate_brain.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/train_candidate_brain.py):** Duración de regímenes sintéticos (`max(140, num_bars // 3)`) alineada con los agregados multitemporales.
+- **Entrenamiento y Certificación Monte Carlo ([candidate_certification_report.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/candidate_certification_report.json)):**
+  - **Entrenamiento (`--reset`):** `60` episodios $\times$ `8,000` velas reales (`2,994` cierres consolidados en `334` estados Schema v2).
+  - **Monte Carlo (`30` caminos $\times$ `450` velas):** `308` operaciones (`230W / 78L`), **`WinRate: 74.68%`**, **`Profit Factor: 1.63`**, **`Net PnL: +37,718 sats`**, **`MaxDD: 5.73%`**, **`Risk of Ruin: 0.0%`**, `mutations_detected: 0`.
+  - **Promoción Atómica y Verificación Read-Only:** [q_brain_advanced_lnm.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_advanced_lnm.json) (`SHA-256: b0780a8d9e18d971...`, `epsilon=0.0`, `334` estados, `2,994` cierres) y [hedge_state_mainnet.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_mainnet.json) (`SHA-256: a84bc0aa88f90dbe...`, `206` estados Q) verificados idénticos al candidato certificado con `strict_sha=True`.
+- **Regresión Posterior a la Promoción:**
+  - `unittest` (`test_simulation_engine.py`, `test_terminal_bellman_fix.py`, `test_candidate_certification.py`, `test_simulation_training_loop.py`): **22/22 pruebas superadas (OK)**.
+  - `test_protocolo_v_reversal.py`: **23/23 escenarios superados (OK)** (`Hybrid Net=+1524 sats`, `MaxDD=0.53%`, `PF=1.41`).
+  - `test_learning_quality_and_sats.py`: **8/8 escenarios superados (OK)**.
 
 ---
 

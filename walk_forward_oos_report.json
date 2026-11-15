@@ -11,7 +11,7 @@
     "EXTREME_VOLATILITY"
   ],
   "priors": {
-    "mainnet_states": 202,
+    "mainnet_states": 334,
     "testnet_states": 202,
     "initial_equity_sats": 100000
   },

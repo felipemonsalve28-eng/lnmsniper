@@ -464,9 +464,8 @@ def calc_ema(series, period):
     n = len(series)
     if n == 0:
         return 0.0
-    if n < period:
-        period = max(1, n)
-    alpha = 2.0 / (period + 1.0)
+    p_eff = max(1, int(period))
+    alpha = 2.0 / (p_eff + 1.0)
     ema = float(series[0])
     one_minus_alpha = 1.0 - alpha
     for i in range(1, n):

@@ -26,11 +26,11 @@ def generate_synthetic_multi_regime_candles(num_bars: int = 1500, start_price: f
     candles = []
     base_ts = 1700000000.0
     cur_price = float(start_price)
-    regimes = ["RANGE", "TREND_BULL", "CHOP_HIGHVOL", "TREND_BEAR", "RANGE_SQUEEZE", "VOLATILITY_EXPANSION"]
+    regimes = ["TREND_BULL", "RANGE", "TREND_BEAR", "RANGE_SQUEEZE", "VOLATILITY_EXPANSION", "CHOP_HIGHVOL"]
 
-    regime_idx = 0
+    regime_idx = random.choice([0, 2])
     bars_in_regime = 0
-    regime_duration = max(35, num_bars // len(regimes))
+    regime_duration = max(140, num_bars // 3)
 
     for i in range(num_bars):
         reg = regimes[regime_idx]
@@ -41,23 +41,23 @@ def generate_synthetic_multi_regime_candles(num_bars: int = 1500, start_price: f
 
         # Dinámica de volatilidad y drift según el régimen
         if reg == "RANGE":
-            drift = math.sin(i / 15.0) * 12.0
-            vol = random.uniform(8.0, 25.0)
+            drift = math.sin(i / 12.0) * 18.0
+            vol = random.uniform(8.0, 18.0)
         elif reg == "TREND_BULL":
-            drift = random.uniform(10.0, 35.0)
-            vol = random.uniform(15.0, 30.0)
+            drift = random.uniform(14.0, 32.0)
+            vol = random.uniform(10.0, 22.0)
         elif reg == "TREND_BEAR":
-            drift = -random.uniform(12.0, 38.0)
-            vol = random.uniform(18.0, 35.0)
+            drift = -random.uniform(14.0, 32.0)
+            vol = random.uniform(10.0, 22.0)
         elif reg == "RANGE_SQUEEZE":
-            drift = math.sin(i / 5.0) * 3.0
-            vol = random.uniform(2.0, 8.0)
+            drift = math.sin(i / 6.0) * 6.0
+            vol = random.uniform(3.0, 8.0)
         elif reg == "VOLATILITY_EXPANSION":
-            drift = random.choice([-1.0, 1.0]) * random.uniform(25.0, 60.0)
-            vol = random.uniform(40.0, 80.0)
+            drift = (1.0 if (i // 60) % 2 == 0 else -1.0) * random.uniform(22.0, 42.0)
+            vol = random.uniform(16.0, 32.0)
         else:  # CHOP_HIGHVOL
-            drift = random.choice([-1.0, 1.0]) * random.uniform(15.0, 45.0)
-            vol = random.uniform(30.0, 70.0)
+            drift = math.sin(i / 8.0) * 24.0
+            vol = random.uniform(15.0, 28.0)
 
         # Proceso difusivo continuo: Open_t = Close_{t-1}
         open_p = cur_price

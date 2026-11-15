@@ -128,6 +128,18 @@ class MTFAggregator:
         if not hist:
             return np.zeros(1), np.zeros(1), np.zeros(1)
 
+        if len(hist) == 1:
+            c0 = hist[0]
+            anchor = Candle(
+                timestamp=max(0.0, c0.timestamp - 60.0),
+                open=c0.open,
+                high=c0.open,
+                low=c0.open,
+                close=c0.open,
+                volume=c0.volume,
+            )
+            hist = [anchor, c0]
+
         highs = np.array([c.high for c in hist], dtype=np.float64)
         lows = np.array([c.low for c in hist], dtype=np.float64)
         closes = np.array([c.close for c in hist], dtype=np.float64)
