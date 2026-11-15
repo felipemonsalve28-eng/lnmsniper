@@ -12,11 +12,11 @@
 
 | Componente | Estado | Ubicación / Referencia |
 | :--- | :--- | :--- |
-| **Rama Git** | `master` (Etapa 19: Reentrenamiento 18M y promoción certificada a `mainnet`) | Base `e663b19` |
+| **Rama Git** | `master` (Limpieza de estado operativo / arranque en `NORMAL` desde `git clone`, base `9daa37f`) | `master` |
 | **Entorno Primario** | Producción (`mainnet`) | LN Markets API v3 (`https://api.lnmarkets.com/v3`) |
 | **Límite de Posiciones** | Máximo 5 posiciones simultáneas | Enforzado en [lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py) |
 | **Piso Duro Unificado** | 75% inicial -> 88% de meta (preserva hitos post Kill-Switch) | [HardFloorGuardian](file:///c:/Users/mberm/OneDrive/Documentos/sniper/guardian_execution_core.py) |
-| **Cerebro Activo** | `334` estados discretizados, `2,994` cierres (`epsilon=0.0`), Schema v2, SHA-256 estricto (`strict_sha=True`) | [q_brain_advanced_lnm.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_advanced_lnm.json) / [hedge_state_mainnet.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_mainnet.json) (`206` estados Q) |
+| **Cerebro Activo** | `334` estados discretizados (`q_table`/`state_visits` entrenados), `0` cierres/historial (`epsilon=0.0`), Schema v2, SHA-256 estricto (`strict_sha=True`) | [q_brain_advanced_lnm.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_advanced_lnm.json) / [hedge_state_mainnet.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_mainnet.json) (`206` estados Q) |
 | **Fuente de Umbrales** | 10 categorías formales con Hot-Reload atómico | [config/learning_thresholds.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/config/learning_thresholds.json) |
 | **Telemetría en Vivo** | Headless atómica con FileLock exclusivo y aislamiento Mainnet/Testnet | [telemetry_live.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/telemetry_live.json) / `telemetry_live_testnet.json` |
 | **Compatibilidad Móvil** | Cero dependencias C/C++ pesadas, $O(1)$ en memoria | Android Termux y Linux/Ubuntu |
@@ -354,6 +354,13 @@
   - `unittest` (`test_simulation_engine.py`, `test_terminal_bellman_fix.py`, `test_candidate_certification.py`, `test_simulation_training_loop.py`): **22/22 pruebas superadas (OK)**.
   - `test_protocolo_v_reversal.py`: **23/23 escenarios superados (OK)** (`Hybrid Net=+1524 sats`, `MaxDD=0.53%`, `PF=1.41`).
   - `test_learning_quality_and_sats.py`: **8/8 escenarios superados (OK)**.
+
+### Arranque Limpio desde Cero (`git clone` -> Conexión Directa en `NORMAL`)
+- **Objetivo:** Conservar únicamente la política Q entrenada (18M en `mainnet` / `q_table` + `hedge_q_table` y pesos de confianza `state_visits` / `hedge_visits`) y eliminar todos los contadores contables, memorias de replay y métricas de sesiones/entrenamientos previos para que al clonar y conectar a LN Markets inicie automáticamente en modo `NORMAL` anclado al saldo real de la cuenta (`peak_equity` = equity conectado, `locked_floor = round(equity * 0.75)` vía `sync_brain_floor_with_reality`).
+- **Archivos limpiados atómicamente (`AtomicBrainStore.save`, Schema v2, `strict_sha=True`):**
+  - [q_brain_advanced_lnm.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_advanced_lnm.json) (`SHA-256: 13854f24e5ad...`, `334` estados Q, `epsilon=0.0`) y [q_brain_testnet_lnm.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_testnet_lnm.json) (`SHA-256: e555f1068cf8...`, `202` estados Q, `epsilon=0.18`): puestos en cero `total_trained`, `total_intermediate_updates`, `realized_net_profit_sats`, `total_fees_paid_sats`, `peak_equity`, `locked_floor`, `milestone_level=1`, `current_target=300000`, `style_metrics`, `cycle_state` (`1h`/`4h`), `active_trades={}`, `processed_closed_trade_ids=[]` y `memory=[]`.
+  - [hedge_state_mainnet.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_mainnet.json) (`SHA-256: a35a516d8587...`, `206` estados Q) y [hedge_state_testnet.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_testnet.json) (`SHA-256: dd7e673e8ebc...`, `99` estados Q): puestos en limpio `pairs={}`, `hedge_memory=[]`, `hedge_metrics` en cero y `updated_at=0.0`.
+- **Verificación de arranque en copia aislada sin `.sha256`/`.bak` (`25,000` / `100,000` / `500,000` sats):** Tanto `mainnet` como `testnet` cargan en modo **`NORMAL`** (`current_dd_pct=0.000`, `allow=True`, `recovery=False`) sincronizando el piso al `75%` del saldo inicial conectado.
 
 ---
 
