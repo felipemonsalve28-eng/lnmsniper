@@ -43,6 +43,7 @@ from learning_quality_supervisor import (
 )
 from sniper_perception_sats_core import SatsExpectancyGate
 from guardian_execution_core import HardFloorGuardian
+from hedge_risk_manager import HedgeRiskManager
 from lnm_sniper_v6_advanced import (
     AutonomousGoalBrain,
     Config,
@@ -511,6 +512,164 @@ def run_all_tests() -> None:
         assert len(b_shadow.shadow_trades) == 0
 
     print("✅ TEST 8 (Cluster Beta: F6 Refactor Modular main(), Guardado Diferido/Debounce, Auditoría JSONL + F7 Modo Sombra Simulado): PASÓ.")
+
+    # -------------------------------------------------------------------------
+    # ESCENARIO 9: Filtros Cobertura Anti-Whipsaw (HedgeRiskManager) + Desempate Colapso Política (choose_action)
+    # -------------------------------------------------------------------------
+    base_pair_ctx = {
+        "orig_notional_sats": 30000,
+        "orig_leverage": 20,
+        "orig_side": "buy",
+        "cooldown_until": 0.0,
+    }
+    base_pair_econ = {
+        "has_active_hedge": False,
+        "effective_hedge_ratio": 0.0,
+        "hedge_notional_sats": 0,
+    }
+    base_pf_snap = {"locked_margin_sats": 1500}
+
+    # 9a. Bloqueo de PARTIAL_HEDGE en RANGE_SQUEEZE y CHOP_HIGHVOL cuando adv_prob < 0.78
+    ok_sq_low, reason_sq_low, _ = HedgeRiskManager.authorize_hedge_action(
+        "PARTIAL_HEDGE",
+        pair_ctx=base_pair_ctx,
+        pair_econ=base_pair_econ,
+        portfolio_snap=base_pf_snap,
+        predictive_signal={
+            "optimal_hedge_ratio": 0.50,
+            "adverse_continuation_prob": 0.65,
+            "expected_saved_sats": 500,
+            "net_expected_saving_sats": 400,
+        },
+        account_equity_sats=30000,
+        available_balance_sats=20000,
+        locked_floor_sats=21000,
+        ind_5m={"price": 77600.0, "atr": 250.0, "market_regime": "RANGE_SQUEEZE"},
+        explorer_mode=False,
+    )
+    assert ok_sq_low is False and reason_sq_low == "BLOCKED_HEDGE_SQUEEZE_WHIPSAW_RISK"
+
+    ok_chop_low, reason_chop_low, _ = HedgeRiskManager.authorize_hedge_action(
+        "PARTIAL_HEDGE",
+        pair_ctx=base_pair_ctx,
+        pair_econ=base_pair_econ,
+        portfolio_snap=base_pf_snap,
+        predictive_signal={
+            "optimal_hedge_ratio": 0.50,
+            "adverse_continuation_prob": 0.77,
+            "expected_saved_sats": 500,
+            "net_expected_saving_sats": 400,
+        },
+        account_equity_sats=30000,
+        available_balance_sats=20000,
+        locked_floor_sats=21000,
+        ind_5m={"price": 77600.0, "atr": 250.0, "market_regime": "CHOP_HIGHVOL"},
+        explorer_mode=False,
+    )
+    assert ok_chop_low is False and reason_chop_low == "BLOCKED_HEDGE_SQUEEZE_WHIPSAW_RISK"
+
+    ok_sq_high, reason_sq_high, _ = HedgeRiskManager.authorize_hedge_action(
+        "PARTIAL_HEDGE",
+        pair_ctx=base_pair_ctx,
+        pair_econ=base_pair_econ,
+        portfolio_snap=base_pf_snap,
+        predictive_signal={
+            "optimal_hedge_ratio": 0.50,
+            "adverse_continuation_prob": 0.82,
+            "expected_saved_sats": 500,
+            "net_expected_saving_sats": 400,
+        },
+        account_equity_sats=30000,
+        available_balance_sats=20000,
+        locked_floor_sats=21000,
+        ind_5m={"price": 77600.0, "atr": 250.0, "market_regime": "RANGE_SQUEEZE"},
+        explorer_mode=False,
+    )
+    assert ok_sq_high is True and reason_sq_high == "AUTHORIZED_PARTIAL_HEDGE"
+
+    # Verificación de costo en explorer_mode: exige net_saving_sats > 0 y expected_saved_sats >= 1.35 * est_round_fee
+    ok_exp_low, reason_exp_low, _ = HedgeRiskManager.authorize_hedge_action(
+        "PARTIAL_HEDGE",
+        pair_ctx=base_pair_ctx,
+        pair_econ=base_pair_econ,
+        portfolio_snap=base_pf_snap,
+        predictive_signal={
+            "optimal_hedge_ratio": 0.50,
+            "adverse_continuation_prob": 0.85,
+            "expected_saved_sats": 45,
+            "net_expected_saving_sats": 5,
+        },
+        account_equity_sats=30000,
+        available_balance_sats=20000,
+        locked_floor_sats=21000,
+        ind_5m={"price": 77600.0, "atr": 250.0, "market_regime": "VOLATILITY_EXPANSION"},
+        explorer_mode=True,
+    )
+    assert ok_exp_low is False and "BLOCKED_HEDGE_COST_EXCEEDS_UNHEDGED_RISK" in reason_exp_low
+
+    ok_exp_zero_net, reason_exp_zero_net, _ = HedgeRiskManager.authorize_hedge_action(
+        "PARTIAL_HEDGE",
+        pair_ctx=base_pair_ctx,
+        pair_econ=base_pair_econ,
+        portfolio_snap=base_pf_snap,
+        predictive_signal={
+            "optimal_hedge_ratio": 0.50,
+            "adverse_continuation_prob": 0.85,
+            "expected_saved_sats": 100,
+            "net_expected_saving_sats": 0,
+        },
+        account_equity_sats=30000,
+        available_balance_sats=20000,
+        locked_floor_sats=21000,
+        ind_5m={"price": 77600.0, "atr": 250.0, "market_regime": "VOLATILITY_EXPANSION"},
+        explorer_mode=True,
+    )
+    assert ok_exp_zero_net is False and "BLOCKED_HEDGE_COST_EXCEEDS_UNHEDGED_RISK" in reason_exp_zero_net
+
+    ok_exp_pass, reason_exp_pass, _ = HedgeRiskManager.authorize_hedge_action(
+        "PARTIAL_HEDGE",
+        pair_ctx=base_pair_ctx,
+        pair_econ=base_pair_econ,
+        portfolio_snap=base_pf_snap,
+        predictive_signal={
+            "optimal_hedge_ratio": 0.50,
+            "adverse_continuation_prob": 0.85,
+            "expected_saved_sats": 80,
+            "net_expected_saving_sats": 40,
+        },
+        account_equity_sats=30000,
+        available_balance_sats=20000,
+        locked_floor_sats=21000,
+        ind_5m={"price": 77600.0, "atr": 250.0, "market_regime": "VOLATILITY_EXPANSION"},
+        explorer_mode=True,
+    )
+    assert ok_exp_pass is True and reason_exp_pass == "AUTHORIZED_PARTIAL_HEDGE"
+
+    # 9b. Penalización determinista (-0.06) de desempate en choose_action cuando policy_collapse_detected=True
+    with tempfile.TemporaryDirectory() as tmpdir:
+        b_col_path = os.path.join(tmpdir, "collapse_brain.json")
+        b_col = AutonomousGoalBrain(filename=b_col_path, explorer_mode=False)
+        state_col = "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS"
+        b_col.q_table[state_col] = [0.0, 0.15, 0.0, 0.12, 0.0, 0.0, 0.0, 0.0, 0.0]
+        b_col.state_visits[state_col] = 100
+        ind_neutral = {
+            "price": 78000.0, "atr": 200.0, "rsi": 50.0, "bb_pos": 0.5,
+            "ema9": 78000.0, "ema21": 78000.0, "ema50": 78000.0, "ema200": 78000.0,
+            "ema_score": 0.0, "regime": "RANGE",
+        }
+
+        act_before = b_col.choose_action(state_col, ind_neutral, ind_neutral, ind_neutral, ind_neutral)
+        assert act_before == 1
+
+        for _ in range(15):
+            b_col.supervisor.record_policy_decision(1)
+        assert b_col.supervisor.policy_collapse_detected is True
+
+        act_after = b_col.choose_action(state_col, ind_neutral, ind_neutral, ind_neutral, ind_neutral)
+        assert act_after == 3
+        assert b_col.q_table[state_col][1] == 0.15 and b_col.q_table[state_col][3] == 0.12
+
+    print("✅ TEST 9 (Anti-Whipsaw HedgeRiskManager + Costo Explorer + Desempate Determinista ante Colapso de Política): PASÓ.")
 
     print("=" * 80)
     print("🏆 CERTIFICACIÓN COMPLETA: TODOS LOS ESCENARIOS SUPERADOS AL 100% 🏆")

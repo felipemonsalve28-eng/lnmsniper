@@ -491,7 +491,7 @@ class SatsExpectancyGate:
         if raw_action > 0 and not explorer_mode:
             q_act = float(q_values[raw_action]) if raw_action < len(q_values) else -1.0
             q_zero = float(q_values[0]) if len(q_values) > 0 else 0.0
-            min_req_q = max(0.010, q_zero) if (recovery_mode or "CHOP" in norm_s or "RANGE_SQUEEZE" in norm_s) else q_zero
+            min_req_q = max(0.020 if recovery_mode else 0.010, q_zero) if (recovery_mode or "CHOP" in norm_s or "RANGE_SQUEEZE" in norm_s) else q_zero
             if q_act <= min_req_q:
                 return 0, "BLOCKED_LOW_Q_VS_NO_TRADE"
 

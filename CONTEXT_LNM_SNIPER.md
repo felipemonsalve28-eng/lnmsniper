@@ -378,6 +378,26 @@
   - [test_learning_quality_and_sats.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_learning_quality_and_sats.py): `8/8` escenarios superados.
   - [test_protocolo_v_reversal.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_protocolo_v_reversal.py): `23/23` escenarios superados.
 
+### Etapa 21: Optimización Anti-Fee-Drag, Blindaje Hedge en `RANGE_SQUEEZE` y Desbloqueo de Entropía
+- **Estado:** **Etapas 1, 2, 3, 4 y 5 completadas al 100%** (certificadas en directorio aislado sin detener los bots vivos).
+- **Auditoría Cuantitativa de Origen (Etapa 1):**
+  - Detección de destrucción por fricción (`FER = -1.89` en `mainnet` con `-4,873` net vs `5,055` fees y `mfe_capture_avg = 0.0%`; `FER = -2.31` en `testnet`), pérdidas del Hedge Engine en `RANGE_SQUEEZE` (`-32,790` de `-36,272` sats en `testnet` y `-210` sats en `mainnet`, `0` stopouts evitados) y colapso de entropía (`SHORT_MONOPOLY_COLLAPSE`).
+- **Mejoras Implementadas (Etapa 3):**
+  1. **[lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py):**
+     - `DEF_SCALP` (`trail_trig_atr=0.80`, `harvest_atr=0.95`) y `REVERSION` (`harvest_atr=1.05`) calibrados contra cierres prematuros.
+     - `execute_strategy_guardian`: cosecha `HARVEST` exige `pnl_dist > fee_offset * 2.15` ($\text{FER} \ge 1.15$ garantizado) y `EDGE_DEGRADATION_PROFIT_PROTECT` exige `fee_offset * 1.65`.
+     - `choose_action`: desempate determinista `-0.06` sobre la acción monopolista cuando `policy_collapse_detected=True` (sin aleatoriedad ni mutar la Q-table).
+     - `evaluate_and_dispatch_entries`: en cuentas `< 25,000` sats (`not explorer_mode`), exige `net_rr >= 1.35` o `fee_ratio >= 4.20`.
+  2. **[predictive_hedge.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/predictive_hedge.py) y [hedge_risk_manager.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_risk_manager.py):**
+     - `whipsaw_base = 0.64` y eficiencia `1.75x` en `RANGE_SQUEEZE`/`CHOP_HIGHVOL`; bloqueo `BLOCKED_HEDGE_SQUEEZE_WHIPSAW_RISK` para `PARTIAL_HEDGE` con `adv_prob < 0.78`; exigencia de `net_saving_sats > 0` y `1.35x` fee incluso en `explorer_mode`.
+  3. **[sniper_perception_sats_core.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sniper_perception_sats_core.py) y [cli_active_preset.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/config/cli_active_preset.json):**
+     - En `RECOVERY` sin override, `min_req_q` sube de `0.010` a `0.020`; metadata de preset alineada a `baseline_v73`.
+- **Certificación en WSL (Etapa 4 — Entorno Aislado):**
+  - [test_sniper_cli.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_sniper_cli.py): `7/7` (`OK`).
+  - [test_learning_quality_and_sats.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_learning_quality_and_sats.py): `9/9` escenarios superados (incluye nuevo `TEST 9`).
+  - [test_protocolo_v_reversal.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_protocolo_v_reversal.py): `23/23` escenarios superados (`0.718 ms/ciclo`, Walk-Forward OOS `Hybrid Net=+1524 sats`).
+  - Simulación `unittest`: `22/22` (`OK`).
+
 ---
 
 ## 3. ARQUITECTURA DE ARCHIVOS CLAVE

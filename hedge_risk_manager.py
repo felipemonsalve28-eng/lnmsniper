@@ -142,7 +142,12 @@ class HedgeRiskManager:
         if (locked_margin + hedge_margin_sats) / max(1.0, float(account_equity_sats)) > max_total_exp:
             return False, "BLOCKED_PORTFOLIO_HEDGE_MARGIN_CAP", {}
 
-        # 5. Garantizar que el ahorro esperado supere al menos 1.45x las comisiones de ida y vuelta y sea neto positivo
+        market_regime = str((ind_5m or {}).get("market_regime", (ind_5m or {}).get("regime", "RANGE"))).upper()
+        adv_prob = float((predictive_signal or {}).get("adverse_continuation_prob", 0.0))
+        if act == "PARTIAL_HEDGE" and market_regime in ("RANGE_SQUEEZE", "CHOP_HIGHVOL") and adv_prob < 0.78:
+            return False, "BLOCKED_HEDGE_SQUEEZE_WHIPSAW_RISK", {}
+
+        # 5. Garantizar que el ahorro esperado supere las comisiones de ida y vuelta con margen de seguridad
         expected_saved_sats = int(
             predictive_signal.get(
                 "expected_saved_sats",
@@ -150,7 +155,8 @@ class HedgeRiskManager:
             )
         )
         net_saving_sats = int(predictive_signal.get("net_expected_saving_sats", expected_saved_sats - est_round_fee))
-        if not explorer_mode and (expected_saved_sats < int(round(est_round_fee * 1.45)) or net_saving_sats <= 0):
+        min_fee_mult = 1.35 if explorer_mode else (1.75 if market_regime in ("RANGE_SQUEEZE", "CHOP_HIGHVOL") else 1.45)
+        if expected_saved_sats < int(round(est_round_fee * min_fee_mult)) or net_saving_sats <= 0:
             return False, f"BLOCKED_HEDGE_COST_EXCEEDS_UNHEDGED_RISK(fee={est_round_fee}>=saved={expected_saved_sats})", {}
 
         return True, f"AUTHORIZED_{act}", {

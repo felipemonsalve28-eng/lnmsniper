@@ -52,8 +52,10 @@ class PredictiveHedgeEngine:
         adverse_continuation_prob = round(max(0.05, min(0.95, base_adverse)), 4)
 
         # 2. Riesgo de látigo (whipsaw) según régimen y compresión
-        if market_regime in ("RANGE_SQUEEZE", "EXTREME_VOLATILITY", "CHOP_HIGHVOL"):
-            whipsaw_base = 0.46
+        if market_regime in ("RANGE_SQUEEZE", "CHOP_HIGHVOL"):
+            whipsaw_base = 0.64
+        elif market_regime == "EXTREME_VOLATILITY":
+            whipsaw_base = 0.56
         elif market_regime == "RANGE":
             whipsaw_base = 0.34
         else:
@@ -107,7 +109,8 @@ class PredictiveHedgeEngine:
         )
 
         # Solo recomendar cobertura si el ahorro esperado supera la fricción total (C_hedge,net < 0) + margen de seguridad
-        min_fee_efficiency = saved_move_sats >= int(round((hedge_fees_sats + hedge_slippage_sats) * 1.45))
+        fee_eff_mult = 1.75 if market_regime in ("RANGE_SQUEEZE", "RANGE", "CHOP_HIGHVOL") else 1.45
+        min_fee_efficiency = saved_move_sats >= int(round((hedge_fees_sats + hedge_slippage_sats) * fee_eff_mult))
         recommend_hedge = (
             optimal_h >= 0.35
             and min_fee_efficiency

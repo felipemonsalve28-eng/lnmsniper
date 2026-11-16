@@ -913,7 +913,7 @@ class AutonomousGoalBrain:
             },
             2: {
                 "side": "buy", "style": "REVERSION", "sl_atr": 1.6, "rr": 2.4, "lev_f": 0.75, "name": "LONG_REVERSION",
-                "trail_trig_atr": 0.75, "trail_slack_atr": 0.55, "exit_mode": "LOCK", "harvest_atr": 0.80, "exhaust_sens": "HIGH",
+                "trail_trig_atr": 0.75, "trail_slack_atr": 0.55, "exit_mode": "LOCK", "harvest_atr": 1.05, "exhaust_sens": "HIGH",
             },
             3: {
                 "side": "buy", "style": "SNIPER", "sl_atr": 1.2, "rr": 3.2, "lev_f": 1.00, "name": "LONG_SNIPER",
@@ -921,7 +921,7 @@ class AutonomousGoalBrain:
             },
             4: {
                 "side": "buy", "style": "DEF_SCALP", "sl_atr": 1.4, "rr": 2.0, "lev_f": 0.42, "name": "LONG_DEF_SCALP",
-                "trail_trig_atr": 0.60, "trail_slack_atr": 0.42, "exit_mode": "LOCK", "harvest_atr": 0.65, "exhaust_sens": "MAX",
+                "trail_trig_atr": 0.80, "trail_slack_atr": 0.42, "exit_mode": "LOCK", "harvest_atr": 0.95, "exhaust_sens": "MAX",
             },
             5: {
                 "side": "sell", "style": "TREND", "sl_atr": 2.0, "rr": 4.2, "lev_f": 0.65, "name": "SHORT_TREND",
@@ -929,7 +929,7 @@ class AutonomousGoalBrain:
             },
             6: {
                 "side": "sell", "style": "REVERSION", "sl_atr": 1.6, "rr": 2.4, "lev_f": 0.75, "name": "SHORT_REVERSION",
-                "trail_trig_atr": 0.75, "trail_slack_atr": 0.55, "exit_mode": "LOCK", "harvest_atr": 0.80, "exhaust_sens": "HIGH",
+                "trail_trig_atr": 0.75, "trail_slack_atr": 0.55, "exit_mode": "LOCK", "harvest_atr": 1.05, "exhaust_sens": "HIGH",
             },
             7: {
                 "side": "sell", "style": "SNIPER", "sl_atr": 1.2, "rr": 3.2, "lev_f": 1.00, "name": "SHORT_SNIPER",
@@ -937,7 +937,7 @@ class AutonomousGoalBrain:
             },
             8: {
                 "side": "sell", "style": "DEF_SCALP", "sl_atr": 1.4, "rr": 2.0, "lev_f": 0.42, "name": "SHORT_DEF_SCALP",
-                "trail_trig_atr": 0.60, "trail_slack_atr": 0.42, "exit_mode": "LOCK", "harvest_atr": 0.65, "exhaust_sens": "MAX",
+                "trail_trig_atr": 0.80, "trail_slack_atr": 0.42, "exit_mode": "LOCK", "harvest_atr": 0.95, "exhaust_sens": "MAX",
             },
         }
 
@@ -1450,6 +1450,19 @@ class AutonomousGoalBrain:
 
         mods = self.get_parallel_modifiers(ind_5m, ind_15m, ind_1h, ind_4h)
         lcb_penalty = (0.12 / float(np.sqrt(visits + 1.0))) if (visits < 80 and not self.explorer_mode) else 0.0
+        collapse_dom_name = None
+        sup = getattr(self, "supervisor", None)
+        if sup is not None:
+            try:
+                adj = sup.get_autonomous_adjustments()
+                if isinstance(adj, dict) and adj.get("policy_collapse_detected", False):
+                    collapse_dom_name = getattr(sup, "last_dominant_action", None)
+                    if not collapse_dom_name and hasattr(sup, "get_policy_entropy_metrics"):
+                        ent_m = sup.get_policy_entropy_metrics()
+                        if isinstance(ent_m, dict):
+                            collapse_dom_name = ent_m.get("dominant_action")
+            except Exception:
+                collapse_dom_name = None
 
         def biased_q(a):
             if a == 0:
@@ -1460,6 +1473,8 @@ class AutonomousGoalBrain:
                 q_val = (q_val * 0.65) if q_val >= 0 else (q_val - 0.04)
             elif mods["name_1h"] == "BEAR_EXPANSION" and a in (1, 2, 3, 4):
                 q_val = (q_val * 0.65) if q_val >= 0 else (q_val - 0.04)
+            if collapse_dom_name and strat["name"] == collapse_dom_name:
+                q_val -= 0.06
 
             b = mods["long_bias"] if strat["side"] == "buy" else mods["short_bias"]
             if strat["style"] in ("REVERSION", "DEF_SCALP"):
@@ -2233,7 +2248,7 @@ def execute_strategy_guardian(
         )
 
         if deg_streak >= Config.EDGE_DEGRADATION_PERSISTENCE and contrary_momentum:
-            if pl_sats > (est_round_fee_sats + 12) and pnl_dist > (fee_offset * 1.25):
+            if pl_sats > max(20, int(est_round_fee_sats * 1.65)) and pnl_dist > (fee_offset * 1.65):
                 if confirm_and_close_trade(client, brain, tid, trade_meta, "EDGE_DEGRADATION_PROFIT_PROTECT"):
                     print(
                         f"  🛡️ [GUARDIÁN EDGE PROTECT] Cosecha defensiva en {tid[:6]} tras {deg_streak} ciclos "
@@ -2254,7 +2269,7 @@ def execute_strategy_guardian(
             sys_scale *= 0.80
 
         harvest_target_atr = strat["harvest_atr"] * sys_scale
-        min_profit_ok = pnl_dist > (fee_offset * 1.45) and pl_sats >= max(16, int(est_round_fee_sats * 1.45), int(margin * 0.032))
+        min_profit_ok = pnl_dist > (fee_offset * 2.15) and pl_sats >= max(24, int(est_round_fee_sats * 2.15), int(margin * 0.045))
 
         if min_profit_ok and pnl_atr >= harvest_target_atr:
             can_check_harvest = not (exit_mode == "RUNNER" and sl_locked_server)
@@ -3148,6 +3163,13 @@ def evaluate_and_dispatch_entries(
                     int(round(base_cost_ref * (3.2 + current_dd_pct * 3.0 if recovery_mode else 2.9))),
                 )
                 if sats_meta["net_tp_sats"] < min_strict_tp:
+                    viable_sats = False
+
+            if viable_sats and not Config.EXPLORER_MODE and equity < 25000:
+                if not (
+                    float(sats_meta.get("net_rr", 0.0)) >= 1.35
+                    or float(sats_meta.get("fee_ratio", 0.0)) >= 4.20
+                ):
                     viable_sats = False
 
             lat_degraded, lat_reason = client.telemetry.evaluate_execution_health()
