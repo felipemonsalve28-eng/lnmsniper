@@ -1,37 +1,747 @@
 {
-  "active_trades": {},
-  "current_target": 300000,
+  "active_trades": {
+    "c881912e-ada8-4110-b11d-bed8b9c3d445": {
+      "action": 8,
+      "ai_closed": false,
+      "close_order_sent": false,
+      "decision_price": 63957.5,
+      "edge_deg_streak": 0,
+      "entry_q": 1.9211,
+      "entry_time": 1794831136.7391582,
+      "eval_count": 0,
+      "is_hedged": false,
+      "last_edge_score": 2.0398,
+      "last_eval_time": 1794831136.7391582,
+      "last_guardian_mode": "DEF_SCALP_LOCK",
+      "last_pnl_atr": -0.1563,
+      "leverage": 15.0,
+      "mae_sats": 3261.8900000000003,
+      "margin": 43063,
+      "mfe_sats": 0.0,
+      "prev_loop_pnl_atr": -1.3849,
+      "risk": 0.08,
+      "side": "sell",
+      "sl_locked": false,
+      "sl_pending_target": 0,
+      "state": "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      "style": "DEF_SCALP",
+      "ticks_observed": 362.0
+    }
+  },
+  "current_target": 1012500,
   "cycle_state": {
     "1h": {
-      "action": 0,
-      "bucket": 0,
-      "pnl": 0,
-      "start_eq": 0,
-      "start_price": 0.0,
-      "state": null,
-      "trades": 0,
-      "wins": 0
+      "action": 2,
+      "bucket": 498564,
+      "pnl": -712,
+      "start_eq": 607200,
+      "start_price": 64355.5,
+      "state": "TREND_BEAR|MID|BEAR_STRONG|FLAT",
+      "trades": 2,
+      "wins": 1
     },
     "4h": {
       "action": 0,
-      "bucket": 0,
-      "pnl": 0,
-      "start_eq": 0,
-      "start_price": 0.0,
-      "state": null,
-      "trades": 0,
-      "wins": 0
+      "bucket": 124641,
+      "pnl": -712,
+      "start_eq": 607200,
+      "start_price": 64355.5,
+      "state": "CHOP_HIGHVOL|LOW|BEAR_STRONG|LOSS",
+      "trades": 2,
+      "wins": 1
     }
   },
   "env": "testnet",
-  "epsilon": 0.18,
-  "locked_floor": 0,
-  "memory": [],
-  "milestone_level": 1,
-  "peak_equity": 0,
-  "processed_closed_trade_ids": [],
+  "epsilon": 0.08,
+  "locked_floor": 585394,
+  "memory": [
+    [
+      2.0244,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY",
+      5,
+      2.0,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|EMA_TRANS"
+    ],
+    [
+      2.02,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|EMA_TRANS",
+      5,
+      -2.0,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      2.02,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|EMA_TRANS",
+      5,
+      -2.0,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      2.02,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|EMA_TRANS",
+      5,
+      -2.0,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      2.02,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|EMA_TRANS",
+      5,
+      -2.0,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      2.0202,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|EMA_TRANS",
+      5,
+      -2.0,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      2.0203,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|EMA_TRANS",
+      5,
+      -2.0,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      2.02,
+      "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|EMA_TRANS",
+      5,
+      -2.0,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      2.0355,
+      "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|BEAR_RALLY",
+      1,
+      -2.0,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      1.5773,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY",
+      8,
+      1.5459,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      2.0237,
+      "RANGE_NORMAL|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      8,
+      2.0,
+      "RANGE_NORMAL|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      2.2221,
+      "RANGE_NORMAL|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      8,
+      2.0,
+      "CHOP_HIGHVOL|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      2.0466,
+      "CHOP_HIGHVOL|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      6,
+      -2.0,
+      "CHOP_HIGHVOL|DIP|LOW_EXP|CHOP|BEAR_RALLY"
+    ],
+    [
+      2.2549,
+      "CHOP_HIGHVOL|DIP|LOW_EXP|CHOP|BEAR_RALLY",
+      8,
+      -2.0,
+      "TREND_BEAR|MID|LOW_EXP|CHOP|FULL_BEAR"
+    ],
+    [
+      2.2721,
+      "TREND_BEAR|MID|LOW_EXP|CHOP|FULL_BEAR",
+      6,
+      2.0,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|FULL_BEAR"
+    ],
+    [
+      2.2739,
+      "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|FULL_BEAR",
+      4,
+      -2.0,
+      "TREND_BEAR|DIP|LOW_EXP|CHOP|FULL_BEAR"
+    ],
+    [
+      2.2596,
+      "TREND_BEAR|DIP|LOW_EXP|CHOP|FULL_BEAR",
+      5,
+      -2.0,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.2989,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+      2,
+      -2.0,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.2924,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BEAR",
+      4,
+      -2.0,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.3718,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      -2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.0443,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.1913,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      6,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.1248,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      6,
+      -2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.0274,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.1139,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      6,
+      -2.0,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.1125,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+      4,
+      -2.0,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.3617,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+      3,
+      2.0,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.22,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+      4,
+      -2.0,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.3125,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BEAR",
+      2,
+      -2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.2754,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.3151,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.1751,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      6,
+      -2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.0308,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      -2.0,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.1639,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      4,
+      -2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.0669,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.0723,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.0385,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      1.9557,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      1.9323,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      7,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      1.8683,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      7,
+      1.8483,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.0599,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.0341,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.1222,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.0978,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.0793,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -2.0,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.058,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -0.038,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.22,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -2.0,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.1956,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      -2.0,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.3639,
+      "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|FULL_BEAR",
+      4,
+      -2.0,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.22,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BEAR",
+      4,
+      2.0,
+      "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.1639,
+      "CHOP_HIGHVOL|PEAK|LOW_EXP|BEAR|FULL_BEAR",
+      1,
+      -2.0,
+      "CHOP_HIGHVOL|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      1.1933,
+      "CHOP_HIGHVOL|MID|LOW_EXP|BEAR|FULL_BEAR",
+      6,
+      0.9326,
+      "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.3617,
+      "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.22,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -2.0,
+      "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      1.5157,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      1.4957,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.3639,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      0.3439,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.2189,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.3315,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -2.0,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|BEAR_RALLY"
+    ],
+    [
+      2.3935,
+      "TREND_BULL|MID|LOW_EXP|CHOP|BEAR_RALLY",
+      1,
+      -2.0,
+      "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      -2.0,
+      "RANGE_NORMAL|MID|LOW_EXP|BEAR|BEAR_RALLY"
+    ],
+    [
+      2.1639,
+      "RANGE_NORMAL|MID|LOW_EXP|BEAR|BEAR_RALLY",
+      3,
+      -2.0,
+      "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.1639,
+      "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      -2.0,
+      "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.1479,
+      "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      -2.0,
+      "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.3935,
+      "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -2.0,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.22,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      -2.0,
+      "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+      3,
+      -2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      -2.0,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+      3,
+      -2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      -2.0,
+      "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.22,
+      "TREND_BEAR|PEAK|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -2.0,
+      "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.5865,
+      "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      0.5665,
+      "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -2.0,
+      "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.22,
+      "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      0.9083,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      0.8883,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      -2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.22,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      -2.0,
+      "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.02,
+      "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BEAR",
+      5,
+      -2.0,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ],
+    [
+      2.22,
+      "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR",
+      8,
+      2.0,
+      "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR"
+    ]
+  ],
+  "milestone_level": 4,
+  "peak_equity": 780525,
+  "processed_closed_trade_ids": [
+    "cec784c9-1822-4c01-ab4d-6a3a13ecfcb9",
+    "f6b655b0-7eca-4f87-9238-a50292149638",
+    "26b21faf-280d-4293-8ebd-1f69dc9e789f",
+    "1f4b2957-4471-4159-ab4a-f7f120056346",
+    "220ad566-6f71-4084-aca1-8af36a165b11",
+    "b4041aaa-8c3a-42d3-bfb5-04add7dce088",
+    "bdc97f56-196c-47da-b0da-591d94b7f127",
+    "cd344ed9-c27b-4f92-8fa7-ae7a5f9af6b9",
+    "d0832b46-eeb5-4aa4-a723-107515aea815",
+    "a1a0363c-9d5e-4b7b-b541-a26b74945942",
+    "3ba0fa3a-ad1e-4512-b846-82b4039d2f2f",
+    "62313fa5-4342-4504-94c3-97c44f73a262",
+    "1d4b134e-021b-42a1-bd23-379d0bf67509",
+    "91a6eaff-5bf8-40c7-97bc-1886d1b810d0",
+    "04369739-836c-4d1a-8b01-45d737551afe",
+    "dae5e1d3-651b-49ff-8387-e5108983e414",
+    "9553ca36-6070-440c-ab6f-a0bda0533782",
+    "e4d2cff3-d45d-49a4-a75e-7236ca388ebc",
+    "a9df735a-32b2-45a5-bbc7-ea78d5c77202",
+    "8b11a022-ebf3-420b-86f5-9c4b60983ab6",
+    "3298260f-fabb-4f3a-8f20-ce33b207e69b",
+    "9a8e029f-824a-4982-b484-f1f7d3e9f22a",
+    "9a58d3d5-1022-412a-a66f-7374042f92c8",
+    "48476bc3-b2ee-4f0a-9715-db920af25a94",
+    "2270966d-129b-46e2-a5fc-60fc91c02bb9",
+    "b4e274b5-fae3-4b66-a2b2-d97b51a426f1",
+    "ba7085bf-8a8f-4ce9-96fa-7a37120c3383",
+    "b341dcf5-dac4-4e12-a380-21fe406f0748",
+    "82626e12-3ba6-4683-aefc-aa73dbf7afa6",
+    "021ec5a7-1444-4029-a64a-bb9f48c9e368",
+    "15810eab-b4bb-409e-a36e-902e0a12c2de",
+    "7d8ee1df-1769-4cf6-88e8-d43419f8197c",
+    "6920f652-6a07-490a-8711-bdae78008334",
+    "bb32ae3e-74c5-4c32-9414-b1efb0e65240",
+    "d6548349-6233-482c-a6d2-70658725e783",
+    "3e60a3dd-270c-4064-ae43-eec29b438d64",
+    "132ca74d-9b75-4fe6-b55d-446d3ba6ca3a",
+    "0f4c3f26-dfeb-4b7a-afd3-1082b3a2d11d",
+    "58c3cba6-3c8d-4ac7-ab7e-0b02d3d13746",
+    "532c00d3-be08-43ae-9fd1-57f8f60601db",
+    "6a60dc77-f3c9-4d5b-8706-f72d49dc1951",
+    "25824491-b0d6-4a68-933a-0c8a4a9be13e",
+    "a9658067-b272-412c-bc8e-574c54ea9648",
+    "7e337293-a52a-4bf9-b3b9-3df988ecc18e",
+    "0a79cdd5-16ab-4b7b-8d96-3e368fc59b44",
+    "a902ee7a-5e3d-45f1-ae09-37a70da6a20c",
+    "2a779b0a-fe00-47e9-9854-fb456b33b396",
+    "3160a5bf-0dd8-478d-a24f-ee334a6e966d",
+    "396465af-4e2c-45d9-934b-1a31265da049",
+    "8c9dea8a-ef03-4145-8eca-04f2d4c9faa6",
+    "287bd2bf-cf06-4db3-ba4d-be41153f43da",
+    "7236e3df-22c4-436e-b926-da0274d58708",
+    "f55820e0-4e21-4380-b7d4-1c59ebb55257",
+    "326d83fb-c1f9-4f18-b97d-a7c269791665",
+    "378810d9-a707-452e-87fc-8d05c5cbba6d",
+    "35656331-396f-4656-b8ff-f8f40137c684",
+    "71aee74b-791e-4842-9490-3a36fdbe16d6",
+    "54e44f53-4972-484d-a949-efac4e8ee9b8",
+    "9d0d3dc8-1b04-43ba-ba1a-45915f699f0b",
+    "78d991c5-97de-4fbf-9537-f9045cdb27f4",
+    "a908f23e-0153-4938-86bd-96a854f24579",
+    "313d9cf3-e20e-4b81-b5bd-88db9e634dbd",
+    "bd7314d1-514a-43b9-9e63-c492d4698379",
+    "7d193552-6a4c-47eb-a0e3-8ca9f19e0850",
+    "695ef1ae-7e52-4ade-986b-57965546ee2f",
+    "23a292c7-c3ea-4d55-b1c1-04b56b0522c5",
+    "a32672d6-72db-45cc-85e2-b17534da80d8",
+    "4803741e-12bc-4c92-bfdf-f9dafc2fd7f1",
+    "63f52a88-8195-43cb-bc14-21190f4483da",
+    "f4d21eec-6f8b-463b-8926-5ba443ba80d0",
+    "50cc0a26-0d35-41f2-b79d-ad07df5afad0",
+    "f1165a49-43b9-4c0a-bb08-61e294637ee0",
+    "aa243a69-04b2-489a-8fb0-c176c1c34126",
+    "b0724e6c-8e05-433e-9371-93c0412cce80",
+    "d70ac10b-1acf-4f5f-b69e-79426a3587ed",
+    "89a41dec-ca3e-47b6-84a5-e448b99f6108",
+    "642b757a-beec-41dd-81f4-a8015112cc76",
+    "b6299a3c-2211-4790-ad90-fe0f61ddcf11",
+    "b41944b2-ed9a-4598-b2f6-3413987659b7",
+    "c61e8094-f21a-456e-83b1-85f68ebed925",
+    "a5fc0d67-86c3-41ca-9088-a861b75b7ae2",
+    "b35a3420-07f6-46c9-af77-a2ed948e5ce8",
+    "09114b60-e8aa-47a3-a8f7-b97c00b8d5f6",
+    "1651086d-b095-4825-aebf-7066509802d9",
+    "d74347bb-fafd-4003-8eca-0336aad720b0"
+  ],
   "q_table": {
-    "CHOP_HIGHVOL|DIP|HIGH_EXP|BEAR|EMA_TRANS": [
+    "CHOP_HIGHVOL|DIP|LOW_EXP|BEAR|FULL_BEAR": [
       0.0,
       0.015,
       0.015,
@@ -42,38 +752,16 @@
       0.06,
       0.015
     ],
-    "CHOP_HIGHVOL|DIP|HIGH_EXP|BEAR|FULL_BEAR": [
-      0.0,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.065,
-      0.045,
-      0.06,
-      0.015
-    ],
-    "CHOP_HIGHVOL|DIP|HIGH_EXP|CHOP|EMA_TRANS": [
+    "CHOP_HIGHVOL|DIP|LOW_EXP|CHOP|BEAR_RALLY": [
       0.0,
       0.015,
       0.065,
       0.055,
       0.05,
       0.015,
+      -1.716,
       0.015,
-      0.015,
-      0.015
-    ],
-    "CHOP_HIGHVOL|DIP|LOW_EXP|CHOP|EMA_TRANS": [
-      0.0,
-      0.015,
-      0.065,
-      0.055,
-      0.05,
-      0.015,
-      0.015,
-      0.015,
-      0.015
+      -1.6273
     ],
     "CHOP_HIGHVOL|MID|HIGH_EXP|BEAR|BEAR_RALLY": [
       0.0,
@@ -108,17 +796,6 @@
       0.06,
       0.015
     ],
-    "CHOP_HIGHVOL|MID|HIGH_EXP|CHOP|EMA_TRANS": [
-      0.0,
-      0.015,
-      0.045,
-      0.015,
-      0.045,
-      0.015,
-      0.045,
-      0.015,
-      0.045
-    ],
     "CHOP_HIGHVOL|MID|LOW_EXP|BEAR|BEAR_RALLY": [
       0.0,
       0.015,
@@ -148,24 +825,13 @@
       0.015,
       0.015,
       0.065,
-      0.045,
+      0.1808,
       0.06,
       0.015
     ],
-    "CHOP_HIGHVOL|MID|LOW_EXP|CHOP|EMA_TRANS": [
+    "CHOP_HIGHVOL|PEAK|LOW_EXP|BEAR|FULL_BEAR": [
       0.0,
-      0.015,
-      0.045,
-      0.015,
-      0.045,
-      0.015,
-      0.045,
-      0.015,
-      0.045
-    ],
-    "CHOP_HIGHVOL|PEAK|HIGH_EXP|BEAR|EMA_TRANS": [
-      0.0,
-      0.015,
+      -0.4646,
       0.015,
       0.015,
       0.015,
@@ -173,28 +839,6 @@
       0.045,
       0.06,
       0.015
-    ],
-    "CHOP_HIGHVOL|PEAK|HIGH_EXP|BEAR|FULL_BEAR": [
-      0.0,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.065,
-      0.045,
-      0.06,
-      0.015
-    ],
-    "CHOP_HIGHVOL|PEAK|LOW_EXP|CHOP|EMA_TRANS": [
-      0.0,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.065,
-      0.055,
-      0.05
     ],
     "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|BULL_DIP": [
       0.0,
@@ -284,17 +928,6 @@
       0.015,
       0.015
     ],
-    "RANGE_NORMAL|DIP|HIGH_EXP|CHOP|EMA_TRANS": [
-      0.0,
-      0.015,
-      0.065,
-      0.055,
-      0.05,
-      0.015,
-      0.015,
-      0.015,
-      0.015
-    ],
     "RANGE_NORMAL|DIP|LOW_EXP|BEAR|BULL_DIP": [
       0.0,
       0.015,
@@ -326,7 +959,7 @@
       0.065,
       0.045,
       0.06,
-      0.015
+      -0.6353
     ],
     "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BULL": [
       0.0,
@@ -383,7 +1016,7 @@
       0.015,
       0.015
     ],
-    "RANGE_NORMAL|DIP|LOW_EXP|CHOP|EMA_TRANS": [
+    "RANGE_NORMAL|DIP|LOW_EXP|CHOP|BEAR_RALLY": [
       0.0,
       0.015,
       0.065,
@@ -392,7 +1025,7 @@
       0.015,
       0.015,
       0.015,
-      0.015
+      1.9771
     ],
     "RANGE_NORMAL|MID|HIGH_EXP|BEAR|BEAR_RALLY": [
       0.0,
@@ -504,22 +1137,11 @@
       0.015,
       0.015
     ],
-    "RANGE_NORMAL|MID|HIGH_EXP|CHOP|EMA_TRANS": [
-      0.0,
-      0.015,
-      0.045,
-      0.015,
-      0.045,
-      0.015,
-      0.045,
-      0.015,
-      0.045
-    ],
     "RANGE_NORMAL|MID|LOW_EXP|BEAR|BEAR_RALLY": [
       0.0,
       0.015,
       0.015,
-      0.015,
+      -0.4646,
       0.015,
       0.065,
       0.045,
@@ -557,7 +1179,7 @@
       0.065,
       0.045,
       0.06,
-      0.015
+      -0.4646
     ],
     "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BULL": [
       0.0,
@@ -624,6 +1246,17 @@
       0.015,
       0.015,
       0.015
+    ],
+    "RANGE_NORMAL|MID|LOW_EXP|CHOP|BEAR_RALLY": [
+      0.0,
+      0.015,
+      0.015,
+      0.015,
+      0.015,
+      0.015,
+      0.065,
+      0.055,
+      0.05
     ],
     "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS": [
       0.0,
@@ -713,17 +1346,6 @@
       0.015,
       0.015
     ],
-    "RANGE_NORMAL|PEAK|HIGH_EXP|CHOP|EMA_TRANS": [
-      0.0,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.065,
-      0.055,
-      0.05
-    ],
     "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|BEAR_RALLY": [
       0.0,
       0.015,
@@ -751,8 +1373,8 @@
       0.015,
       0.015,
       0.015,
-      0.015,
-      0.065,
+      -0.4646,
+      -0.5132,
       0.045,
       0.06,
       0.015
@@ -801,7 +1423,7 @@
       0.015,
       0.015
     ],
-    "RANGE_NORMAL|PEAK|LOW_EXP|CHOP|EMA_TRANS": [
+    "RANGE_NORMAL|PEAK|LOW_EXP|CHOP|BEAR_RALLY": [
       0.0,
       0.015,
       0.015,
@@ -928,7 +1550,7 @@
       0.065,
       0.055,
       0.05,
-      0.015,
+      -1.9998,
       0.015,
       0.015,
       0.015
@@ -975,7 +1597,7 @@
       0.065,
       0.045,
       0.06,
-      0.015
+      0.3797
     ],
     "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BULL": [
       0.0,
@@ -1060,7 +1682,7 @@
       0.065,
       0.055,
       0.05,
-      0.015,
+      -1.998,
       0.015,
       0.015,
       0.015
@@ -1188,7 +1810,7 @@
     ],
     "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|BEAR_RALLY": [
       0.0,
-      0.017,
+      -1.835,
       0.0083,
       0.0174,
       0.0174,
@@ -1200,7 +1822,7 @@
     "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|EMA_TRANS": [
       0.0,
       0.015,
-      -0.3231,
+      0.045,
       0.015,
       0.045,
       0.015,
@@ -1255,7 +1877,7 @@
     "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BEAR": [
       0.0,
       0.015,
-      0.015,
+      -0.2933,
       0.015,
       0.015,
       0.065,
@@ -1335,10 +1957,10 @@
       0.0083,
       0.0174,
       0.0174,
-      0.0238,
+      1.9527,
       0.0358,
       0.0652,
-      0.0602
+      1.4243
     ],
     "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|EMA_TRANS": [
       0.0,
@@ -1347,7 +1969,7 @@
       0.015,
       0.045,
       0.015,
-      -0.3231,
+      0.045,
       0.015,
       0.045
     ],
@@ -1356,7 +1978,7 @@
       0.015,
       0.015,
       0.015,
-      0.015,
+      -1.4246,
       0.065,
       0.045,
       0.06,
@@ -1449,17 +2071,6 @@
       0.015,
       0.015,
       0.015
-    ],
-    "RANGE_SQUEEZE|PEAK|HIGH_EXP|CHOP|EMA_TRANS": [
-      0.0,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.065,
-      0.055,
-      0.05
     ],
     "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|BEAR_RALLY": [
       0.0,
@@ -1560,17 +2171,6 @@
       0.0652,
       0.0602
     ],
-    "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|EMA_TRANS": [
-      0.0,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.065,
-      0.055,
-      0.05
-    ],
     "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|FULL_BEAR": [
       0.0,
       0.015,
@@ -1583,17 +2183,6 @@
       0.015
     ],
     "TREND_BEAR|DIP|HIGH_EXP|BEAR|BULL_DIP": [
-      0.0,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.065,
-      0.045,
-      0.06,
-      0.015
-    ],
-    "TREND_BEAR|DIP|HIGH_EXP|BEAR|EMA_TRANS": [
       0.0,
       0.015,
       0.015,
@@ -1697,11 +2286,11 @@
       0.015,
       0.015,
       0.015,
-      0.015,
-      0.065,
-      0.045,
+      -0.4646,
+      -1.3669,
+      -0.3449,
       0.06,
-      0.015
+      1.9211
     ],
     "TREND_BEAR|DIP|LOW_EXP|BULL|BULL_DIP": [
       0.0,
@@ -1743,6 +2332,17 @@
       0.015,
       0.015,
       0.065,
+      0.045,
+      0.06,
+      0.015
+    ],
+    "TREND_BEAR|DIP|LOW_EXP|CHOP|FULL_BEAR": [
+      0.0,
+      0.015,
+      0.015,
+      0.015,
+      0.015,
+      -1.2688,
       0.045,
       0.06,
       0.015
@@ -1824,17 +2424,6 @@
       0.06,
       0.015
     ],
-    "TREND_BEAR|MID|HIGH_EXP|CHOP|EMA_TRANS": [
-      0.0,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.065,
-      0.045,
-      0.06,
-      0.015
-    ],
     "TREND_BEAR|MID|LOW_EXP|BEAR|BULL_DIP": [
       0.0,
       0.015,
@@ -1860,9 +2449,9 @@
     "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR": [
       0.0,
       0.015,
-      0.015,
-      0.015,
-      0.015,
+      -1.1576,
+      0.4874,
+      -0.2933,
       0.065,
       0.045,
       0.06,
@@ -1901,25 +2490,14 @@
       0.015,
       0.015
     ],
-    "TREND_BEAR|MID|LOW_EXP|CHOP|EMA_TRANS": [
+    "TREND_BEAR|MID|LOW_EXP|CHOP|FULL_BEAR": [
       0.0,
       0.015,
       0.015,
       0.015,
       0.015,
       0.065,
-      0.045,
-      0.06,
-      0.015
-    ],
-    "TREND_BEAR|PEAK|HIGH_EXP|BEAR|FULL_BEAR": [
-      0.0,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.065,
-      0.045,
+      1.0385,
       0.06,
       0.015
     ],
@@ -1932,28 +2510,6 @@
       0.065,
       0.045,
       0.06,
-      0.015
-    ],
-    "TREND_BULL|DIP|HIGH_EXP|CHOP|EMA_TRANS": [
-      0.0,
-      0.065,
-      0.045,
-      0.06,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.015
-    ],
-    "TREND_BULL|DIP|LOW_EXP|CHOP|EMA_TRANS": [
-      0.0,
-      0.065,
-      0.045,
-      0.06,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
       0.015
     ],
     "TREND_BULL|MID|HIGH_EXP|BEAR|BEAR_RALLY": [
@@ -2012,17 +2568,6 @@
       0.015
     ],
     "TREND_BULL|MID|HIGH_EXP|BULL|FULL_BULL": [
-      0.0,
-      0.065,
-      0.045,
-      0.06,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.015
-    ],
-    "TREND_BULL|MID|HIGH_EXP|CHOP|EMA_TRANS": [
       0.0,
       0.065,
       0.045,
@@ -2110,9 +2655,9 @@
       0.015,
       0.015
     ],
-    "TREND_BULL|MID|LOW_EXP|CHOP|EMA_TRANS": [
+    "TREND_BULL|MID|LOW_EXP|CHOP|BEAR_RALLY": [
       0.0,
-      0.065,
+      -0.5132,
       0.045,
       0.06,
       0.015,
@@ -2155,17 +2700,6 @@
       0.015
     ],
     "TREND_BULL|PEAK|HIGH_EXP|BULL|FULL_BULL": [
-      0.0,
-      0.065,
-      0.045,
-      0.06,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.015
-    ],
-    "TREND_BULL|PEAK|HIGH_EXP|CHOP|EMA_TRANS": [
       0.0,
       0.065,
       0.045,
@@ -2231,17 +2765,6 @@
       0.015,
       0.015
     ],
-    "TREND_BULL|PEAK|LOW_EXP|CHOP|EMA_TRANS": [
-      0.0,
-      0.065,
-      0.045,
-      0.06,
-      0.015,
-      0.015,
-      0.015,
-      0.015,
-      0.015
-    ],
     "TREND_BULL|PEAK|LOW_EXP|CHOP|FULL_BEAR": [
       0.0,
       0.065,
@@ -2254,241 +2777,340 @@
       0.015
     ]
   },
-  "q_table_1h": {},
-  "q_table_4h": {},
-  "realized_net_profit_sats": 0,
+  "q_table_1h": {
+    "CHOP_HIGHVOL|HIGH|BEAR_BOUNCE|LOSS": [
+      0.02,
+      0.02,
+      0.02,
+      0.1688
+    ],
+    "CHOP_HIGHVOL|LOW|BEAR_STRONG|FLAT": [
+      -0.0703,
+      -0.0703,
+      0.0941,
+      -0.0647
+    ],
+    "CHOP_HIGHVOL|LOW|BEAR_STRONG|LOSS": [
+      0.02,
+      0.02,
+      0.1956,
+      0.02
+    ],
+    "CHOP_HIGHVOL|LOW|BEAR_STRONG|WIN": [
+      0.02,
+      0.02,
+      0.2915,
+      0.02
+    ],
+    "CHOP_HIGHVOL|MID|BEAR_BOUNCE|FLAT": [
+      0.02,
+      0.02,
+      0.02,
+      0.1688
+    ],
+    "CHOP_HIGHVOL|MID|BEAR_STRONG|FLAT": [
+      0.02,
+      0.02,
+      -0.0112,
+      0.0213
+    ],
+    "CHOP_HIGHVOL|MID|BEAR_STRONG|LOSS": [
+      -0.0687,
+      0.02,
+      0.0582,
+      0.02
+    ],
+    "CHOP_HIGHVOL|MID|BEAR_STRONG|WIN": [
+      0.02,
+      0.02,
+      -0.0112,
+      0.02
+    ],
+    "RANGE_NORMAL|MID|BEAR_BOUNCE|FLAT": [
+      -0.021,
+      0.0132,
+      0.02,
+      0.02
+    ],
+    "RANGE_NORMAL|MID|BEAR_STRONG|FLAT": [
+      -0.0473,
+      -0.0604,
+      -0.0959,
+      0.02
+    ],
+    "RANGE_NORMAL|MID|BEAR_STRONG|LOSS": [
+      0.02,
+      0.02,
+      0.1432,
+      0.02
+    ],
+    "TREND_BEAR|LOW|BEAR_STRONG|FLAT": [
+      -0.1511,
+      -0.1117,
+      -0.1063,
+      -0.1266
+    ],
+    "TREND_BEAR|LOW|BEAR_STRONG|LOSS": [
+      0.02,
+      0.02,
+      -0.0214,
+      0.02
+    ],
+    "TREND_BEAR|MID|BEAR_STRONG|FLAT": [
+      -0.0806,
+      -0.0703,
+      -0.0134,
+      -0.0703
+    ],
+    "TREND_BEAR|MID|BEAR_STRONG|LOSS": [
+      0.02,
+      0.02,
+      -0.0078,
+      0.02
+    ]
+  },
+  "q_table_4h": {
+    "CHOP_HIGHVOL|LOW|BEAR_STRONG|FLAT": [
+      -0.0703,
+      -0.0604,
+      -0.0729,
+      -0.0703
+    ],
+    "CHOP_HIGHVOL|LOW|BEAR_STRONG|LOSS": [
+      -0.0703,
+      -0.0703,
+      -0.114,
+      -0.0703
+    ],
+    "CHOP_HIGHVOL|MID|BEAR_STRONG|FLAT": [
+      0.02,
+      0.02,
+      0.0617,
+      0.02
+    ],
+    "CHOP_HIGHVOL|MID|BEAR_STRONG|LOSS": [
+      -0.0604,
+      0.02,
+      -0.0112,
+      0.02
+    ]
+  },
+  "realized_net_profit_sats": -169215,
   "reward_schema_version": 2,
   "state_visits": {
-    "CHOP_HIGHVOL|DIP|HIGH_EXP|BEAR|EMA_TRANS": 14,
-    "CHOP_HIGHVOL|DIP|HIGH_EXP|BEAR|FULL_BEAR": 4,
-    "CHOP_HIGHVOL|DIP|HIGH_EXP|CHOP|EMA_TRANS": 7,
-    "CHOP_HIGHVOL|DIP|LOW_EXP|CHOP|EMA_TRANS": 1,
-    "CHOP_HIGHVOL|MID|HIGH_EXP|BEAR|BEAR_RALLY": 0,
-    "CHOP_HIGHVOL|MID|HIGH_EXP|BEAR|EMA_TRANS": 6,
+    "CHOP_HIGHVOL|DIP|LOW_EXP|BEAR|FULL_BEAR": 1,
+    "CHOP_HIGHVOL|DIP|LOW_EXP|CHOP|BEAR_RALLY": 3,
+    "CHOP_HIGHVOL|MID|HIGH_EXP|BEAR|BEAR_RALLY": 1,
+    "CHOP_HIGHVOL|MID|HIGH_EXP|BEAR|EMA_TRANS": 1,
     "CHOP_HIGHVOL|MID|HIGH_EXP|BEAR|FULL_BEAR": 1,
-    "CHOP_HIGHVOL|MID|HIGH_EXP|CHOP|EMA_TRANS": 2,
-    "CHOP_HIGHVOL|MID|LOW_EXP|BEAR|BEAR_RALLY": 0,
+    "CHOP_HIGHVOL|MID|LOW_EXP|BEAR|BEAR_RALLY": 1,
     "CHOP_HIGHVOL|MID|LOW_EXP|BEAR|EMA_TRANS": 1,
-    "CHOP_HIGHVOL|MID|LOW_EXP|BEAR|FULL_BEAR": 0,
-    "CHOP_HIGHVOL|MID|LOW_EXP|CHOP|EMA_TRANS": 4,
-    "CHOP_HIGHVOL|PEAK|HIGH_EXP|BEAR|EMA_TRANS": 5,
-    "CHOP_HIGHVOL|PEAK|HIGH_EXP|BEAR|FULL_BEAR": 14,
-    "CHOP_HIGHVOL|PEAK|LOW_EXP|CHOP|EMA_TRANS": 28,
-    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|BULL_DIP": 0,
-    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|EMA_TRANS": 4,
-    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|FULL_BEAR": 0,
-    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|FULL_BULL": 0,
-    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|BULL_DIP": 0,
-    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|EMA_TRANS": 0,
-    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|FULL_BEAR": 0,
-    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|FULL_BULL": 0,
-    "RANGE_NORMAL|DIP|HIGH_EXP|CHOP|EMA_TRANS": 290,
-    "RANGE_NORMAL|DIP|LOW_EXP|BEAR|BULL_DIP": 0,
+    "CHOP_HIGHVOL|MID|LOW_EXP|BEAR|FULL_BEAR": 7,
+    "CHOP_HIGHVOL|PEAK|LOW_EXP|BEAR|FULL_BEAR": 2,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|BULL_DIP": 1,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|FULL_BEAR": 1,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|BULL_DIP": 1,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|EMA_TRANS": 1,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_NORMAL|DIP|HIGH_EXP|BULL|FULL_BULL": 1,
+    "RANGE_NORMAL|DIP|LOW_EXP|BEAR|BULL_DIP": 1,
     "RANGE_NORMAL|DIP|LOW_EXP|BEAR|EMA_TRANS": 1,
-    "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BEAR": 0,
-    "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BULL": 0,
-    "RANGE_NORMAL|DIP|LOW_EXP|BULL|BULL_DIP": 0,
-    "RANGE_NORMAL|DIP|LOW_EXP|BULL|EMA_TRANS": 0,
-    "RANGE_NORMAL|DIP|LOW_EXP|BULL|FULL_BEAR": 0,
-    "RANGE_NORMAL|DIP|LOW_EXP|BULL|FULL_BULL": 0,
-    "RANGE_NORMAL|DIP|LOW_EXP|CHOP|EMA_TRANS": 1119,
-    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|BEAR_RALLY": 0,
-    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|BULL_DIP": 0,
-    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|EMA_TRANS": 0,
-    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|FULL_BEAR": 42,
-    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|FULL_BULL": 0,
-    "RANGE_NORMAL|MID|HIGH_EXP|BULL|BEAR_RALLY": 0,
-    "RANGE_NORMAL|MID|HIGH_EXP|BULL|BULL_DIP": 0,
-    "RANGE_NORMAL|MID|HIGH_EXP|BULL|EMA_TRANS": 0,
-    "RANGE_NORMAL|MID|HIGH_EXP|BULL|FULL_BEAR": 0,
-    "RANGE_NORMAL|MID|HIGH_EXP|BULL|FULL_BULL": 0,
-    "RANGE_NORMAL|MID|HIGH_EXP|CHOP|EMA_TRANS": 127,
-    "RANGE_NORMAL|MID|LOW_EXP|BEAR|BEAR_RALLY": 0,
-    "RANGE_NORMAL|MID|LOW_EXP|BEAR|BULL_DIP": 0,
-    "RANGE_NORMAL|MID|LOW_EXP|BEAR|EMA_TRANS": 0,
-    "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BEAR": 0,
-    "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BULL": 0,
-    "RANGE_NORMAL|MID|LOW_EXP|BULL|BEAR_RALLY": 0,
-    "RANGE_NORMAL|MID|LOW_EXP|BULL|BULL_DIP": 0,
-    "RANGE_NORMAL|MID|LOW_EXP|BULL|EMA_TRANS": 0,
-    "RANGE_NORMAL|MID|LOW_EXP|BULL|FULL_BEAR": 0,
-    "RANGE_NORMAL|MID|LOW_EXP|BULL|FULL_BULL": 0,
-    "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS": 17,
-    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|BEAR_RALLY": 0,
-    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|EMA_TRANS": 0,
-    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|FULL_BEAR": 75,
-    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|FULL_BULL": 0,
-    "RANGE_NORMAL|PEAK|HIGH_EXP|BULL|BEAR_RALLY": 0,
-    "RANGE_NORMAL|PEAK|HIGH_EXP|BULL|FULL_BEAR": 0,
-    "RANGE_NORMAL|PEAK|HIGH_EXP|BULL|FULL_BULL": 0,
-    "RANGE_NORMAL|PEAK|HIGH_EXP|CHOP|EMA_TRANS": 5,
-    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|BEAR_RALLY": 0,
-    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|EMA_TRANS": 0,
-    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|FULL_BEAR": 7,
-    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|FULL_BULL": 0,
-    "RANGE_NORMAL|PEAK|LOW_EXP|BULL|BEAR_RALLY": 0,
-    "RANGE_NORMAL|PEAK|LOW_EXP|BULL|FULL_BEAR": 0,
-    "RANGE_NORMAL|PEAK|LOW_EXP|BULL|FULL_BULL": 0,
-    "RANGE_NORMAL|PEAK|LOW_EXP|CHOP|EMA_TRANS": 24,
-    "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|BULL_DIP": 0,
+    "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BEAR": 13,
+    "RANGE_NORMAL|DIP|LOW_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_NORMAL|DIP|LOW_EXP|BULL|BULL_DIP": 1,
+    "RANGE_NORMAL|DIP|LOW_EXP|BULL|EMA_TRANS": 1,
+    "RANGE_NORMAL|DIP|LOW_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_NORMAL|DIP|LOW_EXP|BULL|FULL_BULL": 1,
+    "RANGE_NORMAL|DIP|LOW_EXP|CHOP|BEAR_RALLY": 44,
+    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|BEAR_RALLY": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|BULL_DIP": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|FULL_BEAR": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BULL|BEAR_RALLY": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BULL|BULL_DIP": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BULL|EMA_TRANS": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_NORMAL|MID|HIGH_EXP|BULL|FULL_BULL": 1,
+    "RANGE_NORMAL|MID|LOW_EXP|BEAR|BEAR_RALLY": 3,
+    "RANGE_NORMAL|MID|LOW_EXP|BEAR|BULL_DIP": 1,
+    "RANGE_NORMAL|MID|LOW_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BEAR": 48,
+    "RANGE_NORMAL|MID|LOW_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_NORMAL|MID|LOW_EXP|BULL|BEAR_RALLY": 1,
+    "RANGE_NORMAL|MID|LOW_EXP|BULL|BULL_DIP": 1,
+    "RANGE_NORMAL|MID|LOW_EXP|BULL|EMA_TRANS": 1,
+    "RANGE_NORMAL|MID|LOW_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_NORMAL|MID|LOW_EXP|BULL|FULL_BULL": 1,
+    "RANGE_NORMAL|MID|LOW_EXP|CHOP|BEAR_RALLY": 1,
+    "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS": 1,
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|BEAR_RALLY": 1,
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|FULL_BEAR": 1,
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BULL|BEAR_RALLY": 1,
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_NORMAL|PEAK|HIGH_EXP|BULL|FULL_BULL": 1,
+    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|BEAR_RALLY": 1,
+    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|FULL_BEAR": 4,
+    "RANGE_NORMAL|PEAK|LOW_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_NORMAL|PEAK|LOW_EXP|BULL|BEAR_RALLY": 1,
+    "RANGE_NORMAL|PEAK|LOW_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_NORMAL|PEAK|LOW_EXP|BULL|FULL_BULL": 1,
+    "RANGE_NORMAL|PEAK|LOW_EXP|CHOP|BEAR_RALLY": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|BULL_DIP": 1,
     "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|EMA_TRANS": 1,
-    "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BULL": 0,
-    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|BEAR_RALLY": 0,
-    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|BULL_DIP": 0,
-    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|EMA_TRANS": 0,
-    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|FULL_BULL": 0,
-    "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|BEAR_RALLY": 0,
-    "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|EMA_TRANS": 61,
-    "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|BULL_DIP": 0,
-    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|EMA_TRANS": 0,
-    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BULL": 0,
-    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BEAR_RALLY": 0,
-    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BULL_DIP": 0,
-    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|EMA_TRANS": 0,
-    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|FULL_BULL": 0,
-    "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY": 0,
-    "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|EMA_TRANS": 30,
-    "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|BEAR_RALLY": 0,
-    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|BULL_DIP": 0,
-    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|EMA_TRANS": 0,
-    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|FULL_BULL": 0,
-    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|BEAR_RALLY": 0,
-    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|BULL_DIP": 0,
-    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|EMA_TRANS": 0,
-    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|FULL_BULL": 0,
-    "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|BEAR_RALLY": 0,
-    "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|EMA_TRANS": 421,
-    "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|BEAR_RALLY": 0,
-    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|BULL_DIP": 0,
-    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|EMA_TRANS": 0,
-    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BULL": 0,
-    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|BEAR_RALLY": 0,
-    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|BULL_DIP": 0,
-    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|EMA_TRANS": 0,
-    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL": 0,
-    "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY": 0,
-    "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|EMA_TRANS": 172,
-    "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|BEAR_RALLY": 0,
-    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|EMA_TRANS": 0,
-    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|FULL_BULL": 0,
-    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|BEAR_RALLY": 0,
-    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|EMA_TRANS": 0,
-    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|FULL_BULL": 0,
-    "RANGE_SQUEEZE|PEAK|HIGH_EXP|CHOP|EMA_TRANS": 51,
-    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|BEAR_RALLY": 0,
-    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|EMA_TRANS": 0,
-    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|FULL_BULL": 0,
-    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|BEAR_RALLY": 0,
-    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|EMA_TRANS": 0,
-    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|FULL_BEAR": 0,
-    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|FULL_BULL": 0,
-    "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|BEAR_RALLY": 0,
-    "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|EMA_TRANS": 33,
-    "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|FULL_BEAR": 0,
-    "TREND_BEAR|DIP|HIGH_EXP|BEAR|BULL_DIP": 0,
-    "TREND_BEAR|DIP|HIGH_EXP|BEAR|EMA_TRANS": 20,
-    "TREND_BEAR|DIP|HIGH_EXP|BEAR|FULL_BEAR": 33,
-    "TREND_BEAR|DIP|HIGH_EXP|BULL|BULL_DIP": 0,
-    "TREND_BEAR|DIP|HIGH_EXP|BULL|FULL_BEAR": 0,
-    "TREND_BEAR|DIP|HIGH_EXP|CHOP|BEAR_RALLY": 0,
-    "TREND_BEAR|DIP|HIGH_EXP|CHOP|EMA_TRANS": 713,
-    "TREND_BEAR|DIP|HIGH_EXP|CHOP|FULL_BEAR": 0,
-    "TREND_BEAR|DIP|LOW_EXP|BEAR|BULL_DIP": 0,
-    "TREND_BEAR|DIP|LOW_EXP|BEAR|EMA_TRANS": 0,
-    "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR": 1,
-    "TREND_BEAR|DIP|LOW_EXP|BULL|BULL_DIP": 0,
-    "TREND_BEAR|DIP|LOW_EXP|BULL|FULL_BEAR": 0,
-    "TREND_BEAR|DIP|LOW_EXP|CHOP|BEAR_RALLY": 0,
-    "TREND_BEAR|DIP|LOW_EXP|CHOP|EMA_TRANS": 847,
-    "TREND_BEAR|MID|HIGH_EXP|BEAR|BULL_DIP": 0,
-    "TREND_BEAR|MID|HIGH_EXP|BEAR|EMA_TRANS": 0,
-    "TREND_BEAR|MID|HIGH_EXP|BEAR|FULL_BEAR": 6,
-    "TREND_BEAR|MID|HIGH_EXP|BULL|BULL_DIP": 0,
-    "TREND_BEAR|MID|HIGH_EXP|BULL|EMA_TRANS": 0,
-    "TREND_BEAR|MID|HIGH_EXP|BULL|FULL_BEAR": 0,
-    "TREND_BEAR|MID|HIGH_EXP|CHOP|BEAR_RALLY": 0,
-    "TREND_BEAR|MID|HIGH_EXP|CHOP|EMA_TRANS": 15,
-    "TREND_BEAR|MID|LOW_EXP|BEAR|BULL_DIP": 0,
-    "TREND_BEAR|MID|LOW_EXP|BEAR|EMA_TRANS": 0,
-    "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR": 0,
-    "TREND_BEAR|MID|LOW_EXP|BULL|BULL_DIP": 0,
-    "TREND_BEAR|MID|LOW_EXP|BULL|EMA_TRANS": 0,
-    "TREND_BEAR|MID|LOW_EXP|BULL|FULL_BEAR": 0,
-    "TREND_BEAR|MID|LOW_EXP|CHOP|EMA_TRANS": 4,
-    "TREND_BEAR|PEAK|HIGH_EXP|BEAR|FULL_BEAR": 4,
-    "TREND_BEAR|PEAK|LOW_EXP|BEAR|FULL_BEAR": 0,
-    "TREND_BULL|DIP|HIGH_EXP|CHOP|EMA_TRANS": 138,
-    "TREND_BULL|DIP|LOW_EXP|CHOP|EMA_TRANS": 51,
-    "TREND_BULL|MID|HIGH_EXP|BEAR|BEAR_RALLY": 3,
-    "TREND_BULL|MID|HIGH_EXP|BEAR|EMA_TRANS": 0,
-    "TREND_BULL|MID|HIGH_EXP|BEAR|FULL_BULL": 0,
-    "TREND_BULL|MID|HIGH_EXP|BULL|BEAR_RALLY": 0,
-    "TREND_BULL|MID|HIGH_EXP|BULL|EMA_TRANS": 0,
-    "TREND_BULL|MID|HIGH_EXP|BULL|FULL_BULL": 0,
-    "TREND_BULL|MID|HIGH_EXP|CHOP|EMA_TRANS": 178,
-    "TREND_BULL|MID|LOW_EXP|BEAR|BEAR_RALLY": 0,
-    "TREND_BULL|MID|LOW_EXP|BEAR|EMA_TRANS": 0,
-    "TREND_BULL|MID|LOW_EXP|BEAR|FULL_BEAR": 0,
-    "TREND_BULL|MID|LOW_EXP|BEAR|FULL_BULL": 0,
-    "TREND_BULL|MID|LOW_EXP|BULL|BEAR_RALLY": 0,
-    "TREND_BULL|MID|LOW_EXP|BULL|EMA_TRANS": 0,
-    "TREND_BULL|MID|LOW_EXP|BULL|FULL_BULL": 0,
-    "TREND_BULL|MID|LOW_EXP|CHOP|EMA_TRANS": 49,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|BEAR_RALLY": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|BULL_DIP": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|BULL|FULL_BULL": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|BEAR_RALLY": 1,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|EMA_TRANS": 45,
+    "RANGE_SQUEEZE|DIP|HIGH_EXP|CHOP|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|BULL_DIP": 1,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BEAR": 695,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BEAR_RALLY": 1,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|BULL_DIP": 1,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|BULL|FULL_BULL": 1,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|BEAR_RALLY": 33,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|EMA_TRANS": 4,
+    "RANGE_SQUEEZE|DIP|LOW_EXP|CHOP|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|BEAR_RALLY": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|BULL_DIP": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|BEAR_RALLY": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|BULL_DIP": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|BULL|FULL_BULL": 1,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|BEAR_RALLY": 30,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|EMA_TRANS": 45,
+    "RANGE_SQUEEZE|MID|HIGH_EXP|CHOP|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|BEAR_RALLY": 29,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|BULL_DIP": 1,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BEAR": 67,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|BEAR_RALLY": 1,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|BULL_DIP": 1,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|MID|LOW_EXP|BULL|FULL_BULL": 1,
+    "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|BEAR_RALLY": 178,
+    "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|MID|LOW_EXP|CHOP|FULL_BEAR": 10,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|BEAR_RALLY": 1,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|BEAR_RALLY": 1,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|PEAK|HIGH_EXP|BULL|FULL_BULL": 1,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|BEAR_RALLY": 7,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|FULL_BEAR": 16,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BEAR|FULL_BULL": 1,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|BEAR_RALLY": 1,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|EMA_TRANS": 1,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|FULL_BEAR": 1,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|BULL|FULL_BULL": 1,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|BEAR_RALLY": 3,
+    "RANGE_SQUEEZE|PEAK|LOW_EXP|CHOP|FULL_BEAR": 1,
+    "TREND_BEAR|DIP|HIGH_EXP|BEAR|BULL_DIP": 1,
+    "TREND_BEAR|DIP|HIGH_EXP|BEAR|FULL_BEAR": 1,
+    "TREND_BEAR|DIP|HIGH_EXP|BULL|BULL_DIP": 1,
+    "TREND_BEAR|DIP|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "TREND_BEAR|DIP|HIGH_EXP|CHOP|BEAR_RALLY": 1,
+    "TREND_BEAR|DIP|HIGH_EXP|CHOP|EMA_TRANS": 1,
+    "TREND_BEAR|DIP|HIGH_EXP|CHOP|FULL_BEAR": 1,
+    "TREND_BEAR|DIP|LOW_EXP|BEAR|BULL_DIP": 1,
+    "TREND_BEAR|DIP|LOW_EXP|BEAR|EMA_TRANS": 1,
+    "TREND_BEAR|DIP|LOW_EXP|BEAR|FULL_BEAR": 770,
+    "TREND_BEAR|DIP|LOW_EXP|BULL|BULL_DIP": 1,
+    "TREND_BEAR|DIP|LOW_EXP|BULL|FULL_BEAR": 1,
+    "TREND_BEAR|DIP|LOW_EXP|CHOP|BEAR_RALLY": 1,
+    "TREND_BEAR|DIP|LOW_EXP|CHOP|EMA_TRANS": 1,
+    "TREND_BEAR|DIP|LOW_EXP|CHOP|FULL_BEAR": 1,
+    "TREND_BEAR|MID|HIGH_EXP|BEAR|BULL_DIP": 1,
+    "TREND_BEAR|MID|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "TREND_BEAR|MID|HIGH_EXP|BEAR|FULL_BEAR": 1,
+    "TREND_BEAR|MID|HIGH_EXP|BULL|BULL_DIP": 1,
+    "TREND_BEAR|MID|HIGH_EXP|BULL|EMA_TRANS": 1,
+    "TREND_BEAR|MID|HIGH_EXP|BULL|FULL_BEAR": 1,
+    "TREND_BEAR|MID|HIGH_EXP|CHOP|BEAR_RALLY": 1,
+    "TREND_BEAR|MID|LOW_EXP|BEAR|BULL_DIP": 1,
+    "TREND_BEAR|MID|LOW_EXP|BEAR|EMA_TRANS": 1,
+    "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR": 97,
+    "TREND_BEAR|MID|LOW_EXP|BULL|BULL_DIP": 1,
+    "TREND_BEAR|MID|LOW_EXP|BULL|EMA_TRANS": 1,
+    "TREND_BEAR|MID|LOW_EXP|BULL|FULL_BEAR": 1,
+    "TREND_BEAR|MID|LOW_EXP|CHOP|FULL_BEAR": 3,
+    "TREND_BEAR|PEAK|LOW_EXP|BEAR|FULL_BEAR": 4,
+    "TREND_BULL|MID|HIGH_EXP|BEAR|BEAR_RALLY": 1,
+    "TREND_BULL|MID|HIGH_EXP|BEAR|EMA_TRANS": 1,
+    "TREND_BULL|MID|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "TREND_BULL|MID|HIGH_EXP|BULL|BEAR_RALLY": 1,
+    "TREND_BULL|MID|HIGH_EXP|BULL|EMA_TRANS": 1,
+    "TREND_BULL|MID|HIGH_EXP|BULL|FULL_BULL": 1,
+    "TREND_BULL|MID|LOW_EXP|BEAR|BEAR_RALLY": 1,
+    "TREND_BULL|MID|LOW_EXP|BEAR|EMA_TRANS": 1,
+    "TREND_BULL|MID|LOW_EXP|BEAR|FULL_BEAR": 1,
+    "TREND_BULL|MID|LOW_EXP|BEAR|FULL_BULL": 1,
+    "TREND_BULL|MID|LOW_EXP|BULL|BEAR_RALLY": 1,
+    "TREND_BULL|MID|LOW_EXP|BULL|EMA_TRANS": 1,
+    "TREND_BULL|MID|LOW_EXP|BULL|FULL_BULL": 1,
+    "TREND_BULL|MID|LOW_EXP|CHOP|BEAR_RALLY": 1,
     "TREND_BULL|PEAK|HIGH_EXP|BEAR|BEAR_RALLY": 1,
-    "TREND_BULL|PEAK|HIGH_EXP|BEAR|FULL_BULL": 0,
-    "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY": 0,
-    "TREND_BULL|PEAK|HIGH_EXP|BULL|FULL_BULL": 0,
-    "TREND_BULL|PEAK|HIGH_EXP|CHOP|EMA_TRANS": 468,
-    "TREND_BULL|PEAK|LOW_EXP|BEAR|BEAR_RALLY": 0,
-    "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BEAR": 0,
-    "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BULL": 0,
-    "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY": 0,
-    "TREND_BULL|PEAK|LOW_EXP|BULL|FULL_BULL": 0,
-    "TREND_BULL|PEAK|LOW_EXP|CHOP|EMA_TRANS": 268,
-    "TREND_BULL|PEAK|LOW_EXP|CHOP|FULL_BEAR": 0
+    "TREND_BULL|PEAK|HIGH_EXP|BEAR|FULL_BULL": 1,
+    "TREND_BULL|PEAK|HIGH_EXP|BULL|BEAR_RALLY": 1,
+    "TREND_BULL|PEAK|HIGH_EXP|BULL|FULL_BULL": 1,
+    "TREND_BULL|PEAK|LOW_EXP|BEAR|BEAR_RALLY": 1,
+    "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BEAR": 1,
+    "TREND_BULL|PEAK|LOW_EXP|BEAR|FULL_BULL": 1,
+    "TREND_BULL|PEAK|LOW_EXP|BULL|BEAR_RALLY": 1,
+    "TREND_BULL|PEAK|LOW_EXP|BULL|FULL_BULL": 1,
+    "TREND_BULL|PEAK|LOW_EXP|CHOP|FULL_BEAR": 1
   },
   "style_metrics": {
     "DEF_SCALP": {
-      "fees_sats": 0,
-      "net_pnl_sats": 0,
-      "trades": 0,
-      "wins": 0
+      "fees_sats": 52274,
+      "net_pnl_sats": -43951,
+      "trades": 42,
+      "wins": 24
     },
     "REVERSION": {
-      "fees_sats": 0,
-      "net_pnl_sats": 0,
-      "trades": 0,
-      "wins": 0
+      "fees_sats": 9914,
+      "net_pnl_sats": -19482,
+      "trades": 9,
+      "wins": 3
     },
     "SNIPER": {
-      "fees_sats": 0,
-      "net_pnl_sats": 0,
-      "trades": 0,
-      "wins": 0
+      "fees_sats": 8761,
+      "net_pnl_sats": -13386,
+      "trades": 6,
+      "wins": 3
     },
     "TREND": {
-      "fees_sats": 0,
-      "net_pnl_sats": 0,
-      "trades": 0,
-      "wins": 0
+      "fees_sats": 47979,
+      "net_pnl_sats": -92396,
+      "trades": 28,
+      "wins": 8
     }
   },
-  "total_fees_paid_sats": 0,
+  "total_fees_paid_sats": 118928,
   "total_intermediate_updates": 0,
-  "total_trained": 0
+  "total_trained": 85
 }
