@@ -392,13 +392,13 @@ def run_all_tests() -> None:
     # -------------------------------------------------------------------------
     # 7a. Estimador Bayesiano jerárquico Beta-Binomial y contracción
     p_global, p_lcb_global, meta_g = SatsExpectancyGate.estimate_bayesian_win_rate()
-    assert abs(p_global - (7.0 / 22.0)) < 1e-3, f"Prior global esperado ~0.3182, obtuvo {p_global}"
+    assert abs(p_global - (9.0 / 20.0)) < 1e-3, f"Prior global esperado ~0.4500, obtuvo {p_global}"
     assert p_lcb_global <= p_global and p_lcb_global > 0.05
 
     mock_style_win = {"TREND": {"trades": 10, "wins": 8}}
     p_trend, p_lcb_trend, _ = SatsExpectancyGate.estimate_bayesian_win_rate(style="TREND", style_metrics=mock_style_win)
-    # Posterior: (7 + 8) / (22 + 10) = 15 / 32 = 0.46875
-    assert abs(p_trend - 0.4688) < 1e-3
+    # Posterior: (9 + 8) / (20 + 10) = 17 / 30 = 0.56667
+    assert abs(p_trend - (17.0 / 30.0)) < 1e-3
     assert p_trend > p_global, "Estilo con 80% WR debe elevar la probabilidad estimada posterior"
 
     # 7b. Compuerta de Expectancy probabilística real:

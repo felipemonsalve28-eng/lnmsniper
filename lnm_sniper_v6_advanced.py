@@ -136,7 +136,7 @@ class Config:
     RECOVERY_EXIT_DD = 0.065
     RECOVERY_BOUNCE_GAIN_PCT = 0.018
     RECOVERY_RISK_MULT = 0.45
-    RECOVERY_RR_MULT = 0.90
+    RECOVERY_RR_MULT = 1.15
 
     ATR_EXTREME_PCT = 0.0145
     ANTI_MARTINGALE_FACTOR = 0.78
@@ -147,10 +147,12 @@ class Config:
     API_CB_ERROR_THRESHOLD = 3
     API_CB_MAX_COOLDOWN_SEC = 120
     CANDLE_LIMIT = 210
+    TTL_1M = 12.0
     TTL_5M = 25.0
     TTL_15M = 75.0
     TTL_1H = 240.0
     TTL_4H = 480.0
+    TTL_1D = 1800.0
 
     NUM_ACTIONS = 9
     NUM_MACRO_ACTIONS = 4
@@ -307,10 +309,12 @@ class MultiTimeframeCache:
         self.session = ResilientLNMClient.build_session("LNMSniper/7.3-MTFCache")
         self.disk_path = Config.SHARED_MTF_DISK_CACHE
         self.cache = {
-            "5m":  {"last": 0.0, "ttl": Config.TTL_5M,  "period": 300,   "data": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
-            "15m": {"last": 0.0, "ttl": Config.TTL_15M, "period": 900,   "data": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
-            "1h":  {"last": 0.0, "ttl": Config.TTL_1H,  "period": 3600,  "data": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
-            "4h":  {"last": 0.0, "ttl": Config.TTL_4H,  "period": 14400, "data": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
+            "1m":  {"last": 0.0, "ttl": Config.TTL_1M,  "period": 60,    "data": None, "vol": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
+            "5m":  {"last": 0.0, "ttl": Config.TTL_5M,  "period": 300,   "data": None, "vol": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
+            "15m": {"last": 0.0, "ttl": Config.TTL_15M, "period": 900,   "data": None, "vol": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
+            "1h":  {"last": 0.0, "ttl": Config.TTL_1H,  "period": 3600,  "data": None, "vol": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
+            "4h":  {"last": 0.0, "ttl": Config.TTL_4H,  "period": 14400, "data": None, "vol": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
+            "1d":  {"last": 0.0, "ttl": Config.TTL_1D,  "period": 86400, "data": None, "vol": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
         }
         self._load_shared_disk_cache()
 
@@ -331,6 +335,8 @@ class MultiTimeframeCache:
                             np.array(entry["l"], dtype=np.float64),
                             np.array(entry["c"], dtype=np.float64),
                         )
+                        if "v" in entry and entry["v"] is not None:
+                            self.cache[tf]["vol"] = np.array(entry["v"], dtype=np.float64)
                         self.cache[tf]["last"] = ts
                         self.cache[tf]["prefix"] = None
                         self.cache[tf]["ind_cache"] = None
@@ -343,12 +349,15 @@ class MultiTimeframeCache:
             for tf, item in self.cache.items():
                 if item["data"] is not None:
                     h, l, c = item["data"]
-                    payload[tf] = {
+                    entry_payload = {
                         "last": item["last"],
                         "h": h.tolist(),
                         "l": l.tolist(),
                         "c": c.tolist(),
                     }
+                    if item.get("vol") is not None:
+                        entry_payload["v"] = item["vol"].tolist()
+                    payload[tf] = entry_payload
             with FileLockContext(self.disk_path, exclusive=True, timeout=1.5):
                 tmp_p = f"{self.disk_path}.tmp.{os.getpid()}"
                 with open(tmp_p, "w", encoding="utf-8") as f:
@@ -373,7 +382,12 @@ class MultiTimeframeCache:
             crossed_after_disk = (int(now) // item["period"]) != (int(item["last"]) // item["period"])
             if item["data"] is None or (now - item["last"]) >= item["ttl"] or crossed_after_disk:
                 try:
-                    h, l, c = self._fetch_remote(tf)
+                    fetched = self._fetch_remote(tf)
+                    if isinstance(fetched, tuple) and len(fetched) == 4:
+                        h, l, c, v = fetched
+                        item["vol"] = v
+                    else:
+                        h, l, c = fetched
                     item["data"] = (h, l, c)
                     item["last"] = now
                     item["prefix"] = None
@@ -387,6 +401,7 @@ class MultiTimeframeCache:
                             synth_h = synth_c * 1.0012
                             synth_l = synth_c * 0.9988
                             item["data"] = (synth_h, synth_l, synth_c)
+                            item["vol"] = None
                             item["last"] = now - (item["ttl"] * 0.8)
                             item["prefix"] = None
                             item["ind_cache"] = None
@@ -396,7 +411,7 @@ class MultiTimeframeCache:
 
     def get_candles(self, tf, current_lnm_price=0.0):
         h_arr, l_arr, c_arr = self._ensure_raw_candles(tf, current_lnm_price)
-        if tf in ("5m", "15m") and current_lnm_price > 0:
+        if tf in ("1m", "5m", "15m") and current_lnm_price > 0:
             h_c, l_c, c_c = h_arr.copy(), l_arr.copy(), c_arr.copy()
             c_c[-1] = current_lnm_price
             if current_lnm_price > h_c[-1]:
@@ -409,25 +424,26 @@ class MultiTimeframeCache:
     def get_indicators_fast(self, tf, current_lnm_price=0.0):
         item = self.cache[tf]
         h_arr, l_arr, c_arr = self._ensure_raw_candles(tf, current_lnm_price)
-        if tf in ("1h", "4h") and item["ind_cache"] is not None:
+        if tf in ("1h", "4h", "1d") and item["ind_cache"] is not None:
             return item["ind_cache"]
-        if tf in ("5m", "15m") and item["ind_cache"] is not None and abs(current_lnm_price - item["ind_price"]) < 0.5:
+        if tf in ("1m", "5m", "15m") and item["ind_cache"] is not None and abs(current_lnm_price - item["ind_price"]) < 0.5:
             return item["ind_cache"]
 
-        # Actualización O(1) incremental sin copia de arrays para 5m/15m (Fase 6 Termux)
-        if tf in ("5m", "15m") and len(c_arr) >= 26:
+        vols = item.get("vol")
+        # Actualización O(1) incremental sin copia de arrays para 1m/5m/15m (Fase 6 Termux)
+        if tf in ("1m", "5m", "15m") and len(c_arr) >= 26:
             if item.get("prefix") is None:
-                item["prefix"] = _build_indicator_prefix_state(h_arr, l_arr, c_arr)
+                item["prefix"] = _build_indicator_prefix_state(h_arr, l_arr, c_arr, volumes=vols)
             ind = compute_indicators_from_prefix(item["prefix"], current_lnm_price)
         else:
-            ind = compute_indicators(h_arr, l_arr, c_arr, current_lnm_price if tf in ("5m", "15m") else 0.0)
+            ind = compute_indicators(h_arr, l_arr, c_arr, current_lnm_price if tf in ("1m", "5m", "15m") else 0.0, volumes=vols)
         item["ind_cache"] = ind
         item["ind_price"] = float(current_lnm_price)
         return ind
 
-    def _fetch_remote(self, tf):
+    def _fetch_remote_with_vol(self, tf):
         limit = Config.CANDLE_LIMIT
-        map_binance = {"5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h"}
+        map_binance = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
         interval = map_binance.get(tf, "5m")
         try:
             url = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={interval}&limit={limit}"
@@ -436,13 +452,15 @@ class MultiTimeframeCache:
             data = r.json()
             if len(data) < 50:
                 raise RuntimeError("Respuesta incompleta de Binance")
-            return (
-                np.array([float(c[2]) for c in data], dtype=np.float64),
-                np.array([float(c[3]) for c in data], dtype=np.float64),
-                np.array([float(c[4]) for c in data], dtype=np.float64),
-            )
+            h = np.array([float(c[2]) for c in data], dtype=np.float64)
+            l = np.array([float(c[3]) for c in data], dtype=np.float64)
+            c = np.array([float(c[4]) for c in data], dtype=np.float64)
+            v = np.array([float(c[5]) for c in data], dtype=np.float64)
+            if tf in self.cache:
+                self.cache[tf]["vol"] = v
+            return h, l, c, v
         except Exception:
-            map_bybit = {"5m": "5", "15m": "15", "1h": "60", "4h": "240"}
+            map_bybit = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}
             by_interval = map_bybit.get(tf, "5")
             url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval={by_interval}&limit={limit}"
             r = self.session.get(url, timeout=(2.0, 3.5))
@@ -450,11 +468,17 @@ class MultiTimeframeCache:
             rows = list(reversed(r.json()["result"]["list"]))
             if len(rows) < 50:
                 raise RuntimeError("Respuesta incompleta de Bybit")
-            return (
-                np.array([float(c[2]) for c in rows], dtype=np.float64),
-                np.array([float(c[3]) for c in rows], dtype=np.float64),
-                np.array([float(c[4]) for c in rows], dtype=np.float64),
-            )
+            h = np.array([float(c[2]) for c in rows], dtype=np.float64)
+            l = np.array([float(c[3]) for c in rows], dtype=np.float64)
+            c = np.array([float(c[4]) for c in rows], dtype=np.float64)
+            v = np.array([float(c[5]) for c in rows], dtype=np.float64)
+            if tf in self.cache:
+                self.cache[tf]["vol"] = v
+            return h, l, c, v
+
+    def _fetch_remote(self, tf):
+        h, l, c, _v = self._fetch_remote_with_vol(tf)
+        return h, l, c
 
 
 # =====================================================================
@@ -473,7 +497,7 @@ def calc_ema(series, period):
     return ema
 
 
-def compute_indicators(highs, lows, closes, lnm_price=0.0):
+def compute_indicators(highs, lows, closes, lnm_price=0.0, volumes=None):
     deltas = np.diff(closes)
     seed = deltas[:14]
     up = float(seed[seed >= 0].sum()) / 14.0
@@ -511,7 +535,28 @@ def compute_indicators(highs, lows, closes, lnm_price=0.0):
     ema50 = calc_ema(closes, 50)
     ema200 = calc_ema(closes, 200)
 
+    ema12 = calc_ema(closes, 12)
+    ema26 = calc_ema(closes, 26)
+    macd_line = ema12 - ema26
+    macd_norm = macd_line / max(atr, 1.0)
+
+    up_move = highs[1:] - highs[:-1]
+    down_move = lows[:-1] - lows[1:]
+    plus_dm = np.array([u if (u > d and u > 0) else 0.0 for u, d in zip(up_move, down_move)], dtype=np.float64)
+    minus_dm = np.array([d if (d > u and d > 0) else 0.0 for u, d in zip(up_move, down_move)], dtype=np.float64)
+    atr_safe = max(atr, 1e-6)
+    plus_di = 100.0 * calc_ema(plus_dm, 14) / atr_safe
+    minus_di = 100.0 * calc_ema(minus_dm, 14) / atr_safe
+    adx = 100.0 * abs(plus_di - minus_di) / max(plus_di + minus_di, 1e-6)
+
     ref_price = float(lnm_price if lnm_price > 0 else closes[-1])
+    if volumes is not None and len(volumes) >= 20 and float(np.sum(volumes[-20:])) > 0:
+        typ_p = (highs[-20:] + lows[-20:] + closes[-20:]) / 3.0
+        vwap = float(np.sum(typ_p * volumes[-20:]) / max(float(np.sum(volumes[-20:])), 1e-9))
+    else:
+        vwap = float(sma20)
+    price_vs_vwap_pct = (ref_price - vwap) / max(vwap, 1.0)
+
     atr_pct = atr / max(ref_price, 1.0)
     trend_spread_pct = abs(ema9 - ema21) / max(ref_price, 1.0)
     ema_macro_spread_pct = (ema50 - ema200) / max(ref_price, 1.0)
@@ -548,6 +593,10 @@ def compute_indicators(highs, lows, closes, lnm_price=0.0):
         "ema_score": float(ema_score),
         "ema_macro_spread_pct": float(ema_macro_spread_pct),
         "price_vs_ema200_pct": float(price_vs_ema200_pct),
+        "macd_norm": float(macd_norm),
+        "adx": float(adx),
+        "vwap": float(vwap),
+        "price_vs_vwap_pct": float(price_vs_vwap_pct),
     }
     reg_info = MarketRegimeClassifier.classify(ind_base)
     ind_base["regime"] = reg_info["canonical_regime"]
@@ -556,7 +605,7 @@ def compute_indicators(highs, lows, closes, lnm_price=0.0):
     return ind_base
 
 
-def _build_indicator_prefix_state(highs, lows, closes):
+def _build_indicator_prefix_state(highs, lows, closes, volumes=None):
     """
     Precalcula una sola vez por vela el estado prefijo de las primeras N-1 velas
     cerradas para permitir actualizaciones O(1) en cada tick sin copiar arrays.
@@ -604,12 +653,37 @@ def _build_indicator_prefix_state(highs, lows, closes):
     ema21_prev, alpha21 = _ema_prefix(c_pre, 21)
     ema50_prev, alpha50 = _ema_prefix(c_pre, 50)
     ema200_prev, alpha200 = _ema_prefix(c_pre, 200)
+    ema12_prev, alpha12 = _ema_prefix(c_pre, 12)
+    ema26_prev, alpha26 = _ema_prefix(c_pre, 26)
     alpha_atr = 2.0 / (min(14, len(tr_pre) + 1) + 1.0)
+
+    up_move_pre = h_pre[1:] - h_pre[:-1]
+    down_move_pre = l_pre[:-1] - l_pre[1:]
+    plus_dm_pre = np.array([u if (u > d and u > 0) else 0.0 for u, d in zip(up_move_pre, down_move_pre)], dtype=np.float64)
+    minus_dm_pre = np.array([d if (d > u and d > 0) else 0.0 for u, d in zip(up_move_pre, down_move_pre)], dtype=np.float64)
+    plus_dm_ema_prev = calc_ema(plus_dm_pre, 14)
+    minus_dm_ema_prev = calc_ema(minus_dm_pre, 14)
+    alpha_dm = 2.0 / (min(14, len(plus_dm_pre) + 1) + 1.0)
+
+    if volumes is not None and len(volumes) >= 20 and float(np.sum(volumes[-20:])) > 0:
+        vol_tail19 = volumes[-20:-1]
+        typ_pre19 = (highs[-20:-1] + lows[-20:-1] + closes[-20:-1]) / 3.0
+        vwap_num19 = float(np.sum(typ_pre19 * vol_tail19))
+        vwap_den19 = float(np.sum(vol_tail19))
+        vol_last = float(volumes[-1])
+        has_vol = (vwap_den19 + vol_last) > 0
+    else:
+        has_vol = False
+        vwap_num19 = 0.0
+        vwap_den19 = 0.0
+        vol_last = 0.0
 
     return {
         "orig_h_last": float(highs[-1]),
         "orig_l_last": float(lows[-1]),
         "orig_c_last": float(closes[-1]),
+        "h_prev": float(highs[-2]),
+        "l_prev": float(lows[-2]),
         "c_prev": float(closes[-2]),
         "up_prev": up_prev,
         "down_prev": down_prev,
@@ -628,6 +702,17 @@ def _build_indicator_prefix_state(highs, lows, closes):
         "alpha50": alpha50,
         "ema200_prev": ema200_prev,
         "alpha200": alpha200,
+        "ema12_prev": ema12_prev,
+        "alpha12": alpha12,
+        "ema26_prev": ema26_prev,
+        "alpha26": alpha26,
+        "plus_dm_ema_prev": plus_dm_ema_prev,
+        "minus_dm_ema_prev": minus_dm_ema_prev,
+        "alpha_dm": alpha_dm,
+        "has_vol": has_vol,
+        "vwap_num19": vwap_num19,
+        "vwap_den19": vwap_den19,
+        "vol_last": vol_last,
     }
 
 
@@ -671,7 +756,31 @@ def compute_indicators_from_prefix(prefix, lnm_price=0.0):
     ema50 = prefix["alpha50"] * c_last + (1.0 - prefix["alpha50"]) * prefix["ema50_prev"]
     ema200 = prefix["alpha200"] * c_last + (1.0 - prefix["alpha200"]) * prefix["ema200_prev"]
 
+    ema12 = prefix["alpha12"] * c_last + (1.0 - prefix["alpha12"]) * prefix["ema12_prev"]
+    ema26 = prefix["alpha26"] * c_last + (1.0 - prefix["alpha26"]) * prefix["ema26_prev"]
+    macd_line = ema12 - ema26
+    macd_norm = macd_line / max(atr, 1.0)
+
+    u_last = h_last - prefix["h_prev"]
+    d_last_dm = prefix["l_prev"] - l_last
+    pdm_last = u_last if (u_last > d_last_dm and u_last > 0.0) else 0.0
+    mdm_last = d_last_dm if (d_last_dm > u_last and d_last_dm > 0.0) else 0.0
+    alpha_dm = prefix["alpha_dm"]
+    plus_dm_ema = alpha_dm * pdm_last + (1.0 - alpha_dm) * prefix["plus_dm_ema_prev"]
+    minus_dm_ema = alpha_dm * mdm_last + (1.0 - alpha_dm) * prefix["minus_dm_ema_prev"]
+    atr_safe = max(atr, 1e-6)
+    plus_di = 100.0 * plus_dm_ema / atr_safe
+    minus_di = 100.0 * minus_dm_ema / atr_safe
+    adx = 100.0 * abs(plus_di - minus_di) / max(plus_di + minus_di, 1e-6)
+
     ref_price = c_last
+    if prefix.get("has_vol", False):
+        typ_last = (h_last + l_last + c_last) / 3.0
+        vwap = (prefix["vwap_num19"] + typ_last * prefix["vol_last"]) / max(prefix["vwap_den19"] + prefix["vol_last"], 1e-9)
+    else:
+        vwap = float(sma20)
+    price_vs_vwap_pct = (ref_price - vwap) / max(vwap, 1.0)
+
     atr_pct = atr / max(ref_price, 1.0)
     ema_macro_spread_pct = (ema50 - ema200) / max(ref_price, 1.0)
     price_vs_ema200_pct = (ref_price - ema200) / max(ref_price, 1.0)
@@ -707,6 +816,10 @@ def compute_indicators_from_prefix(prefix, lnm_price=0.0):
         "ema_score": float(ema_score),
         "ema_macro_spread_pct": float(ema_macro_spread_pct),
         "price_vs_ema200_pct": float(price_vs_ema200_pct),
+        "macd_norm": float(macd_norm),
+        "adx": float(adx),
+        "vwap": float(vwap),
+        "price_vs_vwap_pct": float(price_vs_vwap_pct),
     }
     reg_info = MarketRegimeClassifier.classify(ind_base)
     ind_base["regime"] = reg_info["canonical_regime"]
@@ -2180,28 +2293,32 @@ def execute_strategy_guardian(
         if hasattr(brain, "supervisor") and brain.supervisor is not None:
             auto_trail_mult = float(brain.supervisor.get_autonomous_adjustments().get("dynamic_trailing_multiplier", 1.0))
 
-        min_trig = max(strat["trail_trig_atr"] * atr * vol_scale * sys_scale * auto_trail_mult, fee_offset * 1.35)
-        slack = strat["trail_slack_atr"] * atr * vol_scale * sys_scale * auto_trail_mult
+        # Piso duro de 0.65x a la compresión acumulada para evitar estrangular el trade por ruido
+        effective_trail_scale = max(0.65, vol_scale * sys_scale * auto_trail_mult)
+        # Exigir al menos 1.55x fee_offset de ganancia asegurada (FER >= 1.25 garantizado al bloquear SL)
+        profit_lock_offset = fee_offset * 1.55
+        min_trig = max(strat["trail_trig_atr"] * atr * effective_trail_scale, profit_lock_offset * 1.45)
+        slack = max(atr * 0.45, strat["trail_slack_atr"] * atr * effective_trail_scale)
 
-        if (side == "buy" and rsi > 72) or (side == "sell" and rsi < 28) or deg_streak >= 2:
-            slack *= 0.78
+        if (side == "buy" and rsi > 74) or (side == "sell" and rsi < 26) or deg_streak >= 2:
+            slack = max(atr * 0.38, slack * 0.85)
 
         if pnl_dist <= min_trig:
             return False
 
-        step_min = max(10.0, 0.12 * atr)
+        step_min = max(12.0, 0.15 * atr)
         if side == "buy":
-            be_floor = entry + fee_offset
+            be_floor = entry + profit_lock_offset
             be_floor_int = int(math.ceil(be_floor))
             raw_sl = max(float(be_floor_int), lnm_price - slack)
-            target_sl = int(round(min(raw_sl, lnm_price - 18.0)))
+            target_sl = int(round(min(raw_sl, lnm_price - max(22.0, 0.25 * atr))))
             if target_sl >= be_floor_int and target_sl > (liq + 15.0) and target_sl > int(round(current_sl + step_min)):
                 confirm_and_update_stoploss(client, brain, tid, target_sl, side, entry, fee_offset, trade_meta)
         elif side == "sell":
-            be_ceil = entry - fee_offset
+            be_ceil = entry - profit_lock_offset
             be_ceil_int = int(math.floor(be_ceil))
             raw_sl = min(float(be_ceil_int), lnm_price + slack)
-            target_sl = int(round(max(raw_sl, lnm_price + 18.0)))
+            target_sl = int(round(max(raw_sl, lnm_price + max(22.0, 0.25 * atr))))
             liq_ok = (liq <= 0.0) or (target_sl < (liq - 15.0))
             if target_sl <= be_ceil_int and liq_ok and (current_sl == 0.0 or target_sl < int(round(current_sl - step_min))):
                 confirm_and_update_stoploss(client, brain, tid, target_sl, side, entry, fee_offset, trade_meta)
@@ -2855,6 +2972,8 @@ def evaluate_and_dispatch_entries(
     hedge_store,
     perception,
     shadow_mode=False,
+    ind_1m=None,
+    ind_1d=None,
 ):
     """
     Evalúa compuertas Bayesianas, calcula sizing 1/4 Kelly y despacha o simula en sombra (Fases F4, F5, F6, F7).
@@ -2897,6 +3016,37 @@ def evaluate_and_dispatch_entries(
         if action > 0:
             q_val = float(q_vec[action]) if action < len(q_vec) else 0.0
             strat = brain.strategies[action]
+
+            for t in (still_running or []):
+                if t.get("side") == strat["side"]:
+                    t_locked = bool(brain.active_trades.get(str(t["id"]), {}).get("sl_locked", False))
+                    t_entry = float(t.get("price") or t.get("entryPrice") or ind_5m["price"])
+                    if (not t_locked) or abs(float(ind_5m["price"]) - t_entry) < (1.25 * float(ind_5m["atr"])):
+                        print("  ⏸️ [GUARDIA ANTI-STACKING] Posición del mismo lado activa sin SL asegurado o muy cercana en precio.")
+                        return 0, last_entry_time
+
+            if isinstance(ind_1m, dict):
+                if (
+                    strat["side"] == "buy"
+                    and float(ind_1m.get("rsi", 50.0)) < 36.0
+                    and float(ind_1m.get("macd_norm", 0.0)) < -0.15
+                    and float(ind_1m.get("price_vs_vwap_pct", 0.0)) < -0.0015
+                ):
+                    print("  ⏸️ [FILTRO MICRO 1M] Entrada bloqueada (MICRO_1M_FALLING_KNIFE)")
+                    return 0, last_entry_time
+                if (
+                    strat["side"] == "sell"
+                    and float(ind_1m.get("rsi", 50.0)) > 64.0
+                    and float(ind_1m.get("macd_norm", 0.0)) > 0.15
+                    and float(ind_1m.get("price_vs_vwap_pct", 0.0)) > 0.0015
+                ):
+                    print("  ⏸️ [FILTRO MICRO 1M] Entrada bloqueada (MICRO_1M_BULL_SPIKE)")
+                    return 0, last_entry_time
+
+            if strat["style"] == "TREND" and float(ind_5m.get("adx", 25.0)) < 16.0:
+                print("  ⏸️ [FILTRO ADX] Entrada TREND bloqueada (ADX_TOO_LOW_FOR_TREND)")
+                return 0, last_entry_time
+
             combined_rr = mods["rr_mult"] * (Config.RECOVERY_RR_MULT if recovery_mode else 1.0)
             raw_lev, raw_sl, raw_tp = calculate_strategy_order_params(
                 strat, ind_5m["price"], ind_5m["atr"], rr_mult=combined_rr
@@ -2933,6 +3083,15 @@ def evaluate_and_dispatch_entries(
 
             base_risk_pct = float(np.clip(base_risk * 0.35, 0.012, 0.035))
             eff_risk_pct = base_risk_pct * kelly_mult * reg_adapt["size_mult"]
+            if (
+                strat["style"] == "TREND"
+                and isinstance(ind_1d, dict)
+                and (
+                    (strat["side"] == "buy" and ind_1d.get("ema_state") == "BEAR_STRONG")
+                    or (strat["side"] == "sell" and ind_1d.get("ema_state") == "BULL_STRONG")
+                )
+            ):
+                eff_risk_pct *= 0.75
             risk_budget_sats = max(150, int(round(equity * eff_risk_pct)))
 
             loss_per_margin_sat = float(lev) * (sl_dist_pct + fee_rt)
@@ -2972,6 +3131,14 @@ def evaluate_and_dispatch_entries(
                 regime=mkt_reg_tag,
                 style_metrics=brain.style_metrics,
             )
+            if (
+                not viable_sats
+                and float(sats_meta.get("fee_ratio", 0.0)) >= 4.50
+                and int(sats_meta.get("net_tp_sats", 0)) >= 120
+                and float(sats_meta.get("net_rr", 0.0)) >= 1.25
+            ):
+                viable_sats = True
+
             if viable_sats and not Config.EXPLORER_MODE and (recovery_mode or "RANGE_SQUEEZE" in state):
                 floor_rec = THRESHOLDS_MANAGER.get_int("expectancy", "min_net_profit_sats_recovery", 44)
                 floor_std = THRESHOLDS_MANAGER.get_int("expectancy", "min_net_profit_sats", 38)
@@ -3231,6 +3398,14 @@ def main():
             ind_15m = mtf_cache.get_indicators_fast("15m", lnm_price)
             ind_1h = mtf_cache.get_indicators_fast("1h")
             ind_4h = mtf_cache.get_indicators_fast("4h")
+            try:
+                ind_1m = mtf_cache.get_indicators_fast("1m", lnm_price)
+            except Exception:
+                ind_1m = ind_5m
+            try:
+                ind_1d = mtf_cache.get_indicators_fast("1d")
+            except Exception:
+                ind_1d = ind_4h
 
             api_health.record_success()
             THRESHOLDS_MANAGER.check_and_reload(active_trades_count=len(primary_running))
@@ -3405,7 +3580,7 @@ def main():
             elif Config.EXPLORER_MODE:
                 dynamic_max_pos = min(Config.MAX_CONCURRENT_TRADES, max(1, int((equity * 0.85) // 1000)))
             else:
-                capital_max_pos = max(1, min(Config.MAX_CONCURRENT_TRADES, int((equity * 0.60) // 1000)))
+                capital_max_pos = max(1, min(Config.MAX_CONCURRENT_TRADES, int(equity // 10000)))
                 floor_headroom_pct = (equity - brain.locked_floor) / max(equity, 1) if brain.locked_floor > 0 else 1.0
                 if floor_headroom_pct <= 0.06 or mkt_reg_tag == "EXTREME_VOLATILITY":
                     dynamic_max_pos = 1
@@ -3445,6 +3620,8 @@ def main():
                     hedge_store=hedge_store,
                     perception=perception,
                     shadow_mode=Config.SHADOW_MODE,
+                    ind_1m=ind_1m,
+                    ind_1d=ind_1d,
                 )
 
             TELEMETRY_DISPATCHER.publish(
