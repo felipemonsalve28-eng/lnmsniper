@@ -1,0 +1,72 @@
+{
+  "timestamp": "2026-11-16T12:43:25Z",
+  "balance_sats": 565554,
+  "equity_sats": 606001,
+  "available_sats": 565554,
+  "active_trades": 1,
+  "rl_metrics": {
+    "rolling_td_error_avg": 2.1758,
+    "td_error_trend": "CRITICAL",
+    "td_error_status": "CRITICAL",
+    "td_error_slope": -0.00866,
+    "last_abs_td_error": 1.6203,
+    "q_bias_sats": 2762.39,
+    "q_bias_std_sats": 2624.96,
+    "q_bias_slope": -189.9752,
+    "q_bias_status": "OVERESTIMATING",
+    "fee_efficiency_ratio": -1.51,
+    "global_fee_efficiency_ratio": -1.51,
+    "fer_status": "CAPITAL_DESTRUCTION",
+    "fer_cohorts": {
+      "rolling_winners_count": 5,
+      "rolling_winners_fer": 0.6132,
+      "rolling_losers_count": 13,
+      "rolling_losers_fer": -2.0931,
+      "global_winners_count": 5,
+      "global_winners_fer": 0.6132,
+      "global_losers_count": 13,
+      "global_losers_fer": -2.0931
+    },
+    "policy_entropy": 1.1108,
+    "normalized_policy_entropy": 0.5056,
+    "healthy_normalized_entropy": 0.45,
+    "dominant_action": "SHORT_TREND",
+    "dominant_action_freq": 0.5156,
+    "action_frequencies": {
+      "HOLD": 0.0,
+      "LONG_TREND": 0.0156,
+      "LONG_REVERSION": 0.0156,
+      "LONG_SNIPER": 0.3125,
+      "LONG_DEF_SCALP": 0.0,
+      "SHORT_TREND": 0.5156,
+      "SHORT_REVERSION": 0.0,
+      "SHORT_SNIPER": 0.0,
+      "SHORT_DEF_SCALP": 0.1406
+    },
+    "avg_sats_per_trade_last20": -2242.61,
+    "policy_health": "GUARD_SUSPENDED",
+    "mfe_capture_avg": 0.2727,
+    "target_mfe_capture_ratio": 0.65,
+    "mae_margin_ratio_avg": 0.0761,
+    "learning_guard_status": "SUSPENDED_CRITICAL_TD",
+    "autonomous_adjustments": {
+      "allow_online_q_updates": false,
+      "learning_guard_status": "SUSPENDED_CRITICAL_TD",
+      "effective_min_expectancy_ratio": 4.7,
+      "expectancy_boost_applied": 0.85,
+      "q_bias_defense_active": true,
+      "fer_defense_active": true,
+      "policy_collapse_detected": false,
+      "policy_collapse_reason": "NONE",
+      "mfe_mae_defense_active": true,
+      "dynamic_trailing_multiplier": 0.85
+    },
+    "window_samples": {
+      "td_error_samples": 18,
+      "q_bias_samples": 18,
+      "fer_samples": 18,
+      "entropy_samples": 64,
+      "mfe_mae_samples": 18
+    }
+  }
+}
