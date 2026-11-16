@@ -516,6 +516,52 @@ class SniperControlCenter:
         digest = store.save(data)
         return True, f"✅ Meta en {brain_file} actualizada: {old_target:,} ➔ {target_val:,} sats (SHA-256: {digest[:16]}...)."
 
+    def fetch_live_account_snapshot(self, env_mode: str = "mainnet") -> Dict[str, Any]:
+        """Consulta en vivo /account, /futures/isolated/trades/running y /futures/ticker en LN Markets API v3."""
+        env = str(env_mode or "mainnet").strip().lower()
+        try:
+            from lnm_sniper_v6_advanced import (
+                LNMarketsClient,
+                compute_account_equity,
+                load_saved_credentials,
+            )
+            key, secret, passphrase = load_saved_credentials(env)
+            if not key or not secret or not passphrase:
+                return {
+                    "ok": False,
+                    "env": env,
+                    "error": f"Faltan credenciales de '{env}' en .env o variables de entorno.",
+                }
+            base_url = (
+                os.getenv("LNM_TESTNET_BASE_URL", "https://api.signet.lnmarkets.com/v3")
+                if env == "testnet"
+                else os.getenv("LNM_MAINNET_BASE_URL", "https://api.lnmarkets.com/v3")
+            )
+            client = LNMarketsClient(key, secret, passphrase, base_url=base_url)
+            user = client.get_user(force_refresh=True)
+            running = client.get_running_trades(force_refresh=True)
+            btc_price = 0.0
+            try:
+                btc_price = float(client.get_ticker_price() or 0.0)
+            except Exception:
+                btc_price = 0.0
+            bal = int(user.get("balance", 0)) if isinstance(user, dict) else 0
+            eq, locked_margin, floating_pl = compute_account_equity(bal, running or [])
+            return {
+                "ok": True,
+                "env": env,
+                "balance_sats": bal,
+                "equity_sats": int(eq),
+                "locked_margin_sats": int(locked_margin),
+                "floating_pl_sats": int(floating_pl),
+                "open_positions": list(running or []),
+                "btc_price": btc_price,
+                "error": "",
+            }
+        except Exception as exc:
+            msg = str(exc).strip().replace("\n", " ")[:120]
+            return {"ok": False, "env": env, "error": f"Sin conexión con LN Markets ({msg})"}
+
 
 def build_full_parameter_catalog(ctrl: SniperControlCenter) -> Dict[str, Dict[str, Any]]:
     tree = ctrl.load_thresholds_tree()
@@ -562,7 +608,7 @@ def build_full_parameter_catalog(ctrl: SniperControlCenter) -> Dict[str, Dict[st
     return catalog
 
 
-def print_status_dashboard(ctrl: SniperControlCenter, env_mode: str = "mainnet") -> None:
+def print_status_dashboard(ctrl: SniperControlCenter, env_mode: str = "mainnet", fetch_live: bool = True) -> None:
     env = env_mode.strip().lower()
     w = get_term_width()
     narrow = is_narrow_terminal()
@@ -589,6 +635,34 @@ def print_status_dashboard(ctrl: SniperControlCenter, env_mode: str = "mainnet")
     else:
         print(f"  Demonio CLI    : {'🟢 ACTIVO (PID: ' + str(pid) + ')' if pid else '⚪ DETENIDO / EXTERNO'} | Preset: {active_preset}")
         print(f"  Overrides Boot : ENV={rt_cfg['ENV_MODE']} | SHADOW={rt_cfg['SHADOW_MODE']} | SAFE={rt_cfg['SAFE_MODE']} | HEDGE={rt_cfg['ENABLE_HYBRID_HEDGE']} | MaxPos={rt_cfg['MAX_CONCURRENT_TRADES']} | MaxLev={rt_cfg['MAX_LEVERAGE']}x")
+
+    if fetch_live:
+        print(sep_ln)
+        live = ctrl.fetch_live_account_snapshot(env)
+        if live.get("ok"):
+            bal_l = int(live.get("balance_sats", 0))
+            eq_l = int(live.get("equity_sats", 0))
+            mrg_l = int(live.get("locked_margin_sats", 0))
+            fpl_l = int(live.get("floating_pl_sats", 0))
+            pos_l = live.get("open_positions", [])
+            btc_p = float(live.get("btc_price", 0.0))
+            btc_tag = f" | BTC: ${btc_p:,.1f}" if btc_p > 0 else ""
+            if narrow:
+                print(f"  Cuenta VIVO [{env.upper()}]: Bal={bal_l:,} | Eq={eq_l:,}")
+                print(f"  Margen={mrg_l:,} | Flot={fpl_l:+,} | Pos={len(pos_l)}{btc_tag}")
+            else:
+                print(f"  Cuenta VIVO [{env.upper()}] : Bal={bal_l:,} sats | Eq={eq_l:,} sats | Margen={mrg_l:,} | Flot={fpl_l:+,} | Pos={len(pos_l)}{btc_tag}")
+            for t in pos_l[:5]:
+                t_side = str(t.get("side", "?")).upper()
+                t_mrg = int(t.get("margin") or 0)
+                t_lev = float(t.get("leverage") or 0.0)
+                t_pl = int(t.get("pl") or 0)
+                t_ent = float(t.get("price") or t.get("entryPrice") or 0.0)
+                t_sl = int(round(float(t.get("stoploss") or 0.0)))
+                t_tp = int(round(float(t.get("takeprofit") or 0.0)))
+                print(f"    • {t_side} {t_mrg:,}s@{t_lev:.0f}x | Ent:${t_ent:,.1f} | PnL:{t_pl:+,}s | SL:{t_sl} TP:{t_tp}")
+        else:
+            print(_wrap_field("Cuenta VIVO", f"⚠️ {live.get('error', 'No disponible')} (usando snapshot local).", w))
 
     print(sep_ln)
     brain_path = os.path.join(ctrl.base_dir, brain_file)
@@ -642,17 +716,17 @@ def print_status_dashboard(ctrl: SniperControlCenter, env_mode: str = "mainnet")
         rl = tel.get("rl_metrics", {})
         adj = rl.get("autonomous_adjustments", {})
         if narrow:
-            print(f"  Telemetría: {tel.get('timestamp', '-')}")
-            print(f"  Capital   : Bal={int(tel.get('balance_sats', 0)):,} | Eq={int(tel.get('equity_sats', 0)):,} | Pos={int(tel.get('active_trades', 0))}")
-            print(f"  Salud RL  : Policy={rl.get('policy_health', '-')} | Guard={rl.get('learning_guard_status', '-')}")
-            print(f"  Ajuste Aut: ExpMin={adj.get('effective_min_expectancy_ratio', 3.85):.2f}x | Trail={adj.get('dynamic_trailing_multiplier', 1.0):.2f}x")
-            print(f"  1.TD-Error: avg50={rl.get('rolling_td_error_avg', 0.0):.4f} [{rl.get('td_error_status', '-')}]")
-            print(f"  2.Q-Bias  : {rl.get('q_bias_sats', 0.0):+.2f}s (std={rl.get('q_bias_std_sats', 0.0):.1f}) [{rl.get('q_bias_status', '-')}]")
-            print(f"  3.FER     : Roll={rl.get('fee_efficiency_ratio', 0.0):.2f} | Glob={rl.get('global_fee_efficiency_ratio', 0.0):.2f} [{rl.get('fer_status', '-')}]")
-            print(f"  4.Entropía: H={rl.get('normalized_policy_entropy', 0.0):.3f} | Dom={rl.get('dominant_action', '-')} ({float(rl.get('dominant_action_freq', 0.0))*100:.0f}%)")
-            print(f"  5.MFE/MAE : MFE={float(rl.get('mfe_capture_avg', 0.0))*100:.1f}% | MAE/Mrg={float(rl.get('mae_margin_ratio_avg', 0.0))*100:.1f}%")
+            print(f"  Snapshot RL: {tel.get('timestamp', '-')}")
+            print(f"  Snap Cap   : Bal={int(tel.get('balance_sats', 0)):,} | Eq={int(tel.get('equity_sats', 0)):,} | Pos={int(tel.get('active_trades', 0))}")
+            print(f"  Salud RL   : Policy={rl.get('policy_health', '-')} | Guard={rl.get('learning_guard_status', '-')}")
+            print(f"  Ajuste Aut : ExpMin={adj.get('effective_min_expectancy_ratio', 3.85):.2f}x | Trail={adj.get('dynamic_trailing_multiplier', 1.0):.2f}x")
+            print(f"  1.TD-Error : avg50={rl.get('rolling_td_error_avg', 0.0):.4f} [{rl.get('td_error_status', '-')}]")
+            print(f"  2.Q-Bias   : {rl.get('q_bias_sats', 0.0):+.2f}s (std={rl.get('q_bias_std_sats', 0.0):.1f}) [{rl.get('q_bias_status', '-')}]")
+            print(f"  3.FER      : Roll={rl.get('fee_efficiency_ratio', 0.0):.2f} | Glob={rl.get('global_fee_efficiency_ratio', 0.0):.2f} [{rl.get('fer_status', '-')}]")
+            print(f"  4.Entropía : H={rl.get('normalized_policy_entropy', 0.0):.3f} | Dom={rl.get('dominant_action', '-')} ({float(rl.get('dominant_action_freq', 0.0))*100:.0f}%)")
+            print(f"  5.MFE/MAE  : MFE={float(rl.get('mfe_capture_avg', 0.0))*100:.1f}% | MAE/Mrg={float(rl.get('mae_margin_ratio_avg', 0.0))*100:.1f}%")
         else:
-            print(f"  Telemetría Vivo: {tel.get('timestamp', '-')} | Bal: {int(tel.get('balance_sats', 0)):,} sats | Eq: {int(tel.get('equity_sats', 0)):,} sats | Activas: {int(tel.get('active_trades', 0))}")
+            print(f"  Snapshot RL    : {tel.get('timestamp', '-')} | Bal: {int(tel.get('balance_sats', 0)):,} sats | Eq: {int(tel.get('equity_sats', 0)):,} sats | Activas: {int(tel.get('active_trades', 0))}")
             print(f"  Salud / Guard  : Policy={rl.get('policy_health', '-')} | Guard={rl.get('learning_guard_status', '-')} | ExpEfectivo={adj.get('effective_min_expectancy_ratio', 3.85):.2f}x | TrailMult={adj.get('dynamic_trailing_multiplier', 1.0):.2f}x")
             print(f"    1. TD-Error  : avg50={rl.get('rolling_td_error_avg', 0.0):.4f} (last={rl.get('last_abs_td_error', 0.0):.4f}) -> [{rl.get('td_error_status', '-')}]")
             print(f"    2. Q-Bias    : {rl.get('q_bias_sats', 0.0):+.2f} sats (std={rl.get('q_bias_std_sats', 0.0):.2f}) -> [{rl.get('q_bias_status', '-')}]")
@@ -942,7 +1016,7 @@ def manage_daemon(
     return 1
 
 
-def _watch_dashboard_loop(ctrl: SniperControlCenter, env_mode: str = "mainnet", interval: float = 3.0) -> None:
+def _watch_dashboard_loop(ctrl: SniperControlCenter, env_mode: str = "mainnet", interval: float = 3.0, fetch_live: bool = True) -> None:
     wait_s = max(1.0, float(interval))
     try:
         while True:
@@ -951,7 +1025,7 @@ def _watch_dashboard_loop(ctrl: SniperControlCenter, env_mode: str = "mainnet", 
                 sys.stdout.flush()
             else:
                 os.system("clear" if os.name != "nt" else "cls")
-            print_status_dashboard(ctrl, env_mode)
+            print_status_dashboard(ctrl, env_mode, fetch_live=fetch_live)
             print(f"  ⏱️ Refrescando cada {wait_s:.1f}s | Presiona Ctrl+C para volver/salir...")
             time.sleep(wait_s)
     except KeyboardInterrupt:
@@ -1184,10 +1258,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     p_st = sub.add_parser("status", help="Muestra el panel completo de estado y signos vitales RL")
     p_st.add_argument("--env", default="mainnet", choices=["mainnet", "testnet"])
+    p_st.add_argument("--offline", action="store_true", help="Omitir consulta en vivo a LN Markets API")
 
     p_wt = sub.add_parser("watch", help="Monitor en vivo con auto-refresco continuo")
     p_wt.add_argument("--env", default="mainnet", choices=["mainnet", "testnet"])
     p_wt.add_argument("--interval", type=float, default=3.0)
+    p_wt.add_argument("--offline", action="store_true", help="Omitir consulta en vivo a LN Markets API")
 
     p_cat = sub.add_parser("catalog", help="Explora o busca en el catálogo de 99 parámetros")
     p_cat.add_argument("--category", "-c", default=None)
@@ -1254,10 +1330,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             run_bot_with_overrides(ctrl, args.env, sh_ovr, True if args.safe_mode else None, args.once)
             return 0
         if cmd == "status":
-            print_status_dashboard(ctrl, args.env)
+            print_status_dashboard(ctrl, args.env, fetch_live=not args.offline)
             return 0
         if cmd == "watch":
-            _watch_dashboard_loop(ctrl, args.env, args.interval)
+            _watch_dashboard_loop(ctrl, args.env, args.interval, fetch_live=not args.offline)
             return 0
         if cmd == "catalog":
             print_catalog(ctrl, args.category, args.search, args.compact)

@@ -156,6 +156,41 @@ class TestSniperCLI(unittest.TestCase):
         with patch("builtins.input", side_effect=EOFError):
             self.assertIsNone(_safe_input("Prompt: "))
 
+    def test_07_live_account_snapshot_fallback_and_rendering(self):
+        from sniper_cli import print_status_dashboard
+        import io
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ctrl = SniperControlCenter(base_dir=tmp)
+            live_ok = {
+                "ok": True,
+                "env": "mainnet",
+                "balance_sats": 42000,
+                "equity_sats": 43500,
+                "locked_margin_sats": 2000,
+                "floating_pl_sats": 1500,
+                "open_positions": [
+                    {"id": "t1", "side": "buy", "margin": 2000, "leverage": 25, "price": 90000, "pl": 1500, "stoploss": 89100, "takeprofit": 91800}
+                ],
+                "btc_price": 90500.0,
+                "error": "",
+            }
+            buf = io.StringIO()
+            with patch.object(ctrl, "fetch_live_account_snapshot", return_value=live_ok):
+                with redirect_stdout(buf):
+                    print_status_dashboard(ctrl, env_mode="mainnet", fetch_live=True)
+            out = buf.getvalue()
+            self.assertIn("42,000", out)
+            self.assertIn("43,500", out)
+            self.assertIn("BUY 2,000s@25x", out)
+
+            buf_err = io.StringIO()
+            with patch.object(ctrl, "fetch_live_account_snapshot", return_value={"ok": False, "env": "mainnet", "error": "Faltan credenciales"}):
+                with redirect_stdout(buf_err):
+                    print_status_dashboard(ctrl, env_mode="mainnet", fetch_live=True)
+            self.assertIn("Faltan credenciales", buf_err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -372,8 +372,9 @@
   - Diseño responsivo para Termux (`get_term_width`, `is_narrow_terminal`, `_wrap_field`), refresco ANSI en `watch`, y lectura de logs en memoria $O(\text{lines})$ con `collections.deque`.
   - Cancelación limpia en sub-prompts (`_safe_input`), parser flexible de satoshis (`_parse_sats_input`: `350,000`, `350k`), resolución inteligente de claves cortas (`resolve_threshold_key`) y sugerencias con `difflib`, rechazo de booleanos en umbrales numéricos y validación de arranque/cierre de demonio (`proc.poll()`, timeout `SIGTERM`).
   - Menú interactivo completo (`[0..8]`) preservando intactos los 99 parámetros del catálogo y los bloqueos P0 (`BLOQUEO ESTRUCTURAL ACTIVO`, `BLOQUEO DE SEGURIDAD P0`, `PROTECCIÓN P0 INVIOLABLE`).
+  - Consulta directa en vivo a LN Markets API v3 (`/account`, `/futures/isolated/trades/running`, `/futures/ticker`) mediante `SniperControlCenter.fetch_live_account_snapshot` en `status` y `watch` (con flag `--offline` y fallback seguro al snapshot local).
 - **Certificación en WSL (`Ubuntu`):**
-  - [test_sniper_cli.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_sniper_cli.py): `6/6` pruebas superadas (`OK`).
+  - [test_sniper_cli.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_sniper_cli.py): `7/7` pruebas superadas (`OK`).
   - [test_learning_quality_and_sats.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_learning_quality_and_sats.py): `8/8` escenarios superados.
   - [test_protocolo_v_reversal.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_protocolo_v_reversal.py): `23/23` escenarios superados.
 
