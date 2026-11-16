@@ -9,10 +9,16 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from guardian_execution_core import AtomicBrainStore
 from learning_thresholds_manager import DEFAULT_CONFIG_PATH, LearningThresholdsManager
-from sniper_cli import SniperControlCenter, build_full_parameter_catalog
+from sniper_cli import (
+    SniperControlCenter,
+    _parse_sats_input,
+    _safe_input,
+    build_full_parameter_catalog,
+)
 from sniper_cli_catalog import PARAM_OPERATIONAL_GUIDE, RUNTIME_PARAMETERS_SPEC
 
 
@@ -119,6 +125,36 @@ class TestSniperCLI(unittest.TestCase):
         sha_ok, loaded = self.store.verify_file(self.brain_path, strict_sha=True)
         self.assertTrue(sha_ok)
         self.assertEqual(loaded["current_target"], 450000)
+
+    def test_06_usability_short_key_resolution_and_error_handling(self) -> None:
+        ok_short, msg_short, meta_short = self.ctrl.set_threshold_parameter("trailing_tighten_factor", 0.82)
+        self.assertTrue(ok_short, msg_short)
+        self.assertIsNotNone(meta_short)
+        self.assertEqual(meta_short["key"], "mfe_mae.trailing_tighten_factor")
+        self.assertAlmostEqual(meta_short["new_value"], 0.82)
+
+        ok_typo, msg_typo, _ = self.ctrl.set_threshold_parameter("trailing_tighten_factr", 0.82)
+        self.assertFalse(ok_typo)
+        self.assertIn("mfe_mae.trailing_tighten_factor", msg_typo)
+
+        ok_bool, msg_bool, _ = self.ctrl.set_threshold_parameter("mfe_mae.trailing_tighten_factor", True)
+        self.assertFalse(ok_bool)
+        self.assertIn("booleano", msg_bool.lower())
+
+        ok_rt, msg_rt, meta_rt = self.ctrl.set_runtime_parameter("max_leverage", 55)
+        self.assertTrue(ok_rt, msg_rt)
+        self.assertIsNotNone(meta_rt)
+        self.assertEqual(meta_rt["key"], "MAX_LEVERAGE")
+        self.assertEqual(meta_rt["new_value"], 55)
+
+        self.assertEqual(_parse_sats_input("350,000"), 350000)
+        self.assertEqual(_parse_sats_input("350k"), 350000)
+        self.assertIsNone(_parse_sats_input(True))
+
+        with patch("builtins.input", side_effect=KeyboardInterrupt):
+            self.assertIsNone(_safe_input("Prompt: "))
+        with patch("builtins.input", side_effect=EOFError):
+            self.assertIsNone(_safe_input("Prompt: "))
 
 
 if __name__ == "__main__":

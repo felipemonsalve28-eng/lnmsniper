@@ -362,6 +362,21 @@
   - [hedge_state_mainnet.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_mainnet.json) (`SHA-256: a35a516d8587...`, `206` estados Q) y [hedge_state_testnet.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_testnet.json) (`SHA-256: dd7e673e8ebc...`, `99` estados Q): puestos en limpio `pairs={}`, `hedge_memory=[]`, `hedge_metrics` en cero y `updated_at=0.0`.
 - **Verificación de arranque en copia aislada sin `.sha256`/`.bak` (`25,000` / `100,000` / `500,000` sats):** Tanto `mainnet` como `testnet` cargan en modo **`NORMAL`** (`current_dd_pct=0.000`, `allow=True`, `recovery=False`) sincronizando el piso al `75%` del saldo inicial conectado.
 
+### Etapa 20: Optimización del CLI para Termux, Gobernanza Multiagente y Calibración Operativa
+- **Estado:** **Etapas 1, 2, 3, 4 y 5 completadas al 100%**.
+- **Gobernanza y Subagentes ([AGENTS.md](file:///c:/Users/mberm/OneDrive/Documentos/sniper/AGENTS.md), `.agents/skills/`):**
+  - Regla raíz en [AGENTS.md](file:///c:/Users/mberm/OneDrive/Documentos/sniper/AGENTS.md) con roles (`Coordinador`, `research`, `quant-auditor`, `implementer`, `wsl-verifier`), Reglas de Oro P0 y ejecución obligatoria en WSL (`Ubuntu`).
+  - Skills bajo demanda: [wsl-verify](file:///c:/Users/mberm/OneDrive/Documentos/sniper/.agents/skills/wsl-verify/SKILL.md) y [sniper-subagents](file:///c:/Users/mberm/OneDrive/Documentos/sniper/.agents/skills/sniper-subagents/SKILL.md).
+- **Mejoras de Usabilidad, Errores y Termux en [sniper_cli.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sniper_cli.py) y [test_sniper_cli.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_sniper_cli.py):**
+  - Arranque ligero mediante *lazy-import* de `lnm_sniper_v6_advanced` y `hedge_risk_manager` solo en `run_bot_with_overrides`.
+  - Diseño responsivo para Termux (`get_term_width`, `is_narrow_terminal`, `_wrap_field`), refresco ANSI en `watch`, y lectura de logs en memoria $O(\text{lines})$ con `collections.deque`.
+  - Cancelación limpia en sub-prompts (`_safe_input`), parser flexible de satoshis (`_parse_sats_input`: `350,000`, `350k`), resolución inteligente de claves cortas (`resolve_threshold_key`) y sugerencias con `difflib`, rechazo de booleanos en umbrales numéricos y validación de arranque/cierre de demonio (`proc.poll()`, timeout `SIGTERM`).
+  - Menú interactivo completo (`[0..8]`) preservando intactos los 99 parámetros del catálogo y los bloqueos P0 (`BLOQUEO ESTRUCTURAL ACTIVO`, `BLOQUEO DE SEGURIDAD P0`, `PROTECCIÓN P0 INVIOLABLE`).
+- **Certificación en WSL (`Ubuntu`):**
+  - [test_sniper_cli.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_sniper_cli.py): `6/6` pruebas superadas (`OK`).
+  - [test_learning_quality_and_sats.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_learning_quality_and_sats.py): `8/8` escenarios superados.
+  - [test_protocolo_v_reversal.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_protocolo_v_reversal.py): `23/23` escenarios superados.
+
 ---
 
 ## 3. ARQUITECTURA DE ARCHIVOS CLAVE
