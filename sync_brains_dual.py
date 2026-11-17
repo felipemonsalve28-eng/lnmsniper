@@ -15,7 +15,7 @@ import sys
 import math
 import shutil
 from datetime import datetime
-from guardian_execution_core import AtomicBrainStore
+from guardian_execution_core import AtomicBrainStore, FileLockContext
 
 
 ACTION_TO_STYLE = {
@@ -140,6 +140,7 @@ def sync_dual_brains(
 
     q_main = main_data.get("q_table", {})
     v_main = main_data.get("state_visits", {})
+    synced_test_visits = dict(main_data.get("synced_test_visits", {}))
     q_test = test_data.get("q_table", {})
     v_test = test_data.get("state_visits", {})
 
@@ -153,6 +154,10 @@ def sync_dual_brains(
             continue
         t_visits = int(v_test.get(state_key, 0))
         if t_visits < min_testnet_visits:
+            continue
+        last_synced_v = int(synced_test_visits.get(state_key, 0))
+        delta_t_visits = t_visits - last_synced_v
+        if delta_t_visits <= 0:
             continue
 
         m_visits = int(v_main.get(state_key, 0))
@@ -168,7 +173,8 @@ def sync_dual_brains(
                     round(0.0 if i == 0 else float(t_vec[i]) * scale, 4)
                     for i in range(9)
                 ]
-                v_main[state_key] = max(m_visits, int(t_visits * 0.35 * q_weight))
+                v_main[state_key] = max(m_visits, int(delta_t_visits * 0.35 * q_weight))
+                synced_test_visits[state_key] = t_visits
                 new_states_adopted += 1
                 states_transferred += 1
             elif max_t_q >= 0.04 and not ok_q:
@@ -177,7 +183,7 @@ def sync_dual_brains(
 
         # Caso 2: Estado existente en ambos -> Transferir acciones que superen filtro multicriterio
         m_vec = list(q_main[state_key])
-        confidence_ratio = min(1.0, t_visits / max(float(m_visits + t_visits), 1.0))
+        confidence_ratio = min(1.0, delta_t_visits / max(float(m_visits + delta_t_visits), 1.0))
         base_eff_alpha = blend_alpha * confidence_ratio
         state_modified = False
 
@@ -202,7 +208,8 @@ def sync_dual_brains(
         if state_modified:
             m_vec[0] = 0.0
             q_main[state_key] = m_vec
-            v_main[state_key] = m_visits + max(1, int(t_visits * 0.15))
+            v_main[state_key] = m_visits + max(1, int(delta_t_visits * 0.25))
+            synced_test_visits[state_key] = t_visits
             states_transferred += 1
 
     if states_transferred == 0:
@@ -220,25 +227,27 @@ def sync_dual_brains(
         )
         return True
 
-    ts_bak = f"{mainnet_path}.pre_sync_{datetime.now().strftime('%Y%m%d_%H%M%S')}.bak"
-    if os.path.exists(mainnet_path):
-        shutil.copy2(mainnet_path, ts_bak)
+    with FileLockContext(f"{mainnet_path}.sync", exclusive=True, timeout=6.0, raise_on_timeout=False):
+        # Re-verificar estado vivo de Mainnet justo antes de persistir para eliminar condición de carrera TOCTOU
+        latest_main = main_store.load()
+        if isinstance(latest_main, dict) and "q_table" in latest_main:
+            latest_active = latest_main.get("active_trades", {})
+            if isinstance(latest_active, dict) and len(latest_active) > 0:
+                print(
+                    f"⏸️ [NUTRICIÓN ABORTADA TOCTOU] Mainnet abrió {len(latest_active)} operación(es) durante el cálculo. "
+                    f"Se cancela la escritura para proteger active_trades."
+                )
+                return False
+            main_data = latest_main
 
-    # Re-verificar estado vivo de Mainnet justo antes de persistir para eliminar condición de carrera TOCTOU
-    latest_main = main_store.load()
-    if isinstance(latest_main, dict) and "q_table" in latest_main:
-        latest_active = latest_main.get("active_trades", {})
-        if isinstance(latest_active, dict) and len(latest_active) > 0:
-            print(
-                f"⏸️ [NUTRICIÓN ABORTADA TOCTOU] Mainnet abrió {len(latest_active)} operación(es) durante el cálculo. "
-                f"Se cancela la escritura para proteger active_trades."
-            )
-            return False
-        main_data = latest_main
+        ts_bak = f"{mainnet_path}.pre_sync_{datetime.now().strftime('%Y%m%d_%H%M%S')}.bak"
+        if os.path.exists(mainnet_path):
+            shutil.copy2(mainnet_path, ts_bak)
 
-    main_data["q_table"] = q_main
-    main_data["state_visits"] = v_main
-    digest = main_store.save(main_data)
+        main_data["q_table"] = q_main
+        main_data["state_visits"] = v_main
+        main_data["synced_test_visits"] = synced_test_visits
+        digest = main_store.save(main_data)
     print(
         f"✅ [NUTRICIÓN DUAL COMPLETADA] Testnet ➔ Mainnet | "
         f"Estados nutridos: {states_transferred} (Nuevos: {new_states_adopted} | Acciones: {actions_enriched} | "

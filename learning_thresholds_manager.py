@@ -148,6 +148,30 @@ FALLBACK_THRESHOLDS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "max_limit": 5.0,
             "structural_lock_when_open": False,
         },
+        "breakeven_safety_margin": {
+            "value": 0.04,
+            "unit": "probability",
+            "description": "Margen de seguridad probabilistico exigido sobre la tasa de equilibrio p* (p_LCB >= p* + margen).",
+            "min_limit": 0.0,
+            "max_limit": 0.25,
+            "structural_lock_when_open": False,
+        },
+        "bayesian_prior_alpha": {
+            "value": 9.0,
+            "unit": "count",
+            "description": "Hiperparametro alpha_0 (pseudo-aciertos iniciales) del prior Beta-Binomial.",
+            "min_limit": 1.0,
+            "max_limit": 100.0,
+            "structural_lock_when_open": False,
+        },
+        "bayesian_prior_beta": {
+            "value": 11.0,
+            "unit": "count",
+            "description": "Hiperparametro beta_0 (pseudo-fracasos iniciales) del prior Beta-Binomial.",
+            "min_limit": 1.0,
+            "max_limit": 100.0,
+            "structural_lock_when_open": False,
+        },
     },
     "fees": {
         "taker_fee_rate": {
@@ -322,6 +346,14 @@ FALLBACK_THRESHOLDS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "max_limit": 20.0,
             "structural_lock_when_open": True,
         },
+        "fractional_kelly_scale": {
+            "value": 0.25,
+            "unit": "fraction",
+            "description": "Fraccion del criterio de Kelly aplicada al dimensionamiento dinamico (0.25 = 1/4 Kelly).",
+            "min_limit": 0.05,
+            "max_limit": 1.0,
+            "structural_lock_when_open": False,
+        },
     },
     "policy_entropy": {
         "window_size": {
@@ -449,7 +481,7 @@ FALLBACK_THRESHOLDS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "structural_lock_when_open": True,
         },
         "loss_penalty_multiplier": {
-            "value": 1.35,
+            "value": 1.0,
             "unit": "multiplier",
             "description": "Multiplicador de severidad sobre perdidas reales en balance para asegurar gradiente Q negativo.",
             "min_limit": 1.0,
@@ -530,6 +562,22 @@ FALLBACK_THRESHOLDS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "max_limit": 0.999,
             "structural_lock_when_open": True,
         },
+        "mainnet_epsilon": {
+            "value": 0.0,
+            "unit": "probability",
+            "description": "Probabilidad de exploracion aleatoria en Mainnet (0.0 = politica 100% determinista).",
+            "min_limit": 0.0,
+            "max_limit": 0.25,
+            "structural_lock_when_open": False,
+        },
+        "fer_cooldown_mult": {
+            "value": 2.0,
+            "unit": "multiplier",
+            "description": "Multiplicador de enfriamiento entre entradas cuando el FER movil cae debajo de 1.0.",
+            "min_limit": 1.0,
+            "max_limit": 5.0,
+            "structural_lock_when_open": False,
+        },
     },
     "learning_guard": {
         "critical_td_streak_to_suspend": {
@@ -599,7 +647,7 @@ FALLBACK_THRESHOLDS: Dict[str, Dict[str, Dict[str, Any]]] = {
     },
     "market_sensitivity": {
         "atr_extreme_pct": {
-            "value": 0.9,
+            "value": 0.85,
             "unit": "percent",
             "description": "ATR porcentual a partir del cual se clasifica el mercado en volatilidad extrema.",
             "min_limit": 0.1,
@@ -607,7 +655,7 @@ FALLBACK_THRESHOLDS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "structural_lock_when_open": False,
         },
         "squeeze_bb_width_pct": {
-            "value": 0.45,
+            "value": 0.75,
             "unit": "percent",
             "description": "Ancho maximo de Bandas de Bollinger para identificar compresion (squeeze).",
             "min_limit": 0.05,
@@ -615,7 +663,7 @@ FALLBACK_THRESHOLDS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "structural_lock_when_open": False,
         },
         "expansion_atr_rel_ratio": {
-            "value": 1.15,
+            "value": 1.32,
             "unit": "ratio",
             "description": "Ratio minimo de ATR actual sobre media para confirmar expansion de volatilidad.",
             "min_limit": 0.5,

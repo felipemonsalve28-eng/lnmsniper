@@ -432,8 +432,11 @@ class MultiTimeframeCache:
         vols = item.get("vol")
         # Actualización O(1) incremental sin copia de arrays para 1m/5m/15m (Fase 6 Termux)
         if tf in ("1m", "5m", "15m") and len(c_arr) >= 26:
-            if item.get("prefix") is None:
-                item["prefix"] = _build_indicator_prefix_state(h_arr, l_arr, c_arr, volumes=vols)
+            if item.get("prefix") is None or (current_lnm_price > 0.0 and not item.get("prefix_has_basis", False)):
+                item["prefix"] = _build_indicator_prefix_state(
+                    h_arr, l_arr, c_arr, volumes=vols, lnm_price=current_lnm_price
+                )
+                item["prefix_has_basis"] = bool(current_lnm_price > 0.0)
             ind = compute_indicators_from_prefix(item["prefix"], current_lnm_price)
         else:
             ind = compute_indicators(h_arr, l_arr, c_arr, current_lnm_price if tf in ("1m", "5m", "15m") else 0.0, volumes=vols)
@@ -497,7 +500,25 @@ def calc_ema(series, period):
     return ema
 
 
+def _normalize_ohlc_basis(highs, lows, closes, lnm_price=0.0):
+    """Normaliza OHLC externos (BTCUSDT) al spot de LN Markets (BTCUSD) sin escalar volumen."""
+    if not hasattr(highs, "__sub__"):
+        highs = np.array(highs, dtype=np.float64)
+    if not hasattr(lows, "__sub__"):
+        lows = np.array(lows, dtype=np.float64)
+    if not hasattr(closes, "__sub__"):
+        closes = np.array(closes, dtype=np.float64)
+    if lnm_price > 0.0 and len(closes) > 0 and float(closes[-1]) > 0.0:
+        basis_ratio = float(lnm_price) / float(closes[-1])
+        if 0.985 <= basis_ratio <= 1.015 and abs(basis_ratio - 1.0) > 1e-6:
+            highs = highs * basis_ratio
+            lows = lows * basis_ratio
+            closes = closes * basis_ratio
+    return highs, lows, closes
+
+
 def compute_indicators(highs, lows, closes, lnm_price=0.0, volumes=None):
+    highs, lows, closes = _normalize_ohlc_basis(highs, lows, closes, lnm_price=lnm_price)
     deltas = np.diff(closes)
     seed = deltas[:14]
     up = float(seed[seed >= 0].sum()) / 14.0
@@ -605,11 +626,12 @@ def compute_indicators(highs, lows, closes, lnm_price=0.0, volumes=None):
     return ind_base
 
 
-def _build_indicator_prefix_state(highs, lows, closes, volumes=None):
+def _build_indicator_prefix_state(highs, lows, closes, volumes=None, lnm_price=0.0):
     """
     Precalcula una sola vez por vela el estado prefijo de las primeras N-1 velas
     cerradas para permitir actualizaciones O(1) en cada tick sin copiar arrays.
     """
+    highs, lows, closes = _normalize_ohlc_basis(highs, lows, closes, lnm_price=lnm_price)
     n_total = len(closes)
     h_pre = highs[:-1]
     l_pre = lows[:-1]
@@ -944,6 +966,7 @@ class AutonomousGoalBrain:
         self.store = AtomicBrainStore(self.filename)
         self.dirty = False
         self.last_save_time = 0.0
+        self._last_disk_mtime = 0.0
         self.load_brain()
 
     @staticmethod
@@ -1137,12 +1160,42 @@ class AutonomousGoalBrain:
                         ))
             else:
                 self.dirty = True
+            if os.path.exists(self.filename):
+                try:
+                    self._last_disk_mtime = os.path.getmtime(self.filename)
+                except OSError:
+                    pass
             print(
                 f"[CEREBRO CARGADO SHA-256 ({Config.ENV_MODE.upper()})] Archivo: {self.filename} | "
                 f"Estados: {len(self.q_table)} | Cierres: {self.total_trained} | Online: {self.total_intermediate_updates}"
             )
         except Exception as e:
             print(f"[AVISO PROCESAMIENTO CEREBRO] {e}")
+
+    def sync_from_disk_if_idle(self):
+        """Recarga q_table, state_visits y current_target si sync_brains_dual o sniper_cli actualizaron el disco."""
+        if len(self.active_trades) > 0 or self.dirty or not os.path.exists(self.filename):
+            return False
+        try:
+            cur_mtime = os.path.getmtime(self.filename)
+            if cur_mtime <= (self._last_disk_mtime + 0.05):
+                return False
+            data = self.store.load()
+            if not isinstance(data, dict) or "q_table" not in data:
+                return False
+            for k, vec in data.get("q_table", {}).items():
+                if isinstance(vec, list) and len(vec) == Config.NUM_ACTIONS:
+                    norm_k = self._normalize_state_key(k)
+                    self.q_table[norm_k] = [0.0 if i == 0 else round(float(v), 4) for i, v in enumerate(vec)]
+            for k, v_cnt in data.get("state_visits", {}).items():
+                norm_k = self._normalize_state_key(k)
+                self.state_visits[norm_k] = max(int(self.state_visits.get(norm_k, 0)), int(v_cnt))
+            if "current_target" in data:
+                self.current_target = int(data["current_target"])
+            self._last_disk_mtime = cur_mtime
+            return True
+        except Exception:
+            return False
 
     def save_brain(self, force=False):
         now = time.time()
@@ -1175,9 +1228,21 @@ class AutonomousGoalBrain:
                 "processed_closed_trade_ids": list(self.processed_closed_trade_ids)[-500:],
                 "memory": list(self.memory)[-1600:],
             }
+            if os.path.exists(self.filename):
+                try:
+                    disk_d = self.store.load()
+                    if isinstance(disk_d, dict) and "synced_test_visits" in disk_d:
+                        payload["synced_test_visits"] = disk_d["synced_test_visits"]
+                except Exception:
+                    pass
             self.store.save(payload)
             self.dirty = False
             self.last_save_time = now
+            if os.path.exists(self.filename):
+                try:
+                    self._last_disk_mtime = os.path.getmtime(self.filename)
+                except OSError:
+                    pass
             return True
         except Exception as e:
             print(f"[ERROR I/O] Fallo al guardar cerebro ({self.filename}): {e}")
@@ -1424,8 +1489,6 @@ class AutonomousGoalBrain:
             if random.uniform(0, 1) < self.epsilon:
                 active_candidates = [a for a in allowed_actions if a != 0]
                 chosen_act = int(random.choice(active_candidates))
-                self.state_visits[norm_s] = visits + 1
-                self.dirty = True
                 self.supervisor.record_policy_decision(chosen_act)
                 return chosen_act
         else:
@@ -1441,8 +1504,6 @@ class AutonomousGoalBrain:
                 if visits < 25 and not recovery_mode:
                     non_rev = [a for a in allowed_actions if a not in (0, 2, 6)]
                     chosen_act = int(random.choice(non_rev if non_rev else allowed_actions))
-                    self.state_visits[norm_s] = visits + 1
-                    self.dirty = True
                     self.supervisor.record_policy_decision(chosen_act)
                     return chosen_act
                 self.supervisor.record_policy_decision(0)
@@ -1482,9 +1543,6 @@ class AutonomousGoalBrain:
             return q_val + b
 
         chosen_act = int(max(allowed_actions, key=biased_q))
-        if chosen_act > 0:
-            self.state_visits[norm_s] = visits + 1
-            self.dirty = True
         self.supervisor.record_policy_decision(chosen_act)
         return chosen_act
 
@@ -1741,6 +1799,7 @@ class AutonomousGoalBrain:
             terminal=True,
         )
 
+        self.state_visits[norm_s] = int(self.state_visits.get(norm_s, 0)) + 1
         sup_trade_meta = self.supervisor.record_closed_trade(
             trade_id=str(trade_id) if trade_id is not None else None,
             predicted_q_entry=(entry_q if has_explicit_entry_q else None),
@@ -2321,6 +2380,24 @@ def execute_strategy_guardian(
         if pnl_dist <= min_trig:
             return False
 
+        if (
+            sl_locked_server
+            and not trade_meta.get("partial_cashed_in", False)
+            and pnl_atr >= max(1.25, strat["trail_trig_atr"] * 1.15)
+            and pl_sats >= max(35, int(round(est_round_fee_sats * 2.50)))
+            and hasattr(client, "cash_in")
+        ):
+            cash_amt = max(15, int(round((pl_sats - est_round_fee_sats) * 0.40)))
+            try:
+                ci_res = client.cash_in(tid, cash_amt)
+                if ci_res is not None:
+                    trade_meta["partial_cashed_in"] = True
+                    trade_meta["cashed_in_sats"] = int(trade_meta.get("cashed_in_sats", 0)) + cash_amt
+                    brain.dirty = True
+                    print(f"  💰 [CASH-IN 0% FEE] Extraídos +{cash_amt} sats al disponible en {tid[:6]} (SL en Breakeven).")
+            except Exception:
+                pass
+
         step_min = max(12.0, 0.15 * atr)
         if side == "buy":
             be_floor = entry + profit_lock_offset
@@ -2858,7 +2935,8 @@ def process_settlement_queue(
 
             realized_hedge_net = int(info.get("realized_hedge_net_sats", 0))
             realized_hedge_fee = int(info.get("realized_hedge_fee_sats", 0))
-            total_net_pnl_sats = int(econ["net_pnl_sats"]) + realized_hedge_net
+            cashed_in_adj = int(info.get("cashed_in_sats", 0))
+            total_net_pnl_sats = int(econ["net_pnl_sats"]) + realized_hedge_net + cashed_in_adj
             total_taker_fee_sats = int(econ["taker_fee_sats"]) + realized_hedge_fee
 
             hit_tp_real = bool(ct_obj.get("takeprofit_wi")) or (
@@ -2873,7 +2951,7 @@ def process_settlement_queue(
             brain.remember_and_train(
                 orig_st,
                 act_taken,
-                pl + realized_hedge_net,
+                pl + realized_hedge_net + cashed_in_adj,
                 m_used,
                 state,
                 equity_after=balance,
@@ -3079,8 +3157,16 @@ def evaluate_and_dispatch_entries(
                 current_dd_pct, parallel_risk_mult=mods["risk_mult"]
             )
             strat_style = strat.get("style", "SNIPER")
+            norm_st_key = brain._normalize_state_key(state)
+            st_visits = int(brain.state_visits.get(norm_st_key, 0))
             p_hat, p_lcb, bayes_info = SatsExpectancyGate.estimate_bayesian_win_rate(
-                state, action, strat_style, mkt_reg_tag, brain.style_metrics
+                state,
+                action,
+                strat_style,
+                mkt_reg_tag,
+                brain.style_metrics,
+                q_val=q_val,
+                state_visits=st_visits,
             )
             sl_dist_pct = abs(float(ind_5m["price"]) - float(sl)) / max(float(ind_5m["price"]), 1.0)
             fee_rt = THRESHOLDS_MANAGER.get_float("fees", "round_trip_fee_rate", 0.0020)
@@ -3145,6 +3231,8 @@ def evaluate_and_dispatch_entries(
                 style=strat_style,
                 regime=mkt_reg_tag,
                 style_metrics=brain.style_metrics,
+                q_val=q_val,
+                state_visits=st_visits,
             )
             if (
                 not viable_sats
@@ -3370,6 +3458,7 @@ def main():
 
         try:
             now = time.time()
+            brain.sync_from_disk_if_idle()
             bucket_1h = int(now // 3600)
             bucket_4h = int(now // 14400)
 

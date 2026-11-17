@@ -501,8 +501,16 @@ class SimTrainingEnvironment:
                         strat, price, atr, rr_mult=eff_rr_mult
                     )
 
+                    q_val_entry = float(q_vec[action]) if action < len(q_vec) else 0.0
+                    st_visits_entry = int(self.brain.state_visits.get(curr_state_key, 0))
                     p_hat, p_lcb, _ = SatsExpectancyGate.estimate_bayesian_win_rate(
-                        curr_state_key, action, strat_style, mkt_reg_tag, self.brain.style_metrics
+                        curr_state_key,
+                        action,
+                        strat_style,
+                        mkt_reg_tag,
+                        self.brain.style_metrics,
+                        q_val=q_val_entry,
+                        state_visits=st_visits_entry,
                     )
                     sl_dist_pct = abs(price - sl) / max(price, 1.0)
                     tp_dist_pct = abs(tp - price) / max(price, 1.0)
@@ -536,6 +544,8 @@ class SimTrainingEnvironment:
                         style=strat_style,
                         regime=mkt_reg_tag,
                         style_metrics=self.brain.style_metrics,
+                        q_val=q_val_entry,
+                        state_visits=st_visits_entry,
                     )
 
                     if viable and margin_sats <= self.exchange.available_balance_sats:

@@ -896,9 +896,13 @@ def run_bot_with_overrides(
 
     def _patched_configure(env_name: str = "mainnet") -> None:
         orig_configure(env_name)
-        for k, val in ctrl.load_runtime_overrides().items():
-            if k in ("ENV_MODE", "SAFE_MODE"):
+        explicit_saved = ctrl._safe_read_json(ctrl.runtime_path) or {}
+        full_rt = ctrl.load_runtime_overrides()
+        source_dict = explicit_saved if bot_mod.Config.ENV_MODE == "testnet" else full_rt
+        for k, raw_v in source_dict.items():
+            if k in ("ENV_MODE", "SAFE_MODE") or k not in full_rt:
                 continue
+            val = full_rt[k]
             spec = RUNTIME_PARAMETERS_SPEC.get(k, {})
             if spec.get("target") == "Config":
                 if k == "MAX_CONCURRENT_TRADES" and bot_mod.Config.ENV_MODE == "mainnet":

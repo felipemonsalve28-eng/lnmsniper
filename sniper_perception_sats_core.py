@@ -405,9 +405,15 @@ class SatsExpectancyGate:
             )
 
         # Bloquear REVERSION (2,6) y DEF_SCALP (4,8) en contratendencia durante expansiones direccionales
+        # o cuando la volatilidad relativa ATR% es sub-comisión (< 14 bps) sin override activo
         if not explorer_mode and raw_action in (2, 4, 6, 8):
             if mkt_regime in ("VOLATILITY_EXPANSION", "EXTREME_VOLATILITY") and is_counter_trend(int(raw_action)):
                 return 0, f"BLOCKED_REVERSION_DEF_IN_{mkt_regime}"
+            if isinstance(perception, dict) and override is None:
+                p_spot = float(perception.get("price", 0.0))
+                p_atr = float(perception.get("atr", 0.0))
+                if p_spot > 0.0 and p_atr > 0.0 and (p_atr / p_spot) < 0.0014:
+                    return 0, "BLOCKED_SUB_FEE_VOLATILITY_SCALP"
 
         if not explorer_mode and raw_action in (1, 2, 3, 4, 5, 6, 7, 8) and len(q_values) > int(raw_action):
             rq = float(q_values[int(raw_action)])
@@ -555,11 +561,21 @@ class SatsExpectancyGate:
         }
 
     @classmethod
-    def estimate_bayesian_win_rate(cls, state=None, action=None, style=None, regime=None, style_metrics=None):
+    def estimate_bayesian_win_rate(
+        cls,
+        state=None,
+        action=None,
+        style=None,
+        regime=None,
+        style_metrics=None,
+        q_val=None,
+        state_visits=None,
+    ):
         """
-        Estimador Bayesiano jerárquico Beta-Binomial de probabilidad de éxito (win rate) O(1).
+        Estimador Bayesiano jerárquico Beta-Binomial de probabilidad de éxito (win rate) O(1)
+        fusionado con la evidencia de Bellman Q(s,a), las visitas del estado V(s) y el régimen de mercado.
         Realiza contracción (shrinkage) ante escasez de datos:
-        1. Prior Global calibrado (alpha_0 = 7.0, beta_0 = 15.0 => WR base ~31.8%)
+        1. Prior Global calibrado
         2. Estilo de trading (SNIPER, REVERSION, TREND, DEF_SCALP)
         3. Régimen de mercado si está disponible
         """
@@ -585,8 +601,15 @@ class SatsExpectancyGate:
         elif norm_regime == "RANGE_SQUEEZE" and norm_style == "TREND":
             beta_0 += 2.5
 
-        alpha_post = alpha_0
-        beta_post = beta_0
+        alpha_post = float(alpha_0)
+        beta_post = float(beta_0)
+
+        v_cnt = max(0, int(state_visits or 0))
+        if q_val is not None and v_cnt > 0:
+            w_q = min(14.0, math.sqrt(float(v_cnt)) * 2.2)
+            p_implied = max(0.18, min(0.82, 0.48 + float(q_val) * 0.45))
+            alpha_post += w_q * p_implied
+            beta_post += w_q * (1.0 - p_implied)
 
         if style_metrics and style and style in style_metrics:
             st = style_metrics[style]
@@ -626,6 +649,8 @@ class SatsExpectancyGate:
         style=None,
         regime=None,
         style_metrics=None,
+        q_val=None,
+        state_visits=None,
     ):
         tm = get_thresholds_manager()
         cls.sync_from_thresholds(tm)
@@ -657,7 +682,13 @@ class SatsExpectancyGate:
 
         # F4: Estimación Bayesiana de Win Rate (p_hat, p_lcb) y Breakeven (p*)
         p_hat, p_lcb, bayes_meta = cls.estimate_bayesian_win_rate(
-            state=state, action=action, style=style, regime=regime, style_metrics=style_metrics
+            state=state,
+            action=action,
+            style=style,
+            regime=regime,
+            style_metrics=style_metrics,
+            q_val=q_val,
+            state_visits=state_visits,
         )
         p_star = float(expected_loss_sl_sats) / max(1.0, float(expected_gross_tp_sats + expected_gross_sl_sats))
         safety_margin = tm.get_float("expectancy", "breakeven_safety_margin", 0.04)

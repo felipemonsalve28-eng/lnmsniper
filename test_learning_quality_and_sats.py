@@ -671,6 +671,74 @@ def run_all_tests() -> None:
 
     print("✅ TEST 9 (Anti-Whipsaw HedgeRiskManager + Costo Explorer + Desempate Determinista ante Colapso de Política): PASÓ.")
 
+    # -------------------------------------------------------------------------
+    # ESCENARIO 10: Invariantes Etapa 22 (78 umbrales, Basis, Sync Idempotente y state_visits)
+    # -------------------------------------------------------------------------
+    from learning_thresholds_manager import FALLBACK_THRESHOLDS
+    from sniper_cli_catalog import PARAM_OPERATIONAL_GUIDE
+    from lnm_sniper_v6_advanced import compute_indicators
+    from sync_brains_dual import sync_dual_brains
+    from guardian_execution_core import AtomicBrainStore
+
+    # 10.1: 78 claves exactas en FALLBACK_THRESHOLDS vs PARAM_OPERATIONAL_GUIDE
+    fb_keys = {f"{c}.{p}" for c, d in FALLBACK_THRESHOLDS.items() for p in d}
+    cat_keys = set(PARAM_OPERATIONAL_GUIDE.keys())
+    assert fb_keys == cat_keys, f"Discrepancia en FALLBACK_THRESHOLDS: {fb_keys ^ cat_keys}"
+    assert len(fb_keys) == 78, f"Se esperaban 78 claves, encontradas {len(fb_keys)}"
+
+    # 10.2: Invarianza al Basis (BTCUSDT vs BTCUSD) en compute_indicators
+    base_c = [70000.0 + i * 5.0 for i in range(60)]
+    base_h = [x + 15.0 for x in base_c]
+    base_l = [x - 15.0 for x in base_c]
+    ind_usdt = compute_indicators(base_h, base_l, base_c, lnm_price=0.0)
+    lnm_spot_usd = base_c[-1] * 0.996  # -0.4% basis diferencial
+    ind_usd = compute_indicators(base_h, base_l, base_c, lnm_price=lnm_spot_usd)
+    assert abs(ind_usdt["rsi"] - ind_usd["rsi"]) < 1e-4, f"RSI contaminado por basis: {ind_usdt['rsi']} vs {ind_usd['rsi']}"
+    assert ind_usdt["ema_score"] == ind_usd["ema_score"], "ema_score alterado por basis"
+
+    # 10.3: Idempotencia de sync_dual_brains con synced_test_visits
+    with tempfile.TemporaryDirectory() as tmpd:
+        m_path = os.path.join(tmpd, "main_brain.json")
+        t_path = os.path.join(tmpd, "test_brain.json")
+        st_key = "RANGE|NEUTRAL|NORM|BULL|EMA_BULL"
+        m_payload = {
+            "reward_schema_version": 2,
+            "q_table": {st_key: [0.0, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]},
+            "state_visits": {st_key: 5},
+            "active_trades": {},
+        }
+        t_payload = {
+            "reward_schema_version": 2,
+            "q_table": {st_key: [0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]},
+            "state_visits": {st_key: 20},
+            "style_metrics": {"TREND": {"trades": 10, "wins": 7, "net_sats": 500, "fees_sats": 100}},
+        }
+        AtomicBrainStore(m_path).save(m_payload)
+        AtomicBrainStore(t_path).save(t_payload)
+        sync_dual_brains(mainnet_path=m_path, testnet_path=t_path)
+        after_first = AtomicBrainStore(m_path).load()
+        v_after_first = int(after_first["state_visits"][st_key])
+        q_after_first = list(after_first["q_table"][st_key])
+        sync_dual_brains(mainnet_path=m_path, testnet_path=t_path)
+        after_second = AtomicBrainStore(m_path).load()
+        assert int(after_second["state_visits"][st_key]) == v_after_first, "sync_dual_brains inflo visitas en 2da pasada sin nuevos cierres"
+        assert list(after_second["q_table"][st_key]) == q_after_first, "sync_dual_brains altero Q-table en 2da pasada sin nuevos cierres"
+
+        # 10.4: choose_action no infla state_visits antes de ejecutar
+        b_inst = AutonomousGoalBrain(filename=os.path.join(tmpd, "visit_test.json"), explorer_mode=False)
+        b_inst.q_table[st_key] = [0.0, 0.35, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        b_inst.state_visits[st_key] = 10
+        ind_visit = {
+            "price": 78000.0, "atr": 200.0, "rsi": 50.0, "bb_pos": 0.5,
+            "ema9": 78000.0, "ema21": 78000.0, "ema50": 78000.0, "ema200": 78000.0,
+            "ema_score": 0.0, "regime": "RANGE_NORMAL",
+        }
+        chosen = b_inst.choose_action(st_key, ind_visit, ind_visit, ind_visit, ind_visit)
+        assert chosen == 1
+        assert int(b_inst.state_visits[st_key]) == 10, "choose_action inflo state_visits sin despachar ni cerrar orden"
+
+    print("✅ TEST 10 (Invariantes Etapa 22: 78 Umbrales, Basis BTCUSD/BTCUSDT, Sync Idempotente y No-Inflación state_visits): PASÓ.")
+
     print("=" * 80)
     print("🏆 CERTIFICACIÓN COMPLETA: TODOS LOS ESCENARIOS SUPERADOS AL 100% 🏆")
     print("=" * 80)
