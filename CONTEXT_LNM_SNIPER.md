@@ -398,6 +398,34 @@
   - [test_protocolo_v_reversal.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_protocolo_v_reversal.py): `23/23` escenarios superados (`0.718 ms/ciclo`, Walk-Forward OOS `Hybrid Net=+1524 sats`).
   - Simulación `unittest`: `22/22` (`OK`).
 
+### Etapa 22: Fusión Bellman-Bayes, Normalización de Basis, Sync Idempotente y Reentrenamiento Limpio (`--reset`)
+- **Estado:** **Completada, certificada al 100%, reentrenada sobre 18M y promovida atómicamente a `testnet` y `mainnet`** (código en commit `ce8712c`).
+- **Cambios de Ingeniería Aplicados (7 archivos):**
+  1. **[learning_thresholds_manager.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/learning_thresholds_manager.py):** Sincronización de `FALLBACK_THRESHOLDS` a las **78 claves exactas** de [learning_thresholds.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/config/learning_thresholds.json) y [sniper_cli_catalog.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sniper_cli_catalog.py) (`breakeven_safety_margin`, `bayesian_prior_alpha=9.0`, `bayesian_prior_beta=11.0`, `fractional_kelly_scale=0.25`, `loss_penalty_multiplier=1.0`, `mainnet_epsilon=0.0`, `fer_cooldown_mult=2.0` y calibración `market_sensitivity`).
+  2. **[sniper_perception_sats_core.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sniper_perception_sats_core.py):** Compuerta `BLOCKED_SUB_FEE_VOLATILITY_SCALP` (`atr/price < 0.0014` sin override en `REVERSION`/`DEF_SCALP`), y fusión Bellman-Bayes (`q_val`, `state_visits`) en `estimate_bayesian_win_rate` y `verify_net_sats_expectancy` preservando las penalizaciones por régimen (`z_lcb = 1.45`) y la conjunción estricta `probabilistic_ok`.
+  3. **[lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py):** Helper `_normalize_ohlc_basis` (`BTCUSDT` $\rightarrow$ `BTCUSD` sin escalar volumen) conectado en `compute_indicators`, `_build_indicator_prefix_state` y `MultiTimeframeCache.get_indicators_fast` (`prefix_has_basis`); recarga `sync_from_disk_if_idle()` al inicio del ciclo en `main()` y preservación de `synced_test_visits` en `save_brain`; eliminación de inflación de `state_visits` en las 3 ramas de `choose_action` trasladando el conteo a `remember_and_train`; `Progressive Cash-In Lock` (`client.cash_in`) en `execute_strategy_guardian` con consolidación de `cashed_in_sats` en `process_settlement_queue`; paso de `q_val` y `state_visits` en `evaluate_and_dispatch_entries`.
+  4. **[sync_brains_dual.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sync_brains_dual.py):** Marca de agua idempotente `synced_test_visits` (`delta_t_visits`) y exclusión mutua `FileLockContext` anti-TOCTOU.
+  5. **[sniper_cli.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sniper_cli.py):** Preservación de los defaults nativos de `testnet` en `_patched_configure` cuando no existan overrides explícitos.
+  6. **[simulation/sim_training_environment.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/sim_training_environment.py):** Paso de `q_val_entry` y `st_visits_entry` a `estimate_bayesian_win_rate` y `verify_net_sats_expectancy`.
+  7. **[test_learning_quality_and_sats.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_learning_quality_and_sats.py):** Incorporación de `TEST 10` (78 umbrales, invarianza al basis `BTCUSD`/`BTCUSDT`, idempotencia `synced_test_visits` y no-inflación de `state_visits`).
+- **Reentrenamiento Offline 18M (`--reset --fetch-binance --episodes 60 --bars 8000`):**
+  - Dataset real de `788,400` velas en [binance_btc_1m.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/data/binance_btc_1m.json).
+  - Candidato generado bajo las ecuaciones de la Etapa 22: [q_brain_simulated_candidate.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_simulated_candidate.json) (`343` estados, `2,763` cierres consolidados, `SHA-256: 339b4b456abddf7f0a9217254acb2183afd180a423819e093d088f7c34fa5cbc`) y [hedge_state_simulated_candidate.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_simulated_candidate.json) (`205` estados Q, `SHA-256: 9a11aa0c00b2d663...`).
+- **Certificación Monte Carlo (`50` caminos $\times$ `450` velas = `22,500` barras, [candidate_certification_report.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/candidate_certification_report.json)):**
+  - **Promoción `testnet`:** **`WinRate: 85.69%`**, **`Profit Factor: 3.64`**, **`MaxDD: 5.85%`**, `Risk of Ruin: 0.0%`, `mutations_detected: 0`.
+  - **Promoción `mainnet`:** `899` operaciones (`797W / 102L`), **`WinRate: 88.65%`**, **`Profit Factor: 4.76`** (`Gross Profit: +364,615 sats` / `Gross Loss: -76,623 sats`), **`Net PnL: +287,992 sats`**, `FER: 0.92`, **`MaxDD: 5.91%`**, `Risk of Ruin: 0.0%`, `mutations_detected: 0`.
+- **Limpieza de Contadores para Arranque en `NORMAL` (verificado con `strict_sha=True` y cold start a `100,000 sats` $\rightarrow$ `mode=NORMAL`, `floor=75,000`):**
+  - [q_brain_advanced_lnm.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_advanced_lnm.json) (`343` estados, `epsilon=0.0`, `SHA-256: fa1d602e586c2a9b20d6e3c9fc786e31284cd5e42190df565a1fd9358728beaf`)
+  - [q_brain_testnet_lnm.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_testnet_lnm.json) (`343` estados, `epsilon=0.18`, `SHA-256: 6b80792bf17682544607f5db34fa5f3df3542872899634e70ea91477504c1cf0`)
+  - [hedge_state_mainnet.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_mainnet.json) (`205` estados, `SHA-256: de2253abce473fb5c63250fe4670aae5a02fe4f18ccb358d0342e648853161bd`)
+  - [hedge_state_testnet.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_testnet.json) (`205` estados, `SHA-256: 39e6ad4093c4a870667dd297ad6c864c87a77aefd24f7c3df5bbdf646f191734`)
+- **Regresión Post-Promoción en WSL (`Ubuntu`):**
+  - [test_learning_quality_and_sats.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_learning_quality_and_sats.py): **`10/10`** escenarios superados (incluye `TEST 10`).
+  - [test_protocolo_v_reversal.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_protocolo_v_reversal.py): **`23/23`** escenarios superados (`0.759 ms/ciclo`, Walk-Forward OOS `Hybrid Net=+1524 sats`, `MaxDD=0.53%`, `PF=1.41`).
+  - `unittest` (`test_simulation_engine.py`, `test_terminal_bellman_fix.py`, `test_candidate_certification.py`, `test_simulation_training_loop.py`): `22/22` (`OK`).
+  - [test_sniper_cli.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_sniper_cli.py): `7/7` (`OK`).
+  - Congruencia `FALLBACK_THRESHOLDS` vs `PARAM_OPERATIONAL_GUIDE`: `78/78` (`100% CONGRUENTE`).
+
 ---
 
 ## 3. ARQUITECTURA DE ARCHIVOS CLAVE
