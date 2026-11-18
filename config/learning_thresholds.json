@@ -81,7 +81,7 @@
       "structural_lock_when_open": false
     },
     "bayesian_prior_alpha": {
-      "value": 9.0,
+      "value": 7.0,
       "unit": "pseudo_wins",
       "description": "Prior bayesiano alpha (aciertos pseudo-observados) para contraccion jerarquica de win rate.",
       "min_limit": 0.5,
@@ -89,7 +89,7 @@
       "structural_lock_when_open": false
     },
     "bayesian_prior_beta": {
-      "value": 11.0,
+      "value": 15.0,
       "unit": "pseudo_losses",
       "description": "Prior bayesiano beta (fallos pseudo-observados) para contraccion jerarquica de win rate (prior WR ~31.8%).",
       "min_limit": 0.5,

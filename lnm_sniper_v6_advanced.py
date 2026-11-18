@@ -164,7 +164,7 @@ class Config:
         if raw_env in ("testnet", "test", "explorer"):
             cls.ENV_MODE = "testnet"
             cls.EXPLORER_MODE = True
-            cls.BASE_URL = os.getenv("LNM_TESTNET_BASE_URL", "https://api.testnet.lnmarkets.com/v3")
+            cls.BASE_URL = os.getenv("LNM_TESTNET_BASE_URL", "https://api.signet.lnmarkets.com/v3")
             cls.BRAIN_FILE = "q_brain_testnet_lnm.json"
             cls.HEDGE_STATE_FILE = "hedge_state_testnet.json"
             cls.TELEMETRY_FILE = "telemetry_live_testnet.json"
@@ -195,6 +195,11 @@ class Config:
             cls.RISK_WARMUP = 0.04
             cls.MAX_DRAWDOWN_PCT = 0.16
             cls.KILL_SWITCH_DD_PCT = 0.22
+        try:
+            THRESHOLDS_MANAGER.switch_environment(cls.ENV_MODE)
+            cls.sync_from_thresholds(THRESHOLDS_MANAGER)
+        except Exception:
+            pass
         try:
             TELEMETRY_DISPATCHER.filepath = os.path.join(base_dir, cls.TELEMETRY_FILE)
         except Exception:
@@ -1813,17 +1818,24 @@ class AutonomousGoalBrain:
 
         # Modelo Conceptual de Recompensa:
         # R_econ_sats = Delta_Balance_disponible - lambda * MAE_sats - mu * Delta_t_ticks
+        # Invarianza dimensional al Margen Canónico (M_ref = 1000 sats)
+        ref_margin = float(Config.MIN_MARGIN_SATS)
+        scale_eta = ref_margin / max(ref_margin, float(margin_used or ref_margin))
+        norm_net_delta = float(net_balance_delta) * scale_eta
+        norm_mae_val = float(mae_val) * scale_eta
         econ_reward_sats = float(net_balance_delta) - (lam * mae_val) - (mu * ticks_val)
+        norm_econ_reward_sats = norm_net_delta - (lam * norm_mae_val) - (mu * ticks_val)
 
         is_real_loss = net_balance_delta < 0
         if is_real_loss:
             # Toda pérdida neta en balance debe penalizar negativamente el valor Q
             econ_reward_sats = min(econ_reward_sats, float(net_balance_delta))
-            shaped = (econ_reward_sats / reward_scale) * loss_mult
-        elif net_balance_delta == 0 and econ_reward_sats <= 0.0:
-            shaped = (econ_reward_sats / reward_scale) - 0.010
+            norm_econ_reward_sats = min(norm_econ_reward_sats, norm_net_delta)
+            shaped = (norm_econ_reward_sats / reward_scale) * loss_mult
+        elif net_balance_delta == 0 and norm_econ_reward_sats <= 0.0:
+            shaped = (norm_econ_reward_sats / reward_scale) - 0.010
         else:
-            shaped = econ_reward_sats / reward_scale
+            shaped = norm_econ_reward_sats / reward_scale
 
         q_min = self.thresholds.get_float("q_calibration", "q_clip_min", -2.0)
         q_max = self.thresholds.get_float("q_calibration", "q_clip_max", 2.0)
@@ -2949,11 +2961,10 @@ def record_shadow_order(order_data: dict):
         pass
 
 
-def update_shadow_trades(brain, spot_price: float, now: float = None, current_state: str = None):
+def update_shadow_trades(brain, spot_price: float, now: float = None, current_state: str = None, ind_5m: dict = None):
     """
-    Simula en tiempo real la evolución de órdenes del modo sombra contra el precio spot (Fase F7)
-    y ejecuta la actualización amortiguada de Bellman (alpha_recovery = 0.5 * alpha_base)
-    para desinflar valores Q(s, a) sobreestimados sin arriesgar satoshis reales.
+    Gemelo digital en Modo Sombra con Breakeven Lock, Dynamic Trailing Stop por estrategia
+    y actualización amortiguada de Bellman normalizada al margen canónico (M_ref = 1000 sats).
     """
     now_ts = time.time() if now is None else float(now)
     shadow_dict = getattr(brain, "shadow_trades", None)
@@ -2965,32 +2976,69 @@ def update_shadow_trades(brain, spot_price: float, now: float = None, current_st
         entry = max(1.0, float(st["entry_price"]))
         sl = float(st["stoploss"])
         tp = float(st["takeprofit"])
-        side = st["side"]
-        m_sats = float(st["margin_sats"])
-        lev = float(st["leverage"])
-        cost = float(st.get("total_cost_sats", m_sats * lev * 0.002))
+        side = str(st["side"]).lower()
+        m_sats = max(1000.0, float(st["margin_sats"]))
+        lev = max(1.0, float(st["leverage"]))
+        notional_sats = m_sats * lev
+        cost = float(st.get("total_cost_sats", notional_sats * 2.0 * Config.TAKER_FEE))
         opened_ts = float(st.get("opened_at", st.get("timestamp", now_ts)))
-        outcome = None
+        act_idx = int(st.get("action", 2 if side == "buy" else 6)) % Config.NUM_ACTIONS
+        strat = brain.strategies.get(act_idx, brain.strategies[2 if side == "buy" else 6])
 
+        atr = float(ind_5m.get("atr", 0.0)) if isinstance(ind_5m, dict) else 0.0
+        if atr <= 0.0:
+            atr = max(entry * 0.0018, abs(entry - sl) / max(1.0, float(strat.get("sl_atr", 1.6))))
+
+        pnl_dist = (spot_price - entry) if side == "buy" else (entry - spot_price)
+        pnl_atr = pnl_dist / max(1.0, atr)
+        unrealized_net = (notional_sats * (pnl_dist / entry)) - cost
+        st["mfe_sats"] = max(float(st.get("mfe_sats", 0.0)), max(0.0, unrealized_net))
+        st["mae_sats"] = max(float(st.get("mae_sats", 0.0)), max(0.0, -unrealized_net))
+
+        # Dynamic Trailing Stop & Breakeven Lock simétrico al Guardián en vivo
+        fee_offset = entry * (2.4 * Config.TAKER_FEE)
+        profit_lock_offset = fee_offset * 1.55
+        min_trig = max(float(strat.get("trail_trig_atr", 0.85)) * atr, profit_lock_offset * 1.45)
+        slack = max(atr * 0.45, float(strat.get("trail_slack_atr", 0.55)) * atr)
+
+        if pnl_dist > min_trig:
+            if side == "buy":
+                be_floor = entry + profit_lock_offset
+                new_sl = max(be_floor, spot_price - slack)
+                if new_sl > sl and new_sl < spot_price:
+                    sl = round(new_sl, 1)
+                    st["stoploss"] = sl
+                    st["sl_locked"] = True
+            else:
+                be_ceil = entry - profit_lock_offset
+                new_sl = min(be_ceil, spot_price + slack)
+                if (sl <= 0.0 or new_sl < sl) and new_sl > spot_price:
+                    sl = round(new_sl, 1)
+                    st["stoploss"] = sl
+                    st["sl_locked"] = True
+
+        outcome = None
         if side == "buy":
             if spot_price >= tp:
-                gross = m_sats * lev * (tp - entry) / entry
+                gross = notional_sats * (tp - entry) / entry
                 outcome = ("CLOSED_TP", gross - cost)
             elif spot_price <= sl:
-                gross = -m_sats * lev * (entry - sl) / entry
-                outcome = ("CLOSED_SL", gross - cost)
+                gross = notional_sats * (sl - entry) / entry
+                status_lbl = "CLOSED_TRAIL_PROFIT" if st.get("sl_locked") and (gross - cost) > 0 else "CLOSED_SL"
+                outcome = (status_lbl, gross - cost)
             elif (now_ts - opened_ts) >= 900.0:
-                gross = m_sats * lev * (spot_price - entry) / entry
+                gross = notional_sats * (spot_price - entry) / entry
                 outcome = ("CLOSED_TIMEOUT", gross - cost)
         else:
             if spot_price <= tp:
-                gross = m_sats * lev * (entry - tp) / entry
+                gross = notional_sats * (entry - tp) / entry
                 outcome = ("CLOSED_TP", gross - cost)
             elif spot_price >= sl:
-                gross = -m_sats * lev * (sl - entry) / entry
-                outcome = ("CLOSED_SL", gross - cost)
+                gross = notional_sats * (entry - sl) / entry
+                status_lbl = "CLOSED_TRAIL_PROFIT" if st.get("sl_locked") and (gross - cost) > 0 else "CLOSED_SL"
+                outcome = (status_lbl, gross - cost)
             elif (now_ts - opened_ts) >= 900.0:
-                gross = m_sats * lev * (entry - spot_price) / entry
+                gross = notional_sats * (entry - spot_price) / entry
                 outcome = ("CLOSED_TIMEOUT", gross - cost)
 
         if outcome is not None:
@@ -3003,11 +3051,21 @@ def update_shadow_trades(brain, spot_price: float, now: float = None, current_st
 
             orig_st = str(st.get("state") or current_state or "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS")
             next_st = str(current_state or orig_st)
-            act_idx = int(st.get("action", 0)) % Config.NUM_ACTIONS
             reward_scale = max(1.0, brain.thresholds.get_float("reward", "reward_scale_sats", 100.0))
             q_min = brain.thresholds.get_float("q_calibration", "q_clip_min", -2.0)
             q_max = brain.thresholds.get_float("q_calibration", "q_clip_max", 2.0)
-            shaped_r = float(np.clip(float(net_sats) / reward_scale, q_min, q_max))
+
+            # Normalización canónica (M_ref = 1000 sats) para invarianza de escala con Mainnet
+            ref_m = float(Config.MIN_MARGIN_SATS)
+            scale_eta = ref_m / max(ref_m, m_sats)
+            norm_net_sats = float(net_sats) * scale_eta
+            norm_mae_sats = float(st.get("mae_sats", 0.0)) * scale_eta
+            lam = brain.thresholds.get_float("reward", "mae_penalty_lambda", 0.15)
+            norm_econ_sats = norm_net_sats - (lam * norm_mae_sats)
+            if net_sats < 0.0:
+                norm_econ_sats = min(norm_econ_sats, norm_net_sats)
+
+            shaped_r = float(np.clip(norm_econ_sats / reward_scale, q_min, q_max))
             alpha_base = brain.thresholds.get_float("exploration", "alpha_learning_rate", 0.18)
             alpha_recovery = 0.5 * alpha_base
 
@@ -3031,7 +3089,9 @@ def update_shadow_trades(brain, spot_price: float, now: float = None, current_st
                         predicted_q_entry=st.get("entry_q", None),
                         net_realized_sats=net_sats,
                         signed_td_error=brain._last_td_error,
+                        margin_sats=m_sats,
                     )
+                rec["norm_net_sats_1k"] = round(norm_net_sats, 2)
                 rec["td_error"] = round(brain._last_td_error, 4)
                 rec["delta_q"] = round(dq, 4)
                 brain.dirty = True
@@ -3040,8 +3100,8 @@ def update_shadow_trades(brain, spot_price: float, now: float = None, current_st
             shadow_dict.pop(sid, None)
             closed_sims.append(rec)
             print(
-                f"  🕶️ [MODO SOMBRA SIMULADO] {status} {sid[:12]} | Net: {net_sats:+.1f} sats | "
-                f"Spot: ${spot_price:.1f} | dQ:{rec.get('delta_q', 0.0):.4f}"
+                f"  🕶️ [MODO SOMBRA SIMULADO] {status} {sid[:12]} | Net: {net_sats:+.1f}s "
+                f"(Norm1k: {norm_net_sats:+.1f}s) | Spot: ${spot_price:.1f} | dQ:{rec.get('delta_q', 0.0):.4f}"
             )
     return closed_sims
 
@@ -3743,7 +3803,7 @@ def main():
                 last_known_balance = balance
 
             if Config.SHADOW_MODE or getattr(brain.supervisor, "runtime_shadow_active", False) or hasattr(brain, "shadow_trades"):
-                update_shadow_trades(brain, float(ind_5m["price"]), now=now, current_state=state)
+                update_shadow_trades(brain, float(ind_5m["price"]), now=now, current_state=state, ind_5m=ind_5m)
 
             for t in primary_running:
                 tid = str(t["id"])

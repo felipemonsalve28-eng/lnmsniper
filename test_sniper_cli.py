@@ -191,6 +191,25 @@ class TestSniperCLI(unittest.TestCase):
                     print_status_dashboard(ctrl, env_mode="mainnet", fetch_live=True)
             self.assertIn("Faltan credenciales", buf_err.getvalue())
 
+    def test_08_env_isolated_thresholds_and_targeted_sighup(self) -> None:
+        from learning_thresholds_manager import TESTNET_CONFIG_PATH
+        ctrl_default = SniperControlCenter(base_dir=self.tmp_dir)
+        self.assertEqual(ctrl_default.get_thresholds_path("mainnet"), os.path.abspath(DEFAULT_CONFIG_PATH))
+        self.assertEqual(ctrl_default.get_thresholds_path("testnet"), os.path.abspath(TESTNET_CONFIG_PATH))
+        # Custom injected path in tests stays isolated
+        self.assertEqual(self.ctrl.get_thresholds_path("testnet"), os.path.abspath(self.thr_path))
+
+        # SIGHUP targeting only the requested environment
+        killed = []
+        with patch.object(ctrl_default, "get_running_pid", side_effect=lambda env: 1187 if env == "mainnet" else 1188):
+            with patch("os.kill", side_effect=lambda pid, sig: killed.append((pid, sig))):
+                pids_test = ctrl_default.notify_hot_reload_signal(env_mode="testnet")
+                pids_main = ctrl_default.notify_hot_reload_signal(env_mode="mainnet")
+        if hasattr(__import__("signal"), "SIGHUP"):
+            self.assertEqual(pids_test, [1188])
+            self.assertEqual(pids_main, [1187])
+            self.assertEqual([p for p, _ in killed], [1188, 1187])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

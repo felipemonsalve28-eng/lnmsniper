@@ -312,6 +312,11 @@ class LearningQualitySupervisor:
     # =========================================================================
     # B, C, E. REGISTRO DE OPERACIÓN CERRADA (Q-BIAS, FER, MFE/MAE)
     # =========================================================================
+    @staticmethod
+    def normalize_to_canonical_margin(value_sats: float, margin_sats: float, ref_margin_sats: float = 1000.0) -> float:
+        m_eff = max(float(ref_margin_sats), _safe_float(margin_sats, ref_margin_sats))
+        return _safe_float(value_sats, 0.0) * (float(ref_margin_sats) / m_eff)
+
     def record_closed_trade(
         self,
         trade_id: Optional[str],
@@ -357,12 +362,13 @@ class LearningQualitySupervisor:
 
             if predicted_q_entry is not None:
                 q_entry_sats = _safe_float(predicted_q_entry, 0.0) * q_scale
-                target_sats = (
+                raw_target_sats = (
                     _safe_float(econ_reward_sats, float(net_sats))
                     if econ_reward_sats is not None
                     else float(net_sats)
                 )
-                q_bias_trade = q_entry_sats - target_sats
+                norm_target_sats = self.normalize_to_canonical_margin(raw_target_sats, float(margin_val))
+                q_bias_trade = q_entry_sats - norm_target_sats
                 self.q_bias_window.append(q_bias_trade)
 
                 mean_q_bias = sum(self.q_bias_window) / float(len(self.q_bias_window))
@@ -671,8 +677,9 @@ class LearningQualitySupervisor:
             n_qb = len(self.q_bias_window)
             if n_qb == 0:
                 return 0.0, 0.0
-            q_bias_avg = sum(self.q_bias_window) / float(n_qb)
-            q_bias_std = _compute_std(self.q_bias_window, q_bias_avg) if n_qb > 1 else 0.0
+            sanitized = [max(-250.0, min(250.0, _safe_float(v, 0.0))) for v in self.q_bias_window]
+            q_bias_avg = sum(sanitized) / float(n_qb)
+            q_bias_std = _compute_std(collections.deque(sanitized), q_bias_avg) if n_qb > 1 else 0.0
             return float(q_bias_avg), float(q_bias_std)
 
     def evaluate_runtime_shadow_circuit_breaker(self) -> bool:
@@ -732,6 +739,7 @@ class LearningQualitySupervisor:
         predicted_q_entry: Optional[float],
         net_realized_sats: float,
         signed_td_error: float,
+        margin_sats: float = 1000.0,
     ) -> None:
         """
         Registra cierres virtuales del modo sombra para permitir que TD-Error y Q-Bias
@@ -747,6 +755,7 @@ class LearningQualitySupervisor:
             stable_thr = self.thresholds.get_float("td_error", "stable_threshold", 0.45)
             warn_thr = self.thresholds.get_float("td_error", "warning_threshold", 0.85)
             crit_thr = self.thresholds.get_float("td_error", "critical_threshold", 1.35)
+            hyst_recovery_req = self.thresholds.get_int("learning_guard", "hysteresis_recovery_updates", 5)
             n_td = len(self.td_error_window)
             rolling_avg = (sum(self.td_error_window) / float(n_td)) if n_td > 0 else 0.0
             if rolling_avg >= crit_thr:
@@ -759,14 +768,27 @@ class LearningQualitySupervisor:
                 self.td_error_status = "IMPROVING"
             self.td_error_trend = self.td_error_status
 
+            if self.learning_guard_status != "ACTIVE_LEARNING":
+                if abs_td < warn_thr:
+                    self.hysteresis_recovery_streak += 1
+                    self.learning_guard_status = "RECOVERING_HYSTERESIS"
+                    if self.hysteresis_recovery_streak >= hyst_recovery_req:
+                        self.learning_guard_status = "ACTIVE_LEARNING"
+                        self.critical_td_streak = 0
+                        self.hysteresis_recovery_streak = 0
+                else:
+                    self.hysteresis_recovery_streak = 0
+                    self.learning_guard_status = "SUSPENDED_CRITICAL_TD"
+
             if predicted_q_entry is not None:
                 q_scale = self.thresholds.get_float("q_calibration", "q_to_sats_scale", 100.0)
                 q_entry_sats = _safe_float(predicted_q_entry, 0.0) * q_scale
-                q_bias_trade = q_entry_sats - _safe_float(net_realized_sats, 0.0)
+                norm_net_sats = self.normalize_to_canonical_margin(net_realized_sats, margin_sats)
+                q_bias_trade = q_entry_sats - norm_net_sats
                 self.q_bias_window.append(q_bias_trade)
                 over_alert = self.thresholds.get_float("q_calibration", "overestimation_alert_sats", 25.0)
                 under_alert = self.thresholds.get_float("q_calibration", "underestimation_alert_sats", -25.0)
-                mean_qb = sum(self.q_bias_window) / float(len(self.q_bias_window))
+                mean_qb, _ = self.get_q_bias_stats()
                 if mean_qb > over_alert:
                     self.q_bias_status = "OVERESTIMATING"
                 elif mean_qb < under_alert:
@@ -907,9 +929,12 @@ class LearningQualitySupervisor:
             td_slope = _compute_linear_slope(self.td_error_window)
 
             n_qb = len(self.q_bias_window)
-            q_bias_avg = (sum(self.q_bias_window) / float(n_qb)) if n_qb > 0 else 0.0
-            q_bias_std = _compute_std(self.q_bias_window, q_bias_avg) if n_qb > 1 else 0.0
-            q_bias_slope = _compute_linear_slope(self.q_bias_window)
+            q_bias_avg, q_bias_std = self.get_q_bias_stats()
+            sanitized_qb = collections.deque(
+                (max(-250.0, min(250.0, _safe_float(v, 0.0))) for v in self.q_bias_window),
+                maxlen=self.q_bias_window.maxlen,
+            )
+            q_bias_slope = _compute_linear_slope(sanitized_qb)
 
             n_sats = len(self.realized_sats_window)
             avg_sats_20 = (sum(self.realized_sats_window) / float(n_sats)) if n_sats > 0 else 0.0

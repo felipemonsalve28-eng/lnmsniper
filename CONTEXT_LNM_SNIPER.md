@@ -2,8 +2,8 @@
 ## LNM SNIPER v7.3+ (EDICIÓN SATS REALES, OBSERVABILIDAD Y UMBRALES DINÁMICOS)
 
 > **Archivo de Contexto Persistente para Agentes Autónomos e Ingenieros**  
-> **Última Actualización:** 2026-11-15  
-> **Último Commit Base:** `e663b19` (`master`, etapa 18 auditada y certificada)  
+> **Última Actualización:** 2026-11-18  
+> **Último Commit Base:** `0fd8d86` (`master`, pre-normalización canónica 1k-sat y aislamiento de umbrales por entorno)  
 > **Directiva de Operación:** [AGENT_MAINTENANCE_DIRECTIVE.md](file:///c:/Users/mberm/OneDrive/Documentos/sniper/AGENT_MAINTENANCE_DIRECTIVE.md)
 
 ---
@@ -17,7 +17,7 @@
 | **Límite de Posiciones** | Máximo 5 posiciones simultáneas | Enforzado en [lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py) |
 | **Piso Duro Unificado** | 75% inicial -> 88% de meta (preserva hitos post Kill-Switch) | [HardFloorGuardian](file:///c:/Users/mberm/OneDrive/Documentos/sniper/guardian_execution_core.py) |
 | **Cerebro Activo** | `334` estados discretizados (`q_table`/`state_visits` entrenados), `0` cierres/historial (`epsilon=0.0`), Schema v2, SHA-256 estricto (`strict_sha=True`) | [q_brain_advanced_lnm.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/q_brain_advanced_lnm.json) / [hedge_state_mainnet.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_mainnet.json) (`206` estados Q) |
-| **Fuente de Umbrales** | 10 categorías formales con Hot-Reload atómico | [config/learning_thresholds.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/config/learning_thresholds.json) |
+| **Fuente de Umbrales** | 10 categorías formales con Hot-Reload atómico aislado por entorno (`mainnet` vs `testnet`) | [config/learning_thresholds.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/config/learning_thresholds.json) / [config/learning_thresholds_testnet.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/config/learning_thresholds_testnet.json) |
 | **Telemetría en Vivo** | Headless atómica con FileLock exclusivo y aislamiento Mainnet/Testnet | [telemetry_live.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/telemetry_live.json) / `telemetry_live_testnet.json` |
 | **Compatibilidad Móvil** | Cero dependencias C/C++ pesadas, $O(1)$ en memoria | Android Termux y Linux/Ubuntu |
 
@@ -425,6 +425,26 @@
   - `unittest` (`test_simulation_engine.py`, `test_terminal_bellman_fix.py`, `test_candidate_certification.py`, `test_simulation_training_loop.py`): `22/22` (`OK`).
   - [test_sniper_cli.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_sniper_cli.py): `7/7` (`OK`).
   - Congruencia `FALLBACK_THRESHOLDS` vs `PARAM_OPERATIONAL_GUIDE`: `78/78` (`100% CONGRUENTE`).
+
+### Etapa 23: Normalización Dimensional Canónica (1,000 sats), Aislamiento de Umbrales por Entorno y Gemelo Digital Sombra
+- **Estado:** **Completada, certificada al 100% en WSL y aplicada en vivo sobre Mainnet (`SIGHUP`) y Testnet (`restart`)**.
+- **Cambios de Ingeniería Aplicados:**
+  1. **Aislamiento Mainnet/Testnet de Umbrales y SIGHUP ([learning_thresholds_manager.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/learning_thresholds_manager.py), [lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py), [sniper_cli.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sniper_cli.py)):**
+     - Enrutamiento por entorno vía `resolve_thresholds_path_for_env()` y `LearningThresholdsManager.switch_environment()` invocado dentro de `Config.configure_environment()`.
+     - Restauración de `baseline_v73` en [config/learning_thresholds.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/config/learning_thresholds.json) (`bayesian_prior_alpha=7.0`, `bayesian_prior_beta=15.0`, `breakeven_safety_margin=0.04`, `epsilon_explorer_min=0.08`, `epsilon_explorer_initial=0.28`).
+     - Creación de [config/learning_thresholds_testnet.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/config/learning_thresholds_testnet.json) calibrado para exploración sin colapso de Win Rate (`bayesian_prior_alpha=9.0`, `bayesian_prior_beta=10.0`, `breakeven_safety_margin=0.02`, `epsilon_explorer_min=0.12`, `epsilon_explorer_initial=0.24`).
+     - `SniperControlCenter` actualizado con `env_mode`, `get_thresholds_path(env_mode)`, `notify_hot_reload_signal(env_mode)` dirigido exclusivamente al PID del entorno objetivo, `--env` en `set`, y corrección de liveness en `check_daemon_status` / `manage_daemon("stop")` + fallback de endpoint Testnet (`https://api.signet.lnmarkets.com/v3`).
+  2. **Invarianza Dimensional por Margen Canónico ($M_{\text{ref}} = 1,000\text{ sats}$) ([learning_quality_supervisor.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/learning_quality_supervisor.py), [lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py)):**
+     - Factor $\eta(M) = 1000.0 / \max(1000.0, M)$ aplicado en `AutonomousGoalBrain.remember_and_train` (preservando la contabilidad real en satoshis íntegra), `LearningQualitySupervisor.normalize_to_canonical_margin`, `record_closed_trade` y `record_shadow_closed_trade` (con avance continuo de histéresis en modo sombra y sanitización `[-250, +250]` de outliers legados en `get_q_bias_stats` / `get_rl_metrics_snapshot`).
+  3. **Gemelo Digital del Guardián en `update_shadow_trades` ([lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py)):**
+     - Breakeven Lock (`be_floor`/`be_ceil` con `profit_lock_offset = fee_offset * 1.55`), Dynamic Trailing Stop por estrategia (`trail_trig_atr`, `trail_slack_atr`), estado `CLOSED_TRAIL_PROFIT`, paso de `ind_5m` desde `main()` y actualización Bellman amortiguada normalizada a $1,000\text{ sats}$ (`norm_net_sats_1k`).
+  4. **Ventana Móvil de Certificación en [audit_shadow_convergence.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/audit_shadow_convergence.py):**
+     - Separación entre histórico append-only y Ventana Móvil de los últimos 20 cierres virtuales (`rolling_20`), incluyendo `CLOSED_TRAIL_PROFIT`, `Rolling_20_Norm_PnL_1k`, Win Rate y `Rolling_20_Virtual_FER` (objetivo `>= 1.20`).
+- **Certificación en WSL (`Ubuntu`):**
+  - [test_learning_quality_and_sats.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_learning_quality_and_sats.py): **`11/11`** escenarios superados (incluye `TEST 11`).
+  - [test_protocolo_v_reversal.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_protocolo_v_reversal.py): **`23/23`** escenarios superados.
+  - [test_sniper_cli.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_sniper_cli.py): **`8/8`** pruebas superadas (incluye `test_08`).
+  - Simulación `unittest`: **`22/22`** (`OK`); Integridad SHA-256 (`strict_sha=True`): `MAIN=True`, `TEST=True`, `HEDGE_MAIN=True`, `HEDGE_TEST=True`.
 
 ---
 

@@ -34,11 +34,24 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("SniperThresholds")
 
-DEFAULT_CONFIG_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "config",
-    "learning_thresholds.json",
-)
+BASE_CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
+DEFAULT_CONFIG_PATH = os.path.join(BASE_CONFIG_DIR, "learning_thresholds.json")
+TESTNET_CONFIG_PATH = os.path.join(BASE_CONFIG_DIR, "learning_thresholds_testnet.json")
+
+
+def resolve_thresholds_path_for_env(env_mode: Optional[str] = None) -> str:
+    env = str(env_mode or os.getenv("ENV_MODE") or os.getenv("SNIPER_ENV") or "mainnet").strip().lower()
+    if env in ("testnet", "test", "explorer"):
+        if not os.path.exists(TESTNET_CONFIG_PATH):
+            try:
+                os.makedirs(BASE_CONFIG_DIR, exist_ok=True)
+                if os.path.exists(DEFAULT_CONFIG_PATH):
+                    import shutil
+                    shutil.copy2(DEFAULT_CONFIG_PATH, TESTNET_CONFIG_PATH)
+            except Exception:
+                pass
+        return TESTNET_CONFIG_PATH
+    return DEFAULT_CONFIG_PATH
 
 REQUIRED_CATEGORIES: Tuple[str, ...] = (
     "expectancy",
@@ -776,6 +789,16 @@ class LearningThresholdsManager:
         with self._lock:
             if callback not in self._callbacks:
                 self._callbacks.append(callback)
+
+    def switch_environment(self, env_mode: str = "mainnet") -> str:
+        """Conmuta atómicamente el archivo de umbrales según el entorno (mainnet/testnet) y recarga."""
+        target_path = os.path.abspath(resolve_thresholds_path_for_env(env_mode))
+        with self._lock:
+            if self.config_path != target_path:
+                self.config_path = target_path
+                self._last_mtime = 0.0
+                self.check_and_reload(active_trades_count=0, force=True)
+        return self.config_path
 
     @staticmethod
     def validate_schema_and_limits(

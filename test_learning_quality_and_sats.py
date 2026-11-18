@@ -180,8 +180,9 @@ def run_all_tests() -> None:
         # Exactamente +150 sats agregados (sin restar 70 por segunda vez)
         assert (brain.realized_net_profit_sats - sats_before) == 150
         assert (brain.total_fees_paid_sats - fees_before) == 70
-        # R_econ = 150 - 0.15*(20) - 0.05*(10) = 150 - 3.0 - 0.5 = 146.5 sats -> shaped = +1.465
-        assert abs(r_win - 1.465) < 1e-3, f"Recompensa esperada 1.465, obtenida {r_win}"
+        # Normalización canónica (M_ref=1000 / margin=2000 => eta=0.5):
+        # norm_net=75.0, norm_mae=10.0 -> R_econ_norm = 75.0 - 0.15*(10.0) - 0.05*(10.0) = 73.0 -> shaped = +0.73
+        assert abs(r_win - 0.73) < 1e-3, f"Recompensa canónica esperada 0.73, obtenida {r_win}"
         assert q_after_win > q_before_win, "Ganancia neta real debe incrementar el valor Q"
 
         # 3b. Idempotencia estricta: repetir el mismo trade_id no debe duplicar ni mutar Q
@@ -391,15 +392,19 @@ def run_all_tests() -> None:
     # -------------------------------------------------------------------------
     # ESCENARIO 7: Cluster Alpha (F4 Expectancy Bayesiana Jerárquica + F5 Cero Exploración Mainnet)
     # -------------------------------------------------------------------------
-    # 7a. Estimador Bayesiano jerárquico Beta-Binomial y contracción
+    # 7a. Estimador Bayesiano jerárquico Beta-Binomial y contracción (baseline_v73: alpha=7, beta=15)
     p_global, p_lcb_global, meta_g = SatsExpectancyGate.estimate_bayesian_win_rate()
-    assert abs(p_global - (9.0 / 20.0)) < 1e-3, f"Prior global esperado ~0.4500, obtuvo {p_global}"
+    alpha_cfg = THRESHOLDS_MANAGER.get_float("expectancy", "bayesian_prior_alpha", 7.0)
+    beta_cfg = THRESHOLDS_MANAGER.get_float("expectancy", "bayesian_prior_beta", 15.0)
+    expected_p_global = alpha_cfg / (alpha_cfg + beta_cfg)
+    assert abs(p_global - expected_p_global) < 1e-3, f"Prior global esperado ~{expected_p_global:.4f}, obtuvo {p_global}"
     assert p_lcb_global <= p_global and p_lcb_global > 0.05
 
     mock_style_win = {"TREND": {"trades": 10, "wins": 8}}
     p_trend, p_lcb_trend, _ = SatsExpectancyGate.estimate_bayesian_win_rate(style="TREND", style_metrics=mock_style_win)
-    # Posterior: (9 + 8) / (20 + 10) = 17 / 30 = 0.56667
-    assert abs(p_trend - (17.0 / 30.0)) < 1e-3
+    # Posterior: (alpha + 8) / (alpha + beta + 10)
+    expected_p_trend = (alpha_cfg + 8.0) / (alpha_cfg + beta_cfg + 10.0)
+    assert abs(p_trend - expected_p_trend) < 1e-3
     assert p_trend > p_global, "Estilo con 80% WR debe elevar la probabilidad estimada posterior"
 
     # 7b. Compuerta de Expectancy probabilística real:
@@ -501,7 +506,13 @@ def run_all_tests() -> None:
         }
 
         # Simular precio spot que alcanza TP de la orden buy (72500 >= 72000) y SL de la sell (72500 >= 71000)
-        closed_sims = update_shadow_trades(b_shadow, 72500.0, now=time.time())
+        import lnm_sniper_v6_advanced as _bot_mod
+        _orig_rec_shadow = _bot_mod.record_shadow_order
+        try:
+            _bot_mod.record_shadow_order = lambda _rec: None
+            closed_sims = update_shadow_trades(b_shadow, 72500.0, now=time.time())
+        finally:
+            _bot_mod.record_shadow_order = _orig_rec_shadow
         assert len(closed_sims) == 2
         statuses = {s["id"]: s["status"] for s in closed_sims}
         assert statuses["shadow-test-buy"] == "CLOSED_TP"
@@ -738,6 +749,94 @@ def run_all_tests() -> None:
         assert int(b_inst.state_visits[st_key]) == 10, "choose_action inflo state_visits sin despachar ni cerrar orden"
 
     print("✅ TEST 10 (Invariantes Etapa 22: 78 Umbrales, Basis BTCUSD/BTCUSDT, Sync Idempotente y No-Inflación state_visits): PASÓ.")
+
+    # -------------------------------------------------------------------------
+    # ESCENARIO 11: Normalización Canónica 1k-sat, Aislamiento de Umbrales por Entorno y Shadow Trailing Lock
+    # -------------------------------------------------------------------------
+    from learning_thresholds_manager import TESTNET_CONFIG_PATH, resolve_thresholds_path_for_env
+    import lnm_sniper_v6_advanced as _bot_mod_11
+
+    # 11.1: Enrutamiento aislado mainnet vs testnet en LearningThresholdsManager
+    assert os.path.abspath(resolve_thresholds_path_for_env("mainnet")) == os.path.abspath(DEFAULT_CONFIG_PATH)
+    assert os.path.abspath(resolve_thresholds_path_for_env("testnet")) == os.path.abspath(TESTNET_CONFIG_PATH)
+    mgr_env = LearningThresholdsManager(config_path=DEFAULT_CONFIG_PATH)
+    assert abs(mgr_env.get_float("expectancy", "bayesian_prior_alpha") - 7.0) < 1e-6
+    assert abs(mgr_env.get_float("expectancy", "bayesian_prior_beta") - 15.0) < 1e-6
+    mgr_env.switch_environment("testnet")
+    assert mgr_env.config_path == os.path.abspath(TESTNET_CONFIG_PATH)
+    assert abs(mgr_env.get_float("expectancy", "bayesian_prior_alpha") - 9.0) < 1e-6
+    assert abs(mgr_env.get_float("expectancy", "bayesian_prior_beta") - 10.0) < 1e-6
+    assert abs(mgr_env.get_float("expectancy", "breakeven_safety_margin") - 0.02) < 1e-6
+    mgr_env.switch_environment("mainnet")
+    assert mgr_env.config_path == os.path.abspath(DEFAULT_CONFIG_PATH)
+    assert abs(mgr_env.get_float("expectancy", "breakeven_safety_margin") - 0.04) < 1e-6
+
+    # 11.2: Invarianza dimensional al Margen Canónico (M_ref = 1000 sats) en Supervisor y Q-Bias
+    assert abs(LearningQualitySupervisor.normalize_to_canonical_margin(100.0, 1000.0) - 100.0) < 1e-6
+    assert abs(LearningQualitySupervisor.normalize_to_canonical_margin(-2000.0, 25000.0) - (-80.0)) < 1e-6
+
+    sup_norm = LearningQualitySupervisor()
+    # Inyectar outlier legado y comprobar sanitización en get_q_bias_stats()
+    sup_norm.q_bias_window.append(2500.0)
+    qb_avg_clamped, _ = sup_norm.get_q_bias_stats()
+    assert qb_avg_clamped <= 250.0, f"Outlier legado no sanitizado: {qb_avg_clamped}"
+    sup_norm.q_bias_window.clear()
+
+    # Simular cierre Testnet (margen=25,000 sats, pérdida=-2,000 sats => -80 sats/1k, Q_entry=-0.80 => -80 sats)
+    sup_norm.learning_guard_status = "SUSPENDED_CRITICAL_TD"
+    for _ in range(5):
+        sup_norm.record_shadow_closed_trade(
+            predicted_q_entry=-0.80,
+            net_realized_sats=-2000.0,
+            signed_td_error=0.12,
+            margin_sats=25000.0,
+        )
+    qb_norm_avg, _ = sup_norm.get_q_bias_stats()
+    assert abs(qb_norm_avg) < 1e-3, f"Q-Bias canónico esperado ~0.0, obtuvo {qb_norm_avg}"
+    assert sup_norm.learning_guard_status == "ACTIVE_LEARNING", "Histéresis sombra debe reactivar ACTIVE_LEARNING"
+
+    # 11.3: Gemelo digital en update_shadow_trades (Breakeven Lock + CLOSED_TRAIL_PROFIT + Norm1k)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        b_tr = AutonomousGoalBrain(filename=os.path.join(tmpdir, "trail_brain.json"), explorer_mode=True)
+        now_t = time.time()
+        b_tr.shadow_trades = {
+            "shadow-trail-1": {
+                "id": "shadow-trail-1",
+                "action": 2,
+                "side": "buy",
+                "entry_price": 70000.0,
+                "stoploss": 69200.0,
+                "takeprofit": 72500.0,
+                "margin_sats": 25000,
+                "leverage": 20.0,
+                "total_cost_sats": 1000.0,
+                "entry_q": 0.50,
+                "opened_at": now_t,
+                "state": "TREND_BULL|DIP|LOW_EXP|BULL|FULL_BULL",
+                "status": "OPEN_SIMULATED",
+            }
+        }
+        _orig_rec_11 = _bot_mod_11.record_shadow_order
+        try:
+            _bot_mod_11.record_shadow_order = lambda _rec: None
+            # Paso 1: sube +1000 USD (> min_trig con atr=300), debe bloquear SL en ganancia sin cerrar
+            c_step1 = update_shadow_trades(b_tr, 71000.0, now=now_t + 30.0, ind_5m={"atr": 300.0})
+            assert len(c_step1) == 0
+            assert b_tr.shadow_trades["shadow-trail-1"].get("sl_locked") is True
+            locked_sl = b_tr.shadow_trades["shadow-trail-1"]["stoploss"]
+            assert locked_sl > 70000.0
+
+            # Paso 2: retrocede por debajo del SL bloqueado -> cierra con CLOSED_TRAIL_PROFIT y ganancia neta > 0
+            c_step2 = update_shadow_trades(b_tr, locked_sl - 5.0, now=now_t + 60.0, ind_5m={"atr": 300.0})
+            assert len(c_step2) == 1
+            assert c_step2[0]["status"] == "CLOSED_TRAIL_PROFIT"
+            assert c_step2[0]["net_realized_sats"] > 0.0
+            assert "norm_net_sats_1k" in c_step2[0]
+            assert abs(c_step2[0]["norm_net_sats_1k"] - (c_step2[0]["net_realized_sats"] * (1000.0 / 25000.0))) < 0.2
+        finally:
+            _bot_mod_11.record_shadow_order = _orig_rec_11
+
+    print("✅ TEST 11 (Invarianza Canónica 1k-sat, Aislamiento Mainnet/Testnet y Shadow Breakeven/Trailing Lock): PASÓ.")
 
     print("=" * 80)
     print("🏆 CERTIFICACIÓN COMPLETA: TODOS LOS ESCENARIOS SUPERADOS AL 100% 🏆")

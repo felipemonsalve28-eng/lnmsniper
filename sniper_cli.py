@@ -28,6 +28,7 @@ from learning_thresholds_manager import (
     REQUIRED_CATEGORIES,
     STRUCTURAL_LOCKED_PARAMS,
     LearningThresholdsManager,
+    resolve_thresholds_path_for_env,
 )
 from sniper_cli_catalog import (
     CATEGORY_TITLES,
@@ -118,10 +119,21 @@ class SniperControlCenter:
         thresholds_path: str = DEFAULT_CONFIG_PATH,
         runtime_path: str = RUNTIME_OVERRIDES_PATH,
         base_dir: str = BASE_DIR,
+        env_mode: Optional[str] = None,
     ) -> None:
-        self.thresholds_path = os.path.abspath(thresholds_path)
+        self.env_mode = str(env_mode).strip().lower() if env_mode else None
+        abs_default = os.path.abspath(DEFAULT_CONFIG_PATH)
+        if self.env_mode and os.path.abspath(thresholds_path) == abs_default:
+            self.thresholds_path = os.path.abspath(resolve_thresholds_path_for_env(self.env_mode))
+        else:
+            self.thresholds_path = os.path.abspath(thresholds_path)
         self.runtime_path = os.path.abspath(runtime_path)
         self.base_dir = os.path.abspath(base_dir)
+
+    def get_thresholds_path(self, env_mode: Optional[str] = None) -> str:
+        if self.thresholds_path != os.path.abspath(DEFAULT_CONFIG_PATH):
+            return self.thresholds_path
+        return os.path.abspath(resolve_thresholds_path_for_env(env_mode or self.env_mode))
 
     @staticmethod
     def _atomic_write_json(filepath: str, payload: Dict[str, Any], create_backup: bool = True) -> None:
@@ -164,8 +176,8 @@ class SniperControlCenter:
         except Exception:
             return None
 
-    def load_thresholds_tree(self) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        data = self._safe_read_json(self.thresholds_path)
+    def load_thresholds_tree(self, env_mode: Optional[str] = None) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        data = self._safe_read_json(self.get_thresholds_path(env_mode))
         if isinstance(data, dict):
             ok, _, validated = LearningThresholdsManager.validate_schema_and_limits(data)
             if ok and validated is not None:
@@ -272,11 +284,16 @@ class SniperControlCenter:
                 except (ValueError, OSError):
                     pass
 
-        candidate_pid = tel_pid or file_pid
+        if file_pid and self._is_pid_alive(file_pid):
+            candidate_pid = file_pid
+        elif tel_pid and self._is_pid_alive(tel_pid):
+            candidate_pid = tel_pid
+        else:
+            candidate_pid = file_pid or tel_pid
         proc_alive = bool(candidate_pid and self._is_pid_alive(candidate_pid))
         heartbeat_fresh = (snapshot_ts > 0.0) and ((now_utc - snapshot_ts) <= 15.0)
 
-        if heartbeat_fresh or proc_alive:
+        if proc_alive or (heartbeat_fresh and candidate_pid is None):
             pid_label = str(candidate_pid) if candidate_pid else "LIVE"
             return True, candidate_pid, f"🟢 ACTIVO / OK (PID: {pid_label})"
         return False, None, "⚪ DETENIDO / EXTERNO"
@@ -285,12 +302,14 @@ class SniperControlCenter:
         is_alive, pid, _ = self.check_daemon_status(env_mode)
         return pid if is_alive else None
 
-    def notify_hot_reload_signal(self) -> List[int]:
+    def notify_hot_reload_signal(self, env_mode: Optional[str] = None) -> List[int]:
         signaled_pids: List[int] = []
         sig_hup = getattr(signal, "SIGHUP", None)
         if sig_hup is None:
             return signaled_pids
-        for env in ("mainnet", "testnet"):
+        eff_env = str(env_mode or self.env_mode or "").strip().lower()
+        envs = [eff_env] if eff_env in ("mainnet", "testnet") else ["mainnet", "testnet"]
+        for env in envs:
             pid = self.get_running_pid(env)
             if pid is not None:
                 try:
@@ -353,13 +372,15 @@ class SniperControlCenter:
         if isinstance(raw_value, str) and raw_value.strip().lower() in ("true", "false"):
             return False, "❌ Valor booleano inválido para un umbral numérico.", None
 
+        eff_env = str(env_check or self.env_mode or "").strip().lower() or None
+        target_path = self.get_thresholds_path(eff_env)
         resolved_key, suggestions = self.resolve_threshold_key(full_key)
         if resolved_key is None:
             sug_txt = f" ¿Quisiste decir: {', '.join(suggestions)}?" if suggestions else " Usa 'catalog' para listar claves."
             return False, f"❌ Parámetro '{full_key}' no encontrado o ambiguo.{sug_txt}", None
 
         category, param_name = resolved_key.split(".", 1)
-        tree = self.load_thresholds_tree()
+        tree = self.load_thresholds_tree(eff_env)
         param_obj = tree[category][param_name]
         old_val, min_lim, max_lim = param_obj["value"], param_obj["min_limit"], param_obj["max_limit"]
         is_int = isinstance(old_val, int) and not isinstance(old_val, bool) and isinstance(min_lim, int) and isinstance(max_lim, int)
@@ -379,7 +400,7 @@ class SniperControlCenter:
             )
 
         if self.is_param_structurally_locked(category, param_name, param_obj) and float(coerced_val) != float(old_val):
-            active_cnt, active_srcs = self.get_active_trades_count(env_check)
+            active_cnt, active_srcs = self.get_active_trades_count(eff_env)
             if active_cnt > 0:
                 return (
                     False,
@@ -392,13 +413,14 @@ class SniperControlCenter:
         if not is_valid or validated_tree is None:
             return False, f"❌ Rechazado por LearningThresholdsManager: {reason}", None
 
-        self._atomic_write_json(self.thresholds_path, validated_tree, create_backup=True)
-        pids = self.notify_hot_reload_signal()
-        pid_msg = f" | SIGHUP enviado a PID(s): {pids}" if pids else " | Hot-Reload vía mtime (<2s)"
+        self._atomic_write_json(target_path, validated_tree, create_backup=True)
+        signal_env = eff_env if eff_env in ("mainnet", "testnet") else "mainnet"
+        pids = self.notify_hot_reload_signal(env_mode=signal_env)
+        pid_msg = f" | SIGHUP enviado a [{signal_env.upper()}] PID(s): {pids}" if pids else f" | Hot-Reload [{signal_env.upper()}] vía mtime (<2s)"
         return (
             True,
-            f"✅ Parámetro '{resolved_key}' actualizado: {old_val} ➔ {coerced_val} [{param_obj['unit']}]{pid_msg}",
-            {"key": resolved_key, "old_value": old_val, "new_value": coerced_val, "unit": param_obj["unit"], "signaled_pids": pids},
+            f"✅ Parámetro '{resolved_key}' actualizado ({os.path.basename(target_path)}): {old_val} ➔ {coerced_val} [{param_obj['unit']}]{pid_msg}",
+            {"key": resolved_key, "old_value": old_val, "new_value": coerced_val, "unit": param_obj["unit"], "signaled_pids": pids, "thresholds_path": target_path},
         )
 
     def validate_runtime_param(self, key: str, raw_val: Any) -> Tuple[bool, Any, str]:
@@ -490,7 +512,8 @@ class SniperControlCenter:
             )
 
         active_cnt, active_srcs = self.get_active_trades_count(effective_env)
-        tree = self.load_thresholds_tree()
+        target_thr_path = self.get_thresholds_path(effective_env)
+        tree = self.load_thresholds_tree(effective_env)
         combined_thr = dict(QUANTITATIVE_PRESETS["baseline_v73"]["thresholds"])
         combined_thr.update(preset.get("thresholds", {}))
 
@@ -514,7 +537,7 @@ class SniperControlCenter:
         ok, reason, validated_tree = LearningThresholdsManager.validate_schema_and_limits(tree)
         if not ok or validated_tree is None:
             return False, f"❌ Error validando preset '{name}': {reason}", {}
-        self._atomic_write_json(self.thresholds_path, validated_tree, create_backup=True)
+        self._atomic_write_json(target_thr_path, validated_tree, create_backup=True)
 
         base_rt = {k: spec["default"] for k, spec in RUNTIME_PARAMETERS_SPEC.items()}
         base_rt["ENV_MODE"] = effective_env if env_mode else runtime_cfg.get("ENV_MODE", "mainnet")
@@ -528,7 +551,7 @@ class SniperControlCenter:
         applied_rt = [(rk, runtime_cfg.get(rk), rv) for rk, rv in base_rt.items() if runtime_cfg.get(rk) != rv]
         self._atomic_write_json(self.runtime_path, base_rt, create_backup=True)
         self._atomic_write_json(
-            ACTIVE_PRESET_META_PATH,
+            os.path.join(self.base_dir, "config", "cli_active_preset.json"),
             {
                 "active_preset": name,
                 "title": preset["title"],
@@ -536,7 +559,7 @@ class SniperControlCenter:
             },
             create_backup=False,
         )
-        pids = self.notify_hot_reload_signal()
+        pids = self.notify_hot_reload_signal(env_mode=effective_env)
         lock_note = ""
         if active_cnt > 0 and skipped_locked:
             lock_note = f" | 🔒 {len(skipped_locked)} omitidos por posiciones abiertas ({', '.join(active_srcs)})"
@@ -1052,11 +1075,11 @@ def manage_daemon(
             print(f"⚠️ No fue posible enviar SIGTERM a PID {pid}: {exc}")
             return 1
         for _ in range(30):
-            if ctrl.get_running_pid(env) is None:
+            if not ctrl._is_pid_alive(pid):
                 print(f"✅ Demonio [{env.upper()}] detenido limpiamente con SIGTERM y cerebros sellados.")
                 return 0
             time.sleep(0.2)
-        if ctrl.get_running_pid(env) is not None:
+        if ctrl._is_pid_alive(pid):
             print(f"⚠️ El proceso PID {pid} [{env.upper()}] sigue activo tras 6s esperando cierre limpio.")
             return 1
         return 0
@@ -1066,8 +1089,9 @@ def manage_daemon(
         return manage_daemon(ctrl, "start", env_mode=env, shadow_flag=shadow_flag, safe_flag=safe_flag)
 
     if act == "reload":
-        pids = ctrl.notify_hot_reload_signal()
-        print(f"🔄 SIGHUP enviado a PID(s): {pids}" if pids else "ℹ️ Sin PID activo; el bot recargará automáticamente por mtime (<2s).")
+        target_env = env_mode.strip().lower() if env_mode else env
+        pids = ctrl.notify_hot_reload_signal(env_mode=target_env)
+        print(f"🔄 SIGHUP enviado a [{target_env.upper()}] PID(s): {pids}" if pids else f"ℹ️ Sin PID activo para [{target_env.upper()}]; el bot recargará automáticamente por mtime (<2s).")
         return 0
 
     if act == "logs":
@@ -1342,6 +1366,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_set = sub.add_parser("set", help="Modifica un umbral de aprendizaje en caliente (Hot-Reload)")
     p_set.add_argument("param")
     p_set.add_argument("value")
+    p_set.add_argument("--env", default=None, choices=["mainnet", "testnet"])
 
     sub.add_parser("runtime-list", help="Lista los 21 parámetros tácticos de runtime")
     p_rset = sub.add_parser("runtime-set", help="Modifica un parámetro táctico de runtime")
@@ -1407,7 +1432,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if cmd == "explain":
             return 0 if print_parameter_explanation(build_full_parameter_catalog(ctrl), args.param) else 1
         if cmd == "set":
-            ok, msg, _ = ctrl.set_threshold_parameter(args.param, args.value)
+            ok, msg, _ = ctrl.set_threshold_parameter(args.param, args.value, env_check=args.env)
             print(msg)
             return 0 if ok else 1
         if cmd == "runtime-list":
