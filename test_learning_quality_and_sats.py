@@ -942,6 +942,37 @@ def run_all_tests() -> None:
         assert live_edge_res["q_cql"] < -1.0 and live_edge_res["effective_q_cql"] == 0.0
         assert live_edge_res["edge_score"] >= -0.65
 
+        # 12.2b: Pre-Flight (simulated_entry=True) sin triple descuento de comisiones
+        st_pf_ok = "TREND_BULL|DIP|LOW_EXP|BULL|FULL_BULL"
+        b_12.q_table[st_pf_ok] = [0.0, 0.065, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        b_12.state_visits[st_pf_ok] = 50
+        pf_ok = compute_live_edge(
+            brain=b_12, state=st_pf_ok, action=1,
+            ind_5m={"price": 62800.0, "atr": 160.0},
+            perception={"override_side": None},
+            margin_sats=1000, leverage=24.0, entry_price=62800.0, simulated_entry=True,
+        )
+        assert pf_ok["edge_score"] > 0.0, f"Pre-Flight alineado debe pasar: {pf_ok}"
+
+        pf_squeeze = compute_live_edge(
+            brain=b_12, state=st_pf_ok, action=1,
+            ind_5m={"price": 62800.0, "atr": 65.0},
+            perception={"override_side": None},
+            margin_sats=1000, leverage=24.0, entry_price=62800.0, simulated_entry=True,
+        )
+        assert pf_squeeze["edge_score"] < 0.0, f"Compresion extrema debe bloquearse: {pf_squeeze}"
+
+        st_pf_ct = "CHOP_HIGHVOL|PEAK|LOW_EXP|BEAR|FULL_BEAR"
+        b_12.q_table[st_pf_ct] = [0.0, 0.065, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        b_12.state_visits[st_pf_ct] = 50
+        pf_ct = compute_live_edge(
+            brain=b_12, state=st_pf_ct, action=1,
+            ind_5m={"price": 62800.0, "atr": 180.0},
+            perception={"override_side": "BULL"},
+            margin_sats=1000, leverage=24.0, entry_price=62800.0, simulated_entry=True,
+        )
+        assert pf_ct["edge_score"] < 0.0, f"Contratendencia macro debe seguir bloqueada: {pf_ct}"
+
         # 12.3: Bloqueo de REDUCE_ORIGINAL_POSITION cuando orig_pl < 1.50 * orig_rt_fee
         ok_red, reason_red, _ = HedgeRiskManager.authorize_hedge_action(
             "REDUCE_ORIGINAL_POSITION",

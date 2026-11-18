@@ -2369,11 +2369,16 @@ def compute_live_edge(
     if simulated_entry:
         pnl_atr_raw = 0.0
         pnl_atr_net = -fee_price_offset / atr
-        fee_drag_q = c_rt_sats / max(q_scale, float(m_sats) * 0.25)
+        # q_cql ya es expectativa neta post-comision (normalizada a 1,000 sats):
+        # evitar triple descuento en Pre-Flight y penalizar solo compresion extrema (fee > 1.0 ATR)
+        excess_fee_atr = max(0.0, (fee_price_offset / atr) - 1.0)
+        edge_pnl_term = -0.20 * excess_fee_atr
+        fee_drag_q = 0.0
     else:
         signed_move = (p_spot - p_entry) if is_long else (p_entry - p_spot)
         pnl_atr_raw = signed_move / atr
         pnl_atr_net = (signed_move - fee_price_offset) / atr
+        edge_pnl_term = 0.20 * pnl_atr_net
         fee_drag_q = 0.0
 
     now_ts = float(now if now is not None else ((ind_5m or {}).get("_now_ts") or time.time()))
@@ -2403,7 +2408,7 @@ def compute_live_edge(
     else:
         ovr_bias = 0.0
 
-    edge_score = round(effective_q_cql + (0.20 * pnl_atr_net) - fee_drag_q + ovr_bias, 4)
+    edge_score = round(effective_q_cql + edge_pnl_term - fee_drag_q + ovr_bias, 4)
     if not simulated_entry and (is_exploratory or has_age_meta) and (-0.35 < pnl_atr_raw < 0.45) and (trade_age_sec < 90.0):
         edge_score = round(max(float(edge_score), -0.65), 4)
 
