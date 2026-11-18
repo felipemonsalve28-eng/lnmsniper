@@ -2255,6 +2255,77 @@ def enforce_concurrency_cap(client, brain, running_trades):
     return [t for t in running_trades if str(t["id"]) not in closed_ids]
 
 
+def compute_live_edge(
+    brain,
+    state,
+    action,
+    ind_5m,
+    perception=None,
+    margin_sats=1000,
+    leverage=15.0,
+    entry_price=0.0,
+    carry_fees_sats=0,
+    simulated_entry=False,
+):
+    """
+    Unificador simétrico de Edge Neto post-comisión y post-CQL para admisión Pre-Flight
+    y monitoreo en vivo del Guardián.
+    Costo fijo round-trip: C_RT = 2 * M * L * f_taker (con f_taker = 0.001).
+    """
+    act_idx = int(action) % Config.NUM_ACTIONS
+    is_long = (1 <= act_idx <= 4)
+    p_spot = max(1.0, float(ind_5m.get("price", 70000.0)))
+    atr = max(1.0, float(ind_5m.get("atr", p_spot * 0.0015)))
+    m_sats = max(100, int(margin_sats or 1000))
+    lev_f = max(1.0, float(leverage or 15.0))
+    notional_sats = float(m_sats) * lev_f
+    taker_fee = float(Config.TAKER_FEE)
+    carry_sats = max(0, int(round(float(carry_fees_sats or 0))))
+
+    c_rt_sats = (2.0 * notional_sats * taker_fee) + float(carry_sats)
+    q_cql = brain.get_conservative_q(state, act_idx)
+    q_scale = max(1.0, brain.thresholds.get_float("q_calibration", "q_to_sats_scale", 100.0))
+
+    p_entry = p_spot if (simulated_entry or float(entry_price or 0.0) <= 0.0) else float(entry_price)
+    fee_price_offset = p_entry * ((2.0 * taker_fee) + (float(carry_sats) / max(1.0, notional_sats)))
+
+    if simulated_entry:
+        pnl_atr_raw = 0.0
+        pnl_atr_net = -fee_price_offset / atr
+        fee_drag_q = c_rt_sats / max(q_scale, float(m_sats) * 0.25)
+    else:
+        signed_move = (p_spot - p_entry) if is_long else (p_entry - p_spot)
+        pnl_atr_raw = signed_move / atr
+        pnl_atr_net = (signed_move - fee_price_offset) / atr
+        fee_drag_q = 0.0
+
+    ovr = perception.get("override_side") if isinstance(perception, dict) else None
+    st_str = str(state)
+    macro_c = (is_long and "|BEAR|" in st_str) or ((not is_long) and "|BULL|" in st_str)
+
+    if (is_long and ovr == "BEAR") or ((not is_long) and ovr == "BULL"):
+        ovr_bias = -0.35
+    elif simulated_entry and macro_c:
+        # En Pre-Flight contratendencia macro no se acredita el bono efímero +0.15 de OVR
+        ovr_bias = -0.12
+    elif (is_long and ovr == "BULL") or ((not is_long) and ovr == "BEAR"):
+        ovr_bias = 0.15
+    elif macro_c:
+        ovr_bias = -0.12
+    else:
+        ovr_bias = 0.0
+
+    edge_score = round(q_cql + (0.20 * pnl_atr_net) - fee_drag_q + ovr_bias, 4)
+    return {
+        "edge_score": edge_score,
+        "q_cql": round(q_cql, 4),
+        "pnl_atr_raw": round(pnl_atr_raw, 4),
+        "pnl_atr_net": round(pnl_atr_net, 4),
+        "c_rt_sats": round(c_rt_sats, 2),
+        "ovr_bias": round(ovr_bias, 4),
+    }
+
+
 def execute_strategy_guardian(
     client, brain, trade, ind_5m, ind_15m, trade_meta, system_mode,
     edge_score=0.0, perception=None, current_dd_pct=0.0, is_hedged=False
@@ -2314,7 +2385,13 @@ def execute_strategy_guardian(
 
         deg_streak = int(trade_meta["edge_deg_streak"])
 
-        if not is_hedged and deg_streak >= Config.EDGE_DEGRADATION_PERSISTENCE and edge_score <= Config.EDGE_DEGRADATION_EXIT:
+        # Ventana de Amortiguación Post-Apertura (Minimum Hold Grace Period: tau_grace = 45.0s)
+        trade_age_sec = max(0.0, time.time() - float(trade_meta.get("entry_time", time.time())))
+        curr_adverse_sats = max(0.0, float(-pl_sats), float(trade_meta.get("mae_sats", 0.0)))
+        mae_over_margin = curr_adverse_sats / float(max(1, margin))
+        in_grace_period = (trade_age_sec < 45.0) and (mae_over_margin < 0.045)
+
+        if not is_hedged and not in_grace_period and deg_streak >= Config.EDGE_DEGRADATION_PERSISTENCE and edge_score <= Config.EDGE_DEGRADATION_EXIT:
             if confirm_and_close_trade(client, brain, tid, trade_meta, "FORCED_EDGE_EXIT"):
                 print(
                     f"  🛑 [FORCED EDGE EXIT] Cierre forzado en {tid[:6]} tras {deg_streak} ciclos "
@@ -2322,11 +2399,11 @@ def execute_strategy_guardian(
                 )
                 return True
 
-        if not is_hedged and system_mode == "RECOVERY" and current_dd_pct >= 0.08 and edge_score < -0.30:
+        if not is_hedged and not in_grace_period and system_mode == "RECOVERY" and current_dd_pct >= 0.08 and edge_score < -0.30:
             if confirm_and_close_trade(client, brain, tid, trade_meta, "RECOVERY_FORCED_REDUCTION"):
                 print(
                     f"  🛑 [RECOVERY REDUCTION] Cierre forzado en {tid[:6]} por Recovery DD {current_dd_pct*100:.1f}% "
-                    f"(Edge:{edge_score:+.3f} < -0.30 | {pl_sats:+,} sats)"
+                    f"(Edge:{edge_score:+.3f} < -0.30 | Age:{trade_age_sec:.0f}s | {pl_sats:+,} sats)"
                 )
                 return True
         vel_ema = float(perception.get("vel_ema_atr", 0.0)) if isinstance(perception, dict) else 0.0
@@ -2349,7 +2426,7 @@ def execute_strategy_guardian(
                         f"de degradación (Edge:{edge_score:+.3f} | +{pl_sats} sats)"
                     )
                     return True
-            elif not is_hedged and ((edge_score <= Config.EDGE_DEGRADATION_EXIT and pnl_atr <= -1.00) or (macro_counter and ovr_side is None and edge_score <= -0.48 and pnl_atr <= -0.80)):
+            elif not is_hedged and not in_grace_period and ((edge_score <= Config.EDGE_DEGRADATION_EXIT and pnl_atr <= -1.00) or (macro_counter and ovr_side is None and edge_score <= -0.48 and pnl_atr <= -0.80)):
                 if confirm_and_close_trade(client, brain, tid, trade_meta, "EDGE_DEGRADATION_DEFENSIVE_EXIT"):
                     print(
                         f"  🛑 [GUARDIÁN EDGE CUT] Cierre defensivo en {tid[:6]} (Streak:{deg_streak} | "
@@ -3344,6 +3421,23 @@ def evaluate_and_dispatch_entries(
                 ):
                     viable_sats = False
 
+            pre_edge_info = compute_live_edge(
+                brain=brain,
+                state=state,
+                action=action,
+                ind_5m=ind_5m,
+                perception=perception,
+                margin_sats=margin_sats,
+                leverage=lev,
+                entry_price=float(ind_5m["price"]),
+                simulated_entry=True,
+            )
+            edge_pre = float(pre_edge_info["edge_score"])
+            theta_rec = -0.30
+            delta_hyst = 0.45
+            min_preflight_edge = (theta_rec + delta_hyst) if (recovery_mode or current_dd_pct >= 0.08) else 0.0
+            preflight_blocked = (not Config.EXPLORER_MODE) and (edge_pre < min_preflight_edge)
+
             runtime_shadow_cb = False
             if hasattr(brain, "supervisor") and brain.supervisor is not None and hasattr(brain.supervisor, "evaluate_runtime_shadow_circuit_breaker"):
                 runtime_shadow_cb = bool(brain.supervisor.evaluate_runtime_shadow_circuit_breaker())
@@ -3355,7 +3449,12 @@ def evaluate_and_dispatch_entries(
                 strat["side"], margin_sats, lev, running_trades=still_running, now=now
             )
 
-            if not exp_ok:
+            if preflight_blocked:
+                print(
+                    f"  ⏸️ [FILTRO PRE-FLIGHT] Entrada bloqueada por riesgo de Churning "
+                    f"(Edge_pre:{edge_pre:+.3f} < {min_preflight_edge:+.2f} | C_RT:{pre_edge_info['c_rt_sats']:.1f}s)"
+                )
+            elif not exp_ok:
                 print(f"  ⏸️ [EXPOSICIÓN PROYECTADA BLOQUEADA] {exp_reason} (Margen:{margin_sats} sats)")
             elif not viable_sats:
                 print(
@@ -3391,6 +3490,7 @@ def evaluate_and_dispatch_entries(
                     "p_hat": sats_meta.get("p_hat", 0.0),
                     "p_star": sats_meta.get("p_star", 0.0),
                     "entry_q": raw_entry_q,
+                    "edge_pre": edge_pre,
                     "state": state,
                     "status": "OPEN_SIMULATED",
                 }
@@ -3703,16 +3803,27 @@ def main():
                 _tid = str(_t["id"])
                 _meta = brain.active_trades.get(_tid, {})
                 _act = int(_meta.get("action", 2 if _t.get("side", "buy") == "buy" else 6))
-                _pnl_atr = float(_meta.get("last_pnl_atr", 0.0))
-                _q_act = float(q_vec[_act]) if _act < len(q_vec) else 0.0
-                _ovr = perception.get("override_side")
-                _macro_c = (_act <= 4 and "|BEAR|" in state) or (_act >= 5 and "|BULL|" in state)
-                _ovr_bias = -0.35 if ((_act <= 4 and _ovr == "BEAR") or (_act >= 5 and _ovr == "BULL")) else (0.15 if ((_act <= 4 and _ovr == "BULL") or (_act >= 5 and _ovr == "BEAR")) else (-0.12 if _macro_c else 0.0))
-                edge_score = round(_q_act + (0.20 * _pnl_atr) + _ovr_bias, 4)
+                _carry = int(round(float(_t.get("sum_carry_fees") or _t.get("funding_fees") or 0)))
+                _edge_res = compute_live_edge(
+                    brain=brain,
+                    state=state,
+                    action=_act,
+                    ind_5m=ind_5m,
+                    perception=perception,
+                    margin_sats=int(_t.get("margin") or _meta.get("margin", 1000)),
+                    leverage=float(_t.get("leverage") or _meta.get("leverage", 15.0)),
+                    entry_price=float(_t.get("price") or _t.get("entryPrice") or ind_5m["price"]),
+                    carry_fees_sats=_carry,
+                    simulated_entry=False,
+                )
+                edge_score = float(_edge_res["edge_score"])
+                _pnl_atr = float(_edge_res["pnl_atr_raw"])
+                _q_act = float(_edge_res["q_cql"])
+                _meta["last_pnl_atr"] = _pnl_atr
                 edge_scores_by_tid[_tid] = edge_score
                 _deg_cnt = int(_meta.get("edge_deg_streak", 0))
                 if edge_score <= Config.EDGE_DEGRADATION_WARN and (_deg_cnt == 1 or _deg_cnt % 5 == 0):
-                    print(f"  ⚠️ [DEGRADACIÓN DE EDGE] ID:{_tid[:6]} | Act:{_act} | Edge:{edge_score:+.3f} (Q:{_q_act:+.3f} | PnL:{_pnl_atr:+.2f}ATR | OVR:{ovr_tag} | Streak:{_deg_cnt})")
+                    print(f"  ⚠️ [DEGRADACIÓN DE EDGE] ID:{_tid[:6]} | Act:{_act} | Edge:{edge_score:+.3f} (Q_cql:{_q_act:+.3f} | PnL:{_pnl_atr:+.2f}ATR | OVR:{ovr_tag} | Streak:{_deg_cnt})")
 
             if floor_threat and (now >= pause_until):
                 print(f"  🚨 [GUARDIÁN PISO DURO UNIFICADO] {prot['reason']} | Eq:{equity:,} <= Piso:{brain.locked_floor:,}. Liquidando portafolio completo y pausando 45m.")
