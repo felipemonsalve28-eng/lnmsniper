@@ -374,6 +374,99 @@ class TestHedgeAntiWhipsaw(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "BLOCKED_HEDGE_SQUEEZE_WHIPSAW_RISK")
 
+    def test_08_block_reduce_original_and_hedge_below_fee_threshold_and_max_1_reduction(self):
+        # orig_notional = 60,000 -> orig_rt_fee = 120 -> min_orig_pl_for_cashin = max(60, 120 * 1.50) = 180
+        low_profit_econ = dict(self.base_econ, orig_pl_sats=33)
+        ok_low, reason_low, _ = HedgeRiskManager.authorize_hedge_action(
+            "REDUCE_ORIGINAL_POSITION",
+            pair_ctx=self.base_ctx,
+            pair_econ=low_profit_econ,
+            portfolio_snap={"locked_margin_sats": 3000},
+            predictive_signal=self.base_pred,
+            account_equity_sats=30000,
+            available_balance_sats=20000,
+            locked_floor_sats=21000,
+            ind_5m=self.ind_5m,
+            now=self.now,
+        )
+        self.assertFalse(ok_low)
+        self.assertIn("BLOCKED_ORIG_CASHIN_BELOW_FEE_THRESHOLD", reason_low)
+
+        # AdaptiveHedgeController en estado NORMAL también bloquea acción 5 si orig_pl < 1.50 * orig_rt_fee
+        act_id, act_name = AdaptiveHedgeController.select_hedge_action(
+            "NORMAL",
+            "VOLATILITY_EXPANSION|NORMAL|FLAT|EDGE_WEAK|UNHEDGED",
+            self.base_ctx,
+            low_profit_econ,
+            {"edge_score": -0.10, "edge_delta": -0.20, "pnl_atr": 0.15},
+            self.base_pred,
+            self.store,
+        )
+        self.assertEqual(act_id, 0)
+        self.assertEqual(act_name, "NO_HEDGE")
+
+        # Cuando orig_pl >= 180, se autoriza la primera reducción parcial y se bloquea la segunda
+        high_profit_econ = dict(self.base_econ, orig_pl_sats=240)
+        ok_hi, reason_hi, _ = HedgeRiskManager.authorize_hedge_action(
+            "REDUCE_ORIGINAL_POSITION",
+            pair_ctx=self.base_ctx,
+            pair_econ=high_profit_econ,
+            portfolio_snap={"locked_margin_sats": 3000},
+            predictive_signal=self.base_pred,
+            account_equity_sats=30000,
+            available_balance_sats=20000,
+            locked_floor_sats=21000,
+            ind_5m=self.ind_5m,
+            now=self.now,
+        )
+        self.assertTrue(ok_hi)
+        self.assertEqual(reason_hi, "AUTHORIZED_REDUCE_ORIGINAL_POSITION")
+
+        used_red_ctx = dict(self.base_ctx, orig_reductions_count=1)
+        ok_max, reason_max, _ = HedgeRiskManager.authorize_hedge_action(
+            "REDUCE_ORIGINAL_POSITION",
+            pair_ctx=used_red_ctx,
+            pair_econ=high_profit_econ,
+            portfolio_snap={"locked_margin_sats": 3000},
+            predictive_signal=self.base_pred,
+            account_equity_sats=30000,
+            available_balance_sats=20000,
+            locked_floor_sats=21000,
+            ind_5m=self.ind_5m,
+            now=self.now,
+        )
+        self.assertFalse(ok_max)
+        self.assertEqual(reason_max, "BLOCKED_MAX_ORIG_REDUCTIONS_REACHED")
+
+    def test_09_edge_monitor_exploratory_negative_q_neutralization(self):
+        from edge_monitor import EdgeMonitor
+        trade_exp = {
+            "id": "eb046e42-test",
+            "side": "sell",
+            "margin": 42300,
+            "leverage": 20.0,
+            "price": 78000.0,
+            "stoploss": 78800.0,
+            "liquidation": 81500.0,
+            "pl": 221,
+        }
+        orig_meta = {"is_exploratory": True, "entry_time": self.now - 55.0}
+        pair_ctx = self.store.get_or_create_pair(trade_exp, orig_meta=orig_meta, now=self.now)
+        res = EdgeMonitor.evaluate_position_edge(
+            trade_exp,
+            pair_ctx,
+            {"price": 77960.0, "atr": 200.0, "rsi": 49.0, "ema_score": 0.0, "_now_ts": self.now},
+            {"rsi": 50.0, "ema_score": 0.0},
+            {"ema_score": 0.0},
+            perception={"vel_ema_atr": 0.0, "clv": 0.0, "override_side": None},
+            q_val_action=-1.1122,
+            now=self.now,
+            orig_meta=orig_meta,
+        )
+        self.assertEqual(res["q_cql"], -1.1122)
+        self.assertEqual(res["effective_q_cql"], 0.0)
+        self.assertGreater(res["edge_score"], -0.65)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

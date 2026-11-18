@@ -14,6 +14,10 @@ import sys
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TELEMETRY_PATH = os.path.join(BASE_DIR, "telemetry_live_testnet.json")
 SHADOW_LOG_PATH = os.path.join(BASE_DIR, "logs", "shadow_signals.jsonl")
+TRANSITIONS_TESTNET_PATH = os.path.join(BASE_DIR, "logs", "transitions_audit_testnet.jsonl")
+TRANSITIONS_MAIN_PATH = os.path.join(BASE_DIR, "logs", "transitions_audit.jsonl")
+MAINNET_BRAIN_PATH = os.path.join(BASE_DIR, "q_brain_advanced_lnm.json")
+TESTNET_BRAIN_PATH = os.path.join(BASE_DIR, "q_brain_testnet_lnm.json")
 
 CLOSED_SHADOW_STATUSES = ("CLOSED_TP", "CLOSED_TRAIL_PROFIT", "CLOSED_SL", "CLOSED_TIMEOUT")
 ROLLING_CERT_WINDOW = 20
@@ -85,6 +89,8 @@ def _summarize_records(records):
     trail_profit_count = 0
     sl_count = 0
     timeout_count = 0
+    shadow_virtual_count = 0
+    live_signet_count = 0
 
     for item in records:
         net_sats = item["net_sats"]
@@ -92,6 +98,7 @@ def _summarize_records(records):
         cost_sats = item["cost_sats"]
         norm_cost_1k = item["norm_cost_1k"]
         status = item["status"]
+        source = item.get("source", "SHADOW_VIRTUAL")
 
         net_sum += net_sats
         norm_1k_sum += norm_1k
@@ -107,6 +114,10 @@ def _summarize_records(records):
             sl_count += 1
         elif status == "CLOSED_TIMEOUT":
             timeout_count += 1
+        if source == "LIVE_SIGNET":
+            live_signet_count += 1
+        else:
+            shadow_virtual_count += 1
 
     win_rate = (float(wins) / float(total) * 100.0) if total > 0 else 0.0
     virtual_fer = (net_sum / cost_sum) if cost_sum > 0.0 else (1.0 if net_sum > 0.0 else 0.0)
@@ -124,7 +135,101 @@ def _summarize_records(records):
         "trail_profit_count": trail_profit_count,
         "sl_count": sl_count,
         "timeout_count": timeout_count,
+        "shadow_virtual_count": shadow_virtual_count,
+        "live_signet_count": live_signet_count,
     }
+
+
+def _is_synthetic_tid(trade_id):
+    tid_str = str(trade_id or "").strip()
+    if not tid_str or tid_str.lower() in ("none", "null"):
+        return True
+    if tid_str.startswith(("sim-", "test-", "trade-", "mock-", "shadow-")):
+        return True
+    return False
+
+
+def _load_live_testnet_transitions():
+    """
+    Lee cierres reales de Testnet desde logs/transitions_audit_testnet.jsonl y
+    logs/transitions_audit.jsonl excluyendo registros sintéticos y de Mainnet.
+    """
+    mainnet_ids = set()
+    testnet_ids = set()
+    if os.path.exists(MAINNET_BRAIN_PATH):
+        try:
+            with open(MAINNET_BRAIN_PATH, "r", encoding="utf-8") as fh:
+                mb = json.load(fh)
+                if isinstance(mb, dict):
+                    mainnet_ids = set(str(x) for x in (mb.get("processed_closed_trade_ids") or []))
+        except Exception:
+            pass
+    if os.path.exists(TESTNET_BRAIN_PATH):
+        try:
+            with open(TESTNET_BRAIN_PATH, "r", encoding="utf-8") as fh:
+                tb = json.load(fh)
+                if isinstance(tb, dict):
+                    testnet_ids = set(str(x) for x in (tb.get("processed_closed_trade_ids") or []))
+        except Exception:
+            pass
+
+    seen_ids = set()
+    live_records = []
+    for t_path in (TRANSITIONS_TESTNET_PATH, TRANSITIONS_MAIN_PATH):
+        if not os.path.exists(t_path):
+            continue
+        try:
+            with open(t_path, "r", encoding="utf-8") as fh:
+                for raw_line in fh:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    if not isinstance(rec, dict):
+                        continue
+                    tid = str(rec.get("trade_id") or "").strip()
+                    if _is_synthetic_tid(tid) or tid in seen_ids:
+                        continue
+                    env_tag = str(rec.get("env") or "").strip().lower()
+                    if env_tag == "mainnet":
+                        continue
+                    if not env_tag and tid in mainnet_ids and tid not in testnet_ids:
+                        continue
+
+                    seen_ids.add(tid)
+                    net_sats = _safe_float(rec.get("net_realized_sats"), 0.0)
+                    cost_sats = max(0.0, _safe_float(rec.get("fee_sats"), 0.0))
+                    raw_margin = _safe_float(rec.get("margin_sats"), 0.0)
+                    if raw_margin < CANONICAL_REF_MARGIN_SATS:
+                        econ_r = abs(_safe_float(rec.get("econ_reward_sats"), 0.0))
+                        shaped_r = abs(_safe_float(rec.get("shaped_reward"), 0.0))
+                        if 0.01 < shaped_r < 1.99 and econ_r > 0.0:
+                            raw_margin = (econ_r / (shaped_r * 100.0)) * CANONICAL_REF_MARGIN_SATS
+                        elif cost_sats > 0.0:
+                            raw_margin = max(CANONICAL_REF_MARGIN_SATS, cost_sats * 25.0)
+                    margin_sats = max(CANONICAL_REF_MARGIN_SATS, raw_margin)
+                    scale_eta = CANONICAL_REF_MARGIN_SATS / margin_sats
+                    norm_1k = net_sats * scale_eta
+                    norm_cost_1k = cost_sats * scale_eta
+                    status = "CLOSED_TP" if net_sats > 0.0 else "CLOSED_SL"
+
+                    live_records.append({
+                        "id": tid,
+                        "status": status,
+                        "source": "LIVE_SIGNET",
+                        "timestamp": int(_safe_float(rec.get("timestamp"), 0.0)),
+                        "net_sats": net_sats,
+                        "norm_1k": norm_1k,
+                        "cost_sats": cost_sats,
+                        "norm_cost_1k": norm_cost_1k,
+                        "margin_sats": margin_sats,
+                    })
+        except OSError:
+            continue
+    return live_records
 
 
 def load_shadow_accounting(path, window_size=ROLLING_CERT_WINDOW):
@@ -157,61 +262,71 @@ def load_shadow_accounting(path, window_size=ROLLING_CERT_WINDOW):
         "rolling_trail_profit_count": 0,
         "rolling_sl_count": 0,
         "rolling_timeout_count": 0,
+        "rolling_shadow_virtual_count": 0,
+        "rolling_live_signet_count": 0,
         "global_summary": empty_summary,
         "rolling_summary": empty_summary,
     }
-    if not os.path.exists(path):
-        return stats
-
-    stats["shadow_log_found"] = True
     closed_records = []
+    if os.path.exists(path):
+        stats["shadow_log_found"] = True
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                for raw_line in fh:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if not isinstance(rec, dict):
+                        continue
+                    status = str(rec.get("status", "")).strip()
+                    if status not in CLOSED_SHADOW_STATUSES:
+                        continue
 
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            for raw_line in fh:
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if not isinstance(rec, dict):
-                    continue
-                status = str(rec.get("status", "")).strip()
-                if status not in CLOSED_SHADOW_STATUSES:
-                    continue
+                    net_sats = _safe_float(rec.get("net_realized_sats"), 0.0)
+                    margin_sats = max(CANONICAL_REF_MARGIN_SATS, _safe_float(rec.get("margin_sats"), CANONICAL_REF_MARGIN_SATS))
+                    scale_eta = CANONICAL_REF_MARGIN_SATS / margin_sats
 
-                net_sats = _safe_float(rec.get("net_realized_sats"), 0.0)
-                margin_sats = max(CANONICAL_REF_MARGIN_SATS, _safe_float(rec.get("margin_sats"), CANONICAL_REF_MARGIN_SATS))
-                scale_eta = CANONICAL_REF_MARGIN_SATS / margin_sats
+                    if rec.get("norm_net_sats_1k") is not None:
+                        norm_1k = _safe_float(rec.get("norm_net_sats_1k"), net_sats * scale_eta)
+                    else:
+                        norm_1k = net_sats * scale_eta
 
-                if rec.get("norm_net_sats_1k") is not None:
-                    norm_1k = _safe_float(rec.get("norm_net_sats_1k"), net_sats * scale_eta)
-                else:
-                    norm_1k = net_sats * scale_eta
+                    cost_sats = max(0.0, _safe_float(rec.get("total_cost_sats"), 0.0))
+                    if cost_sats <= 0.0:
+                        lev = max(1.0, _safe_float(rec.get("leverage"), 1.0))
+                        cost_sats = margin_sats * lev * 0.002
+                    norm_cost_1k = cost_sats * scale_eta
 
-                cost_sats = max(0.0, _safe_float(rec.get("total_cost_sats"), 0.0))
-                if cost_sats <= 0.0:
-                    lev = max(1.0, _safe_float(rec.get("leverage"), 1.0))
-                    cost_sats = margin_sats * lev * 0.002
-                norm_cost_1k = cost_sats * scale_eta
-
-                closed_records.append({
-                    "id": str(rec.get("id", "")),
-                    "status": status,
-                    "net_sats": net_sats,
-                    "norm_1k": norm_1k,
-                    "cost_sats": cost_sats,
-                    "norm_cost_1k": norm_cost_1k,
-                    "margin_sats": margin_sats,
-                })
-    except OSError:
-        return stats
+                    closed_records.append({
+                        "id": str(rec.get("id", "")),
+                        "status": status,
+                        "source": "SHADOW_VIRTUAL",
+                        "timestamp": int(_safe_float(rec.get("closed_at") or rec.get("timestamp"), 0.0)),
+                        "net_sats": net_sats,
+                        "norm_1k": norm_1k,
+                        "cost_sats": cost_sats,
+                        "norm_cost_1k": norm_cost_1k,
+                        "margin_sats": margin_sats,
+                    })
+        except OSError:
+            return stats
 
     global_sum = _summarize_records(closed_records)
     win_n = max(1, int(window_size))
-    rolling_20 = closed_records[-win_n:]
+    combined_for_rolling = list(closed_records)
+    if len(combined_for_rolling) < win_n:
+        live_signet_records = _load_live_testnet_transitions()
+        if live_signet_records:
+            needed = win_n - len(combined_for_rolling)
+            supplement = live_signet_records[-needed:]
+            combined_for_rolling = supplement + combined_for_rolling
+            combined_for_rolling.sort(key=lambda r: int(r.get("timestamp", 0)))
+
+    rolling_20 = combined_for_rolling[-win_n:]
     rolling_sum = _summarize_records(rolling_20)
 
     stats.update({
@@ -237,6 +352,8 @@ def load_shadow_accounting(path, window_size=ROLLING_CERT_WINDOW):
         "rolling_trail_profit_count": rolling_sum["trail_profit_count"],
         "rolling_sl_count": rolling_sum["sl_count"],
         "rolling_timeout_count": rolling_sum["timeout_count"],
+        "rolling_shadow_virtual_count": rolling_sum["shadow_virtual_count"],
+        "rolling_live_signet_count": rolling_sum["live_signet_count"],
         "global_summary": global_sum,
         "rolling_summary": rolling_sum,
     })
@@ -296,8 +413,10 @@ def print_report(tel, shadow, checks):
     print(f"  {'-' * 34}-+-{'-' * 22}-+-{'-' * 20}")
     print(
         f"  {'Rolling_20_Trades':<34} | {shadow['rolling_window_size']:<22d} | "
-        f"TP:{shadow['rolling_tp_count']} TR:{shadow['rolling_trail_profit_count']} "
-        f"SL:{shadow['rolling_sl_count']} TO:{shadow['rolling_timeout_count']}"
+        f"LIVE_SIGNET:{shadow.get('rolling_live_signet_count', 0)} "
+        f"SHADOW_VIRTUAL:{shadow.get('rolling_shadow_virtual_count', 0)} "
+        f"(TP:{shadow['rolling_tp_count']} TR:{shadow['rolling_trail_profit_count']} "
+        f"SL:{shadow['rolling_sl_count']} TO:{shadow['rolling_timeout_count']})"
     )
     print(
         f"  {'Rolling_20_Net_PnL_Sats':<34} | {shadow['rolling_net_pnl_sats']:<+22.1f} | "

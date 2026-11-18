@@ -185,6 +185,9 @@ class HedgeStateStore:
                 "adverse_streak": 0,
                 "recovery_streak": 0,
                 "hedges_opened_count": 0,
+                "orig_reductions_count": 0,
+                "hedge_reductions_count": 0,
+                "is_exploratory": bool((orig_meta or {}).get("is_exploratory", False)),
                 "hedge_trade_id": None,
                 "hedge_side": None,
                 "hedge_margin_sats": 0,
@@ -215,6 +218,12 @@ class HedgeStateStore:
             if "orig_opened_at" not in p:
                 p["orig_opened_at"] = float((orig_meta or {}).get("entry_time") or p.get("state_entered_at", now))
             p.setdefault("hedges_opened_count", 0)
+            p.setdefault("orig_reductions_count", 0)
+            p.setdefault("hedge_reductions_count", 0)
+            if isinstance(orig_meta, dict) and "is_exploratory" in orig_meta:
+                p["is_exploratory"] = bool(orig_meta["is_exploratory"])
+            else:
+                p.setdefault("is_exploratory", False)
             p.setdefault("hedge_entry_fee_sats", 0)
             p.setdefault("hedge_opened_at", 0.0)
         return self.pairs[tid]

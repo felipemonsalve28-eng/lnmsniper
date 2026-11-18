@@ -842,6 +842,143 @@ def run_all_tests() -> None:
 
     print("✅ TEST 11 (Invarianza Canónica 1k-sat, Aislamiento Mainnet/Testnet y Shadow Breakeven/Trailing Lock): PASÓ.")
 
+    # -------------------------------------------------------------------------
+    # ESCENARIO 12: Parches 1–5 (Forced Edge Viability, Exploratory Q Neutralization,
+    #               Fee Threshold en Cash-In, Discard Entropy y Clock Offset 401)
+    # -------------------------------------------------------------------------
+    from edge_monitor import EdgeMonitor
+    from guardian_execution_core import ResilientLNMClient
+    from lnm_sniper_v6_advanced import (
+        LNMarketsClient,
+        compute_live_edge,
+        execute_strategy_guardian,
+    )
+
+    now_12 = time.time()
+
+    # 12.1: Bloqueo de FORCED EDGE EXIT en zona muerta de comisiones (pnl_atr = +0.20, ganancia bruta < comisión round-trip)
+    # Trade con margen 39,000 sats y lev 20x -> notional = 780,000 -> rt_fee_sats = 1,560 sats.
+    # Ganancia bruta = +500 sats (< 1,560 sats round-trip fee), pnl_atr = +0.20 ((78040 - 78000)/200).
+    class _MockCloseClient12:
+        def __init__(self):
+            self.closed_ids = []
+        def close_trade(self, tid):
+            self.closed_ids.append(str(tid))
+            return {"id": str(tid), "closed": True}
+        def get_running_trades(self, force_refresh=False):
+            return []
+
+    with tempfile.TemporaryDirectory() as tmpdir12:
+        b_12 = AutonomousGoalBrain(filename=os.path.join(tmpdir12, "b12.json"), explorer_mode=True)
+        deadzone_trade = {
+            "id": "c5c037bc-deadzone",
+            "side": "buy",
+            "margin": 39000,
+            "leverage": 20.0,
+            "price": 78000.0,
+            "stoploss": 77200.0,
+            "liquidation": 74500.0,
+            "pl": 500,
+        }
+        deadzone_meta = {
+            "action": 2,
+            "style": "REVERSION",
+            "state": "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR",
+            "entry_time": now_12 - 150.0,
+            "edge_deg_streak": 3,
+        }
+        ind_5m_dz = {
+            "price": 78040.0,
+            "atr": 200.0,
+            "atr_pct": 0.0025,
+            "regime": "RANGE_NORMAL",
+            "rsi": 52.0,
+            "bb_pos": 0.50,
+            "_now_ts": now_12,
+        }
+        ind_15m_dz = {"ema9": 78000.0, "ema21": 78000.0, "rsi": 50.0}
+        cli_12 = _MockCloseClient12()
+        closed_dz = execute_strategy_guardian(
+            cli_12, b_12, deadzone_trade, ind_5m_dz, ind_15m_dz,
+            deadzone_meta, "NORMAL", edge_score=-0.85, perception={"vel_ema_atr": 0.0},
+            current_dd_pct=0.0, is_hedged=False,
+        )
+        assert closed_dz is False, "FORCED EDGE EXIT no debe liquidar trade en ganancia bruta dentro de zona muerta de comisiones"
+        assert len(cli_12.closed_ids) == 0
+        assert deadzone_meta["edge_deg_streak"] == 3  # incrementó a 4 y Regla 2 restó 1 -> 3
+
+        # 12.2: Neutralización de Q < 0 en edge_monitor.py y compute_live_edge para entradas exploratorias (< 180s)
+        st_exp = "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+        b_12.q_table[st_exp] = [0.0, -0.5, -0.5, -0.5, -0.5, -0.5, -0.5, -0.5, -1.1122]
+        b_12.state_visits[st_exp] = 30
+        exp_meta = {"is_exploratory": True, "entry_time": now_12 - 55.0}
+        em_res = EdgeMonitor.evaluate_position_edge(
+            deadzone_trade,
+            {"orig_opened_at": now_12 - 55.0, "is_exploratory": True},
+            ind_5m_dz,
+            ind_15m_dz,
+            {"ema_score": 0.0},
+            perception={"vel_ema_atr": 0.0, "clv": 0.0},
+            q_val_action=-1.1122,
+            now=now_12,
+            orig_meta=exp_meta,
+        )
+        assert em_res["q_cql"] == -1.1122 and em_res["effective_q_cql"] == 0.0
+        assert em_res["edge_score"] >= -0.65
+
+        live_edge_res = compute_live_edge(
+            brain=b_12,
+            state=st_exp,
+            action=8,
+            ind_5m=ind_5m_dz,
+            perception={"override_side": None},
+            margin_sats=39000,
+            leverage=20.0,
+            entry_price=78000.0,
+            simulated_entry=False,
+            orig_meta=exp_meta,
+            now=now_12,
+        )
+        assert live_edge_res["q_cql"] < -1.0 and live_edge_res["effective_q_cql"] == 0.0
+        assert live_edge_res["edge_score"] >= -0.65
+
+        # 12.3: Bloqueo de REDUCE_ORIGINAL_POSITION cuando orig_pl < 1.50 * orig_rt_fee
+        ok_red, reason_red, _ = HedgeRiskManager.authorize_hedge_action(
+            "REDUCE_ORIGINAL_POSITION",
+            pair_ctx={"orig_notional_sats": 780000, "orig_reductions_count": 0, "cooldown_until": 0.0},
+            pair_econ={"orig_pl_sats": 33, "has_active_hedge": False},
+            portfolio_snap={"locked_margin_sats": 39000},
+            predictive_signal={},
+            account_equity_sats=500000,
+            available_balance_sats=400000,
+            locked_floor_sats=300000,
+            ind_5m=ind_5m_dz,
+            now=now_12,
+        )
+        assert ok_red is False and "BLOCKED_ORIG_CASHIN_BELOW_FEE_THRESHOLD" in reason_red
+
+        # 12.4: Reversión de muestra de entropía con discard_last_action_decision() ante bloqueo de Anti-Stacking
+        b_12.supervisor.action_window.clear()
+        b_12.supervisor.low_entropy_streak = 0
+        for act_seed in (1, 2, 3, 4, 5, 6, 7, 8):
+            b_12.supervisor.record_policy_decision(act_seed)
+        pre_len = len(b_12.supervisor.action_window)
+        b_12.supervisor.record_policy_decision(2)
+        assert len(b_12.supervisor.action_window) == pre_len + 1
+        b_12.supervisor.discard_last_action_decision()
+        assert len(b_12.supervisor.action_window) == pre_len
+
+        # 12.5: Auto-sincronización de _server_time_offset_ms en ResilientLNMClient / LNMarketsClient ante HTTP 401 outdated timestamp
+        rc = LNMarketsClient("k", "s", "p")
+        assert rc._server_time_offset_ms == 0
+        fake_srv_ms = int(time.time() * 1000) + 4200
+        err_401 = f'{{"message":"outdated timestamp: request timestamp = {fake_srv_ms - 4200}, server timestamp = {fake_srv_ms}"}}'
+        synced = rc._sync_clock_offset_from_error_or_headers(err_401, {})
+        assert synced is True
+        assert abs(rc._server_time_offset_ms - 4200) <= 500
+
+    print("✅ TEST 12 (Parches 1–5: Viabilidad Neta Forced Edge, Q Exploratorio Neutralizado, Umbral Cash-In, Entropía y Clock Sync 401): PASÓ.")
+
     print("=" * 80)
     print("🏆 CERTIFICACIÓN COMPLETA: TODOS LOS ESCENARIOS SUPERADOS AL 100% 🏆")
     print("=" * 80)

@@ -34,6 +34,7 @@ import json
 import logging
 import math
 import os
+import sys
 import threading
 import time
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
@@ -163,6 +164,7 @@ class LearningQualitySupervisor:
 
         # D. Ventana Entropía de la Política (100 decisiones)
         self.policy_decisions_window: Deque[int] = collections.deque(maxlen=ent_win)
+        self.action_window: Deque[int] = self.policy_decisions_window
         self.low_entropy_streak: int = 0
         self.entropy_recovery_streak: int = 0
         self.policy_collapse_detected: bool = False
@@ -606,6 +608,55 @@ class LearningQualitySupervisor:
                                 message=f"Diversidad de politica restaurada (H_norm={h_norm:.3f}).",
                             )
             return metrics
+
+    def discard_last_action_decision(self) -> None:
+        """Revierte la última muestra de entropía cuando un filtro operativo (ej. Anti-Stacking) veta el despacho."""
+        with self._lock:
+            if self.action_window:
+                self.action_window.pop()
+                if self.low_entropy_streak > 0:
+                    self.low_entropy_streak -= 1
+
+    @staticmethod
+    def append_transition_audit_jsonl(entry: Dict[str, Any], env_mode: Optional[str] = None) -> str:
+        """
+        Escribe la transición en logs/transitions_audit_sim.jsonl si proviene de
+        una simulación o test unitario, o en logs/transitions_audit_{env}.jsonl
+        y logs/transitions_audit.jsonl cuando es un cierre real con UUID.
+        """
+        try:
+            log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            trade_id = entry.get("trade_id") if isinstance(entry, dict) else None
+            tid_str = str(trade_id or "").strip()
+            if tid_str.lower() == "none":
+                tid_str = ""
+            is_synthetic = (
+                not tid_str
+                or tid_str.startswith(("sim-", "test-", "trade-"))
+                or "unittest" in sys.modules
+                or "pytest" in sys.modules
+            )
+            if is_synthetic:
+                sim_path = os.path.join(log_dir, "transitions_audit_sim.jsonl")
+                with open(sim_path, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(entry, default=str) + "\n")
+                return sim_path
+
+            env_val = str(os.getenv("ENV_MODE") or env_mode or "mainnet").strip().lower()
+            if env_val not in ("mainnet", "testnet"):
+                env_val = "testnet" if "test" in env_val else "mainnet"
+            payload = dict(entry)
+            payload["env"] = env_val
+            line = json.dumps(payload, default=str) + "\n"
+            env_path = os.path.join(log_dir, f"transitions_audit_{env_val}.jsonl")
+            main_path = os.path.join(log_dir, "transitions_audit.jsonl")
+            for p in (env_path, main_path):
+                with open(p, "a", encoding="utf-8") as fh:
+                    fh.write(line)
+            return main_path
+        except Exception:
+            return ""
 
     # =========================================================================
     # E. MONITOREO EN VIVO DE MFE / MAE POR POSICIÓN ABIERTA

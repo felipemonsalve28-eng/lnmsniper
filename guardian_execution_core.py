@@ -427,6 +427,39 @@ class ResilientLNMClient:
     TIMEOUT_POST_CRITICAL = (3.5, 8.0)
     TIMEOUT_PUT_CRITICAL = (3.0, 6.5)
     _CONCURRENCY_SEM = threading.BoundedSemaphore(4)
+    _server_time_offset_ms: int = 0
+
+    def __init__(self, key="", secret="", passphrase="", base_url=None):
+        self._server_time_offset_ms: int = 0
+        self.key = key
+        self.secret = secret
+        self.passphrase = passphrase
+        self.base_url = base_url
+
+    def _sync_clock_offset_from_error_or_headers(self, err_text: str = "", headers: dict = None) -> bool:
+        """Extrae el timestamp del servidor LN Markets ante HTTP 401 (outdated timestamp) y calibra el offset en RAM."""
+        import re
+        from email.utils import parsedate_to_datetime
+        local_ms = int(time.time() * 1000)
+        if err_text:
+            m = re.search(r"server timestamp\s*=\s*(\d{12,14})", str(err_text), re.IGNORECASE)
+            if m:
+                srv_ms = int(m.group(1))
+                self._server_time_offset_ms = srv_ms - local_ms
+                ResilientLNMClient._server_time_offset_ms = self._server_time_offset_ms
+                return True
+        if headers:
+            date_hdr = headers.get("Date") or headers.get("date")
+            if date_hdr:
+                try:
+                    dt = parsedate_to_datetime(date_hdr)
+                    srv_ms = int(dt.timestamp() * 1000)
+                    self._server_time_offset_ms = srv_ms - local_ms
+                    ResilientLNMClient._server_time_offset_ms = self._server_time_offset_ms
+                    return True
+                except Exception:
+                    pass
+        return False
 
     @staticmethod
     def build_session(user_agent="LNMSniper/7.3-Dual"):

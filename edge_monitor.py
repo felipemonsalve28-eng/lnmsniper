@@ -28,8 +28,31 @@ class EdgeMonitor:
         perception=None,
         q_val_action=0.0,
         now=None,
+        orig_meta=None,
     ):
-        now = float(now if now is not None else time.time())
+        pair_ctx = pair_ctx if isinstance(pair_ctx, dict) else {}
+        trade = trade if isinstance(trade, dict) else {}
+        ind_5m = ind_5m if isinstance(ind_5m, dict) else {}
+        now_ts = float(now if now is not None else ((ind_5m or {}).get("_now_ts") or time.time()))
+        now = now_ts
+        meta_src = orig_meta if isinstance(orig_meta, dict) else {}
+        opened_ts = float(
+            meta_src.get("entry_time")
+            or meta_src.get("opened_at")
+            or pair_ctx.get("entry_time")
+            or pair_ctx.get("opened_at")
+            or pair_ctx.get("orig_opened_at")
+            or trade.get("entry_time")
+            or trade.get("opened_at")
+            or now_ts
+        )
+        trade_age_sec = max(0.0, now_ts - opened_ts)
+        is_exploratory = bool(
+            meta_src.get("is_exploratory", False)
+            or pair_ctx.get("is_exploratory", False)
+            or trade.get("is_exploratory", False)
+        )
+
         side = str(trade.get("side") or pair_ctx.get("orig_side") or "buy").lower()
         is_long = (side == "buy")
 
@@ -97,9 +120,16 @@ class EdgeMonitor:
 
         struct_penalty = -0.22 if structure_broken else 0.0
 
-        # 4. Score compuesto de Edge [-1.0, +1.0]
+        # 4. Score compuesto de Edge [-1.0, +1.0] con neutralización de sesgo Q exploratorio
+        q_cql = float(q_val_action)
+        if q_cql < 0.0 and (is_exploratory or (trade_age_sec < 180.0 and pnl_atr > -0.45)):
+            effective_q_cql = 0.0
+        else:
+            effective_q_cql = q_cql
+        q_component = 0.30 * float(effective_q_cql)
+
         raw_edge = (
-            (0.30 * float(q_val_action))
+            q_component
             + (0.22 * max(-1.5, min(1.5, pnl_atr)))
             + (0.20 * mtf_trend_score)
             + (0.14 * max(-1.0, min(1.0, rsi_aligned)))
@@ -109,6 +139,10 @@ class EdgeMonitor:
             + struct_penalty
         )
         edge_score = round(max(-1.0, min(1.0, raw_edge)), 4)
+        degradation_score = round(max(0.0, -float(edge_score)), 4)
+        if -0.35 < pnl_atr < 0.45 and trade_age_sec < 90.0:
+            edge_score = round(max(float(edge_score), -0.65), 4)
+            degradation_score = round(min(float(degradation_score), 0.65), 4)
 
         # 5. Velocidad de deterioro del Edge respecto a muestras recientes
         hist = pair_ctx.setdefault("edge_history", [])
@@ -166,4 +200,41 @@ class EdgeMonitor:
             "notional_sats": int(round(notional_sats)),
             "margin_sats": margin_sats,
             "leverage": leverage,
+            "q_cql": round(q_cql, 4),
+            "effective_q_cql": round(effective_q_cql, 4),
+            "q_component": round(q_component, 4),
+            "degradation_score": degradation_score,
+            "is_exploratory": bool(is_exploratory),
+            "trade_age_sec": round(trade_age_sec, 2),
         }
+
+    @classmethod
+    def evaluate_trade_edge(
+        cls,
+        trade=None,
+        pair_ctx=None,
+        ind_5m=None,
+        ind_15m=None,
+        ind_1h=None,
+        perception=None,
+        q_val_action=0.0,
+        now=None,
+        orig_meta=None,
+        current_q=None,
+        **kwargs,
+    ):
+        q_val = float(current_q if current_q is not None else q_val_action)
+        return cls.evaluate_position_edge(
+            trade=trade or {},
+            pair_ctx=pair_ctx if isinstance(pair_ctx, dict) else (orig_meta if isinstance(orig_meta, dict) else {}),
+            ind_5m=ind_5m or {},
+            ind_15m=ind_15m or {},
+            ind_1h=ind_1h or {},
+            perception=perception,
+            q_val_action=q_val,
+            now=now,
+            orig_meta=orig_meta,
+        )
+
+
+EdgeDecayMonitor = EdgeMonitor

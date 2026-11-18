@@ -203,7 +203,13 @@ class AdaptiveHedgeController:
 
         # 1. Estados tranquilos sin cobertura
         if state in ("NORMAL", "WARNING") and not has_hedge:
-            if orig_pl >= 60 and float(edge_info.get("edge_delta", 0.0)) < -0.12:
+            orig_notional = max(1000, int(pair_ctx.get("orig_notional_sats", 1000)))
+            orig_rt_fee = max(20, int(round(orig_notional * 0.0020)))
+            can_reduce_orig = (
+                int(pair_ctx.get("orig_reductions_count", 0)) < 1
+                and orig_pl >= max(60, int(round(orig_rt_fee * 1.50)))
+            )
+            if can_reduce_orig and float(edge_info.get("edge_delta", 0.0)) < -0.12:
                 valid_ids = [0, 5]
                 heuristic_pref = 5
             else:
@@ -289,7 +295,7 @@ class AdaptiveHedgeController:
         )
         edge_info = EdgeMonitor.evaluate_position_edge(
             orig_trade, pair_ctx, ind_5m, ind_15m, ind_1h,
-            perception=perception, q_val_action=q_val_main, now=now
+            perception=perception, q_val_action=q_val_main, now=now, orig_meta=orig_meta
         )
         pred_sig = PredictiveHedgeEngine.forecast_adverse_risk(
             edge_info, ind_5m, ind_15m, ind_1h, perception=perception

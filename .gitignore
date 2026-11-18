@@ -10,6 +10,8 @@ __pycache__/
 # Logs del sistema
 *.log
 logs/
+logs/transitions_audit_*.jsonl
+telemetry_live_*.json
 
 # Capturas y temporales
 *.png

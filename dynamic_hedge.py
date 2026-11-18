@@ -133,12 +133,17 @@ class DynamicHedgeExecutor:
         # ------------------------------------------------------------------
         if act == "REDUCE_HEDGE" and hedge_tid:
             h_pl = int((hedge_trade or {}).get("pl") or 0)
-            if h_pl >= 40 and hasattr(client, "cash_in"):
-                cash_amt = max(20, h_pl // 2)
+            hedge_notional = max(1000, int(pair_ctx.get("hedge_notional_sats", 1000)))
+            hedge_rt_fee = max(20, int(round(hedge_notional * 2.0 * cls.TAKER_FEE)))
+            min_hedge_pl = max(50, int(round(hedge_rt_fee * 1.35)))
+            min_cash_amt = max(50, int(round(hedge_rt_fee * 0.55)))
+            if int(pair_ctx.get("hedge_reductions_count", 0)) < 1 and h_pl >= min_hedge_pl and hasattr(client, "cash_in"):
+                cash_amt = max(min_cash_amt, h_pl // 2)
                 try:
                     client.cash_in(hedge_tid, cash_amt)
                     pair_ctx["cumulative_cashed_in_sats"] = int(pair_ctx.get("cumulative_cashed_in_sats", 0)) + cash_amt
-                    pair_ctx["cooldown_until"] = now + 20.0
+                    pair_ctx["hedge_reductions_count"] = int(pair_ctx.get("hedge_reductions_count", 0)) + 1
+                    pair_ctx["cooldown_until"] = now + 60.0
                     hedge_store.hedge_metrics["total_cashed_in_sats"] = int(hedge_store.hedge_metrics.get("total_cashed_in_sats", 0)) + cash_amt
                     hedge_store.dirty = True
                     return {
@@ -149,8 +154,8 @@ class DynamicHedgeExecutor:
                     }
                 except Exception:
                     pass
-            # Fallback: si no aplica cash_in, cerrar la cobertura parcial en beneficio
-            if h_pl > 15:
+            # Fallback: si no aplica cash_in, cerrar la cobertura parcial en beneficio si cubre fricción
+            if h_pl >= hedge_rt_fee:
                 act = "CLOSE_HEDGE"
             else:
                 return {"executed": False, "action": "REDUCE_HEDGE", "reason": "HEDGE_PL_INSUFFICIENT_FOR_REDUCE"}
@@ -203,12 +208,17 @@ class DynamicHedgeExecutor:
         # ------------------------------------------------------------------
         if act == "REDUCE_ORIGINAL_POSITION" and orig_tid:
             orig_pl = int(orig_trade.get("pl") or 0)
-            if orig_pl >= 40 and hasattr(client, "cash_in"):
-                cash_amt = max(20, orig_pl // 2)
+            orig_notional = max(1000, int(pair_ctx.get("orig_notional_sats", 1000)))
+            orig_rt_fee = max(20, int(round(orig_notional * 2.0 * cls.TAKER_FEE)))
+            min_orig_pl = max(60, int(round(orig_rt_fee * 1.50)))
+            min_cash_amt = max(50, int(round(orig_rt_fee * 0.55)))
+            if int(pair_ctx.get("orig_reductions_count", 0)) < 1 and orig_pl >= min_orig_pl and hasattr(client, "cash_in"):
+                cash_amt = max(min_cash_amt, orig_pl // 2)
                 try:
                     client.cash_in(orig_tid, cash_amt)
                     pair_ctx["cumulative_cashed_in_sats"] = int(pair_ctx.get("cumulative_cashed_in_sats", 0)) + cash_amt
-                    pair_ctx["cooldown_until"] = now + 20.0
+                    pair_ctx["orig_reductions_count"] = int(pair_ctx.get("orig_reductions_count", 0)) + 1
+                    pair_ctx["cooldown_until"] = now + 60.0
                     hedge_store.dirty = True
                     return {
                         "executed": True,
@@ -219,7 +229,7 @@ class DynamicHedgeExecutor:
                 except Exception:
                     pass
             # Si está en pérdida moderada, acercar Take Profit a breakeven para salida rápida en rebote
-            if hasattr(client, "update_takeprofit"):
+            if orig_pl < 0 and hasattr(client, "update_takeprofit"):
                 orig_entry = float(orig_trade.get("price") or orig_trade.get("entryPrice") or ind_5m.get("price", 0.0))
                 orig_side = str(orig_trade.get("side", "buy")).lower()
                 be_tp = int(round(orig_entry * (1.0022 if orig_side == "buy" else 0.9978)))

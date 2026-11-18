@@ -51,10 +51,34 @@ class HedgeRiskManager:
         if act == "NO_HEDGE":
             return True, "NO_HEDGE_OK", {}
 
-        # Acciones de reducción o cierre siempre están permitidas salvo cooldown anti-duplicado
+        # Acciones de reducción o cierre siempre están permitidas salvo cooldown anti-duplicado y umbral mínimo de fricción
         if act in ("CLOSE_HEDGE", "CLOSE_ORIGINAL_POSITION", "REDUCE_HEDGE", "REDUCE_ORIGINAL_POSITION"):
             if act == "CLOSE_HEDGE" and not pair_econ.get("has_active_hedge", False):
                 return False, "BLOCKED_NO_ACTIVE_HEDGE_TO_CLOSE", {}
+            if act == "REDUCE_ORIGINAL_POSITION":
+                orig_pl = int(pair_econ.get("orig_pl_sats", 0))
+                orig_notional = max(1000, int(pair_ctx.get("orig_notional_sats", 1000)))
+                orig_rt_fee = max(20, int(round(orig_notional * 2.0 * cls.TAKER_FEE)))
+                min_orig_pl_for_cashin = max(60, int(round(orig_rt_fee * 1.50)))
+                if int(pair_ctx.get("orig_reductions_count", 0)) >= 1:
+                    return False, "BLOCKED_MAX_ORIG_REDUCTIONS_REACHED", {}
+                if orig_pl < min_orig_pl_for_cashin:
+                    return False, f"BLOCKED_ORIG_CASHIN_BELOW_FEE_THRESHOLD(pl={orig_pl}<{min_orig_pl_for_cashin})", {}
+                cooldown_until = float(pair_ctx.get("cooldown_until", 0.0))
+                if now < cooldown_until:
+                    return False, f"BLOCKED_HEDGE_COOLDOWN({cooldown_until - now:.1f}s)", {}
+            if act == "REDUCE_HEDGE":
+                hedge_pl = int(pair_econ.get("hedge_pl_sats", 0))
+                hedge_notional = max(1000, int(pair_ctx.get("hedge_notional_sats", 1000)))
+                hedge_rt_fee = max(20, int(round(hedge_notional * 2.0 * cls.TAKER_FEE)))
+                min_hedge_pl_for_cashin = max(50, int(round(hedge_rt_fee * 1.35)))
+                if int(pair_ctx.get("hedge_reductions_count", 0)) >= 1:
+                    return False, "BLOCKED_MAX_HEDGE_REDUCTIONS_REACHED", {}
+                if hedge_pl < min_hedge_pl_for_cashin:
+                    return False, f"BLOCKED_HEDGE_CASHIN_BELOW_FEE_THRESHOLD(pl={hedge_pl}<{min_hedge_pl_for_cashin})", {}
+                cooldown_until = float(pair_ctx.get("cooldown_until", 0.0))
+                if now < cooldown_until:
+                    return False, f"BLOCKED_HEDGE_COOLDOWN({cooldown_until - now:.1f}s)", {}
             return True, f"AUTHORIZED_{act}", {}
 
         # A partir de aquí se evalúan PARTIAL_HEDGE e INCREASE_HEDGE (acciones que consumen margen/fees)

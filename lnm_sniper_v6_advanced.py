@@ -914,6 +914,7 @@ class AutonomousGoalBrain:
         self.transition_audit_log = deque(maxlen=500)
         self._last_td_error = 0.0
         self._last_delta_q = 0.0
+        self._last_decision_exploratory = False
 
         # Motor de supervisión de calidad del aprendizaje en tiempo real
         self.supervisor = LearningQualitySupervisor(
@@ -987,11 +988,7 @@ class AutonomousGoalBrain:
     @staticmethod
     def _append_transition_audit_jsonl(entry: dict):
         try:
-            log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-            os.makedirs(log_dir, exist_ok=True)
-            log_path = os.path.join(log_dir, "transitions_audit.jsonl")
-            with open(log_path, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(entry, default=str) + "\n")
+            LearningQualitySupervisor.append_transition_audit_jsonl(entry, env_mode=Config.ENV_MODE)
         except Exception:
             pass
 
@@ -1529,12 +1526,14 @@ class AutonomousGoalBrain:
             allowed_actions = [0, 1, 2, 3, 4, 5, 6, 7, 8]
 
         # F5: Supresión estricta de aperturas aleatorias en Mainnet (mainnet_epsilon=0.0 por defecto)
+        self._last_decision_exploratory = False
         if self.explorer_mode:
             self.alpha = 0.24
             self.epsilon = max(self.epsilon_min, round(self.epsilon * self.epsilon_decay, 4))
             if random.uniform(0, 1) < self.epsilon:
                 active_candidates = [a for a in allowed_actions if a != 0]
                 chosen_act = int(random.choice(active_candidates))
+                self._last_decision_exploratory = True
                 self.supervisor.record_policy_decision(chosen_act)
                 return chosen_act
         else:
@@ -1550,6 +1549,7 @@ class AutonomousGoalBrain:
                 if visits < 25 and not recovery_mode:
                     non_rev = [a for a in allowed_actions if a not in (0, 2, 6)]
                     chosen_act = int(random.choice(non_rev if non_rev else allowed_actions))
+                    self._last_decision_exploratory = True
                     self.supervisor.record_policy_decision(chosen_act)
                     return chosen_act
                 self.supervisor.record_policy_decision(0)
@@ -1922,12 +1922,14 @@ def _clean_numbers(obj):
     return obj
 
 
-class LNMarketsClient:
-    def __init__(self, key, secret, passphrase, base_url=None):
+class LNMarketsClient(ResilientLNMClient):
+    def __init__(self, key="", secret="", passphrase="", base_url=None):
+        super().__init__(key=key, secret=secret, passphrase=passphrase, base_url=base_url or Config.BASE_URL)
         self.key = key
         self.secret = secret
         self.passphrase = passphrase
         self.base_url = base_url or Config.BASE_URL
+        self._server_time_offset_ms: int = 0
         self.session = ResilientLNMClient.build_session(f"LNMSniper/7.3-{Config.ENV_MODE}")
         self.telemetry = LatencyTelemetry(window_size=256)
         self.order_guard = InFlightOrderGuard(ttl_sec=20.0)
@@ -1937,23 +1939,50 @@ class LNMarketsClient:
         self._running_cache_ts = 0.0
         self._last_ticker_price = 0.0
 
+    def _sync_clock_offset_from_error_or_headers(self, err_text: str = "", headers: dict = None) -> bool:
+        """Extrae el timestamp del servidor LN Markets ante HTTP 401 (outdated timestamp) y calibra el offset en RAM."""
+        from email.utils import parsedate_to_datetime
+        local_ms = int(time.time() * 1000)
+        if err_text:
+            m = re.search(r"server timestamp\s*=\s*(\d{12,14})", str(err_text), re.IGNORECASE)
+            if m:
+                srv_ms = int(m.group(1))
+                self._server_time_offset_ms = srv_ms - local_ms
+                ResilientLNMClient._server_time_offset_ms = self._server_time_offset_ms
+                return True
+        if headers:
+            date_hdr = headers.get("Date") or headers.get("date")
+            if date_hdr:
+                try:
+                    dt = parsedate_to_datetime(date_hdr)
+                    srv_ms = int(dt.timestamp() * 1000)
+                    self._server_time_offset_ms = srv_ms - local_ms
+                    ResilientLNMClient._server_time_offset_ms = self._server_time_offset_ms
+                    return True
+                except Exception:
+                    pass
+        return False
+
     def _request(self, method, path, params=None, max_retries=2):
         method_up = method.upper()
         clean_p = _clean_numbers(params) if params else None
         req_timeout = ResilientLNMClient.get_timeout_for(method_up, path)
+        eff_max_retries = max(1, int(max_retries))
+        clock_synced_retry = False
+        attempt = 0
 
-        for attempt in range(max_retries):
+        while attempt < eff_max_retries:
             req_t0 = time.perf_counter()
             acquired = ResilientLNMClient.acquire_slot(timeout=4.0)
             try:
-                ts = str(int(time.time() * 1000))
+                ts_ms = str(int(time.time() * 1000) + int(getattr(self, "_server_time_offset_ms", 0)))
                 data_str, url = "", f"{self.base_url}{path}"
                 if clean_p:
                     if method_up in ("GET", "DELETE"):
                         url += f"?{urllib.parse.urlencode(clean_p)}"
                     else:
                         data_str = json.dumps(clean_p, separators=(",", ":"))
-                payload = ts + method.lower() + "/v3" + path + data_str
+                payload = ts_ms + method.lower() + "/v3" + path + data_str
                 signature = base64.b64encode(
                     hmac.new(self.secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
                 ).decode("utf-8")
@@ -1961,7 +1990,7 @@ class LNMarketsClient:
                     "LNM-ACCESS-KEY": self.key,
                     "LNM-ACCESS-SIGNATURE": signature,
                     "LNM-ACCESS-PASSPHRASE": self.passphrase,
-                    "LNM-ACCESS-TIMESTAMP": ts,
+                    "LNM-ACCESS-TIMESTAMP": ts_ms,
                 }
                 if method_up in ("POST", "PUT") and data_str:
                     headers["Content-Type"] = "application/json"
@@ -1978,8 +2007,21 @@ class LNMarketsClient:
                 else:
                     self.telemetry.record("api_ms", elapsed_ms)
 
-                if resp.status_code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                if resp.status_code == 401 and not clock_synced_retry:
+                    err_body = str(getattr(resp, "text", "") or "")
+                    body_lower = err_body.lower()
+                    resp_headers = dict(getattr(resp, "headers", {}) or {})
+                    if "outdated timestamp" in body_lower or "timestamp" in body_lower:
+                        if self._sync_clock_offset_from_error_or_headers(err_body, resp_headers):
+                            clock_synced_retry = True
+                            if attempt >= eff_max_retries - 1:
+                                eff_max_retries += 1
+                            attempt += 1
+                            continue
+
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt < eff_max_retries - 1:
                     time.sleep(ResilientLNMClient.compute_backoff(attempt))
+                    attempt += 1
                     continue
                 if not resp.ok:
                     raise RuntimeError(f"HTTP {resp.status_code} ({path}): {resp.text[:140]}")
@@ -1987,9 +2029,18 @@ class LNMarketsClient:
             except Exception as e:
                 elapsed_ms = (time.perf_counter() - req_t0) * 1000.0
                 self.telemetry.record("api_ms", elapsed_ms)
-                if attempt == max_retries - 1:
+                err_str = str(e)
+                if not clock_synced_retry and "401" in err_str and ("outdated timestamp" in err_str.lower() or "timestamp" in err_str.lower()):
+                    if self._sync_clock_offset_from_error_or_headers(err_str, None):
+                        clock_synced_retry = True
+                        if attempt >= eff_max_retries - 1:
+                            eff_max_retries += 1
+                        attempt += 1
+                        continue
+                if attempt >= eff_max_retries - 1:
                     raise RuntimeError(f"Fallo en {path}: {e}")
                 time.sleep(ResilientLNMClient.compute_backoff(attempt))
+                attempt += 1
             finally:
                 if acquired:
                     ResilientLNMClient.release_slot()
@@ -2191,12 +2242,14 @@ def infer_adopted_trade(trade, ind_5m, state, now, existing_meta=None, forced_ac
         "close_order_sent": False,
         "edge_deg_streak": 0,
         "last_edge_score": 0.0,
+        "is_exploratory": False,
     }
     if isinstance(existing_meta, dict):
         for k in (
-            "state", "action", "style", "entry_time", "last_eval_time",
+            "state", "action", "style", "entry_time", "opened_at", "last_eval_time",
             "last_pnl_atr", "eval_count", "sl_locked", "sl_pending_target",
-            "ai_closed", "close_order_sent", "edge_deg_streak", "last_edge_score"
+            "ai_closed", "close_order_sent", "edge_deg_streak", "last_edge_score",
+            "is_exploratory"
         ):
             if k in existing_meta:
                 base[k] = existing_meta[k]
@@ -2288,6 +2341,8 @@ def compute_live_edge(
     entry_price=0.0,
     carry_fees_sats=0,
     simulated_entry=False,
+    orig_meta=None,
+    now=None,
 ):
     """
     Unificador simétrico de Edge Neto post-comisión y post-CQL para admisión Pre-Flight
@@ -2321,6 +2376,17 @@ def compute_live_edge(
         pnl_atr_net = (signed_move - fee_price_offset) / atr
         fee_drag_q = 0.0
 
+    now_ts = float(now if now is not None else ((ind_5m or {}).get("_now_ts") or time.time()))
+    opened_ts = float((orig_meta or {}).get("entry_time") or (orig_meta or {}).get("opened_at") or now_ts)
+    trade_age_sec = max(0.0, now_ts - opened_ts)
+    is_exploratory = bool((orig_meta or {}).get("is_exploratory", False))
+    has_age_meta = isinstance(orig_meta, dict) and ("entry_time" in orig_meta or "opened_at" in orig_meta or "is_exploratory" in orig_meta)
+
+    if not simulated_entry and q_cql < 0.0 and (is_exploratory or (has_age_meta and trade_age_sec < 180.0 and pnl_atr_raw > -0.45)):
+        effective_q_cql = 0.0
+    else:
+        effective_q_cql = q_cql
+
     ovr = perception.get("override_side") if isinstance(perception, dict) else None
     st_str = str(state)
     macro_c = (is_long and "|BEAR|" in st_str) or ((not is_long) and "|BULL|" in st_str)
@@ -2337,10 +2403,14 @@ def compute_live_edge(
     else:
         ovr_bias = 0.0
 
-    edge_score = round(q_cql + (0.20 * pnl_atr_net) - fee_drag_q + ovr_bias, 4)
+    edge_score = round(effective_q_cql + (0.20 * pnl_atr_net) - fee_drag_q + ovr_bias, 4)
+    if not simulated_entry and (is_exploratory or has_age_meta) and (-0.35 < pnl_atr_raw < 0.45) and (trade_age_sec < 90.0):
+        edge_score = round(max(float(edge_score), -0.65), 4)
+
     return {
         "edge_score": edge_score,
         "q_cql": round(q_cql, 4),
+        "effective_q_cql": round(effective_q_cql, 4),
         "pnl_atr_raw": round(pnl_atr_raw, 4),
         "pnl_atr_net": round(pnl_atr_net, 4),
         "c_rt_sats": round(c_rt_sats, 2),
@@ -2408,18 +2478,49 @@ def execute_strategy_guardian(
         deg_streak = int(trade_meta["edge_deg_streak"])
 
         # Ventana de Amortiguación Post-Apertura (Minimum Hold Grace Period: tau_grace = 45.0s)
-        trade_age_sec = max(0.0, time.time() - float(trade_meta.get("entry_time", time.time())))
+        now = float((ind_5m or {}).get("_now_ts") or time.time())
+        t = trade
+        meta = trade_meta
+        opened_at_ts = float(meta.get("entry_time") or meta.get("opened_at") or now)
+        trade_age_sec = max(0.0, float(now) - opened_at_ts)
         curr_adverse_sats = max(0.0, float(-pl_sats), float(trade_meta.get("mae_sats", 0.0)))
         mae_over_margin = curr_adverse_sats / float(max(1, margin))
         in_grace_period = (trade_age_sec < 45.0) and (mae_over_margin < 0.045)
 
         if not is_hedged and not in_grace_period and deg_streak >= Config.EDGE_DEGRADATION_PERSISTENCE and edge_score <= Config.EDGE_DEGRADATION_EXIT:
-            if confirm_and_close_trade(client, brain, tid, trade_meta, "FORCED_EDGE_EXIT"):
-                print(
-                    f"  🛑 [FORCED EDGE EXIT] Cierre forzado en {tid[:6]} tras {deg_streak} ciclos "
-                    f"(Edge:{edge_score:+.3f} <= {Config.EDGE_DEGRADATION_EXIT} | PnL:{pnl_atr:+.2f}ATR | {pl_sats:+,} sats)"
-                )
-                return True
+            # Cálculo exacto de comisión round-trip y beneficio neto estimado
+            t_margin = max(1000, int(t.get("margin") or meta.get("margin_sats") or meta.get("margin", 1000)))
+            t_lev = max(1.0, float(t.get("leverage") or meta.get("leverage", 15.0)))
+            t_notional = t_margin * t_lev
+            rt_fee_sats = max(2, int(round(t_notional * 2.0 * Config.TAKER_FEE)))
+            gross_pl_sats = int(t.get("pl") or 0)
+            est_net_sats = gross_pl_sats - rt_fee_sats
+            min_net_harvest = max(15, int(round(0.25 * rt_fee_sats)))
+            min_physical_loss = max(30, int(round(0.04 * t_margin)))
+
+            allow_forced_edge_exit = True
+            # Regla 1: Prohibir FORCED EDGE EXIT en los primeros 90s salvo colapso físico severo (pnl_atr <= -0.85)
+            if trade_age_sec < 90.0 and pnl_atr > -0.85:
+                allow_forced_edge_exit = False
+            # Regla 2: Zona muerta de comisiones (pnl_atr > -0.45):
+            # Si el trade está plano o en ganancia bruta pero NO cubre comisiones round-trip + margen mínimo,
+            # PROHIBIR liquidarlo a pérdida neta; dejar actuar al Breakeven/Trailing Lock o al SL/TP estructural.
+            elif pnl_atr > -0.45 and est_net_sats < min_net_harvest:
+                meta["edge_deg_streak"] = max(0, int(meta.get("edge_deg_streak", 1)) - 1)
+                meta["edge_decay_streak"] = meta["edge_deg_streak"]
+                deg_streak = int(meta["edge_deg_streak"])
+                allow_forced_edge_exit = False
+            # Regla 3: En zona negativa (-0.45 >= pnl_atr), exigir pérdida física real confirmada
+            elif pnl_atr <= -0.45 and gross_pl_sats > -min_physical_loss:
+                allow_forced_edge_exit = False
+
+            if allow_forced_edge_exit:
+                if confirm_and_close_trade(client, brain, tid, trade_meta, "FORCED_EDGE_EXIT"):
+                    print(
+                        f"  🛑 [FORCED EDGE EXIT] Cierre forzado en {tid[:6]} tras {deg_streak} ciclos "
+                        f"(Edge:{edge_score:+.3f} <= {Config.EDGE_DEGRADATION_EXIT} | PnL:{pnl_atr:+.2f}ATR | {pl_sats:+,} sats)"
+                    )
+                    return True
 
         if not is_hedged and not in_grace_period and system_mode == "RECOVERY" and current_dd_pct >= 0.08 and edge_score < -0.30:
             if confirm_and_close_trade(client, brain, tid, trade_meta, "RECOVERY_FORCED_REDUCTION"):
@@ -3348,6 +3449,8 @@ def evaluate_and_dispatch_entries(
         client.telemetry.record("decision_ms", decision_elapsed_ms)
 
         if action == 0 and raw_action > 0:
+            if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                brain.supervisor.discard_last_action_decision()
             brain.remember_and_train(state, 0, 0, 1000, state, is_no_trade=True)
             print(f"  ⏸️ [FILTRO SATS/SEGURIDAD] Entrada bloqueada ({gate_reason} | OVR:{perception.get('override_reason')})")
 
@@ -3360,6 +3463,8 @@ def evaluate_and_dispatch_entries(
                     t_locked = bool(brain.active_trades.get(str(t["id"]), {}).get("sl_locked", False))
                     t_entry = float(t.get("price") or t.get("entryPrice") or ind_5m["price"])
                     if (not t_locked) or abs(float(ind_5m["price"]) - t_entry) < (1.25 * float(ind_5m["atr"])):
+                        if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                            brain.supervisor.discard_last_action_decision()
                         print("  ⏸️ [GUARDIA ANTI-STACKING] Posición del mismo lado activa sin SL asegurado o muy cercana en precio.")
                         return 0, last_entry_time
 
@@ -3370,6 +3475,8 @@ def evaluate_and_dispatch_entries(
                     and float(ind_1m.get("macd_norm", 0.0)) < -0.15
                     and float(ind_1m.get("price_vs_vwap_pct", 0.0)) < -0.0015
                 ):
+                    if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                        brain.supervisor.discard_last_action_decision()
                     print("  ⏸️ [FILTRO MICRO 1M] Entrada bloqueada (MICRO_1M_FALLING_KNIFE)")
                     return 0, last_entry_time
                 if (
@@ -3378,10 +3485,14 @@ def evaluate_and_dispatch_entries(
                     and float(ind_1m.get("macd_norm", 0.0)) > 0.15
                     and float(ind_1m.get("price_vs_vwap_pct", 0.0)) > 0.0015
                 ):
+                    if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                        brain.supervisor.discard_last_action_decision()
                     print("  ⏸️ [FILTRO MICRO 1M] Entrada bloqueada (MICRO_1M_BULL_SPIKE)")
                     return 0, last_entry_time
 
             if strat["style"] == "TREND" and float(ind_5m.get("adx", 25.0)) < 16.0:
+                if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                    brain.supervisor.discard_last_action_decision()
                 print("  ⏸️ [FILTRO ADX] Entrada TREND bloqueada (ADX_TOO_LOW_FOR_TREND)")
                 return 0, last_entry_time
 
@@ -3534,20 +3645,30 @@ def evaluate_and_dispatch_entries(
             )
 
             if preflight_blocked:
+                if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                    brain.supervisor.discard_last_action_decision()
                 print(
                     f"  ⏸️ [FILTRO PRE-FLIGHT] Entrada bloqueada por riesgo de Churning "
                     f"(Edge_pre:{edge_pre:+.3f} < {min_preflight_edge:+.2f} | C_RT:{pre_edge_info['c_rt_sats']:.1f}s)"
                 )
             elif not exp_ok:
+                if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                    brain.supervisor.discard_last_action_decision()
                 print(f"  ⏸️ [EXPOSICIÓN PROYECTADA BLOQUEADA] {exp_reason} (Margen:{margin_sats} sats)")
             elif not viable_sats:
+                if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                    brain.supervisor.discard_last_action_decision()
                 print(
                     f"  ⏸️ [EXPECTANCY SATS INSUFICIENTE] NetTP:+{sats_meta['net_tp_sats']} sats vs "
                     f"Coste:{sats_meta.get('total_cost_sats', sats_meta['fee_sats'])} sats (Ratio:{sats_meta['fee_ratio']}x)"
                 )
             elif lat_degraded and not Config.EXPLORER_MODE:
+                if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                    brain.supervisor.discard_last_action_decision()
                 print(f"  ⏸️ [PROTECCIÓN DE LATENCIA] Entrada bloqueada por condición de ejecución degradada ({lat_reason})")
             elif not can_send:
+                if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                    brain.supervisor.discard_last_action_decision()
                 print(f"  ⏸️ [GUARDIA ANTI-DUPLICADOS] {dup_reason}")
             elif safe_mode:
                 print(
@@ -3610,6 +3731,9 @@ def evaluate_and_dispatch_entries(
                             )
                             adopted_meta["decision_price"] = float(ind_5m["price"])
                             adopted_meta["entry_q"] = float(raw_entry_q)
+                            adopted_meta["is_exploratory"] = bool(getattr(brain, "_last_decision_exploratory", False))
+                            adopted_meta["entry_time"] = float(now)
+                            adopted_meta["opened_at"] = float(now)
                             brain.active_trades[nt_id] = adopted_meta
                             brain.dirty = True
                             brain.save_brain(force=False)
@@ -3631,12 +3755,18 @@ def evaluate_and_dispatch_entries(
                                 )
                                 adopted_meta["decision_price"] = float(ind_5m["price"])
                                 adopted_meta["entry_q"] = float(q_val)
+                                adopted_meta["is_exploratory"] = bool(getattr(brain, "_last_decision_exploratory", False))
+                                adopted_meta["entry_time"] = float(now)
+                                adopted_meta["opened_at"] = float(now)
                                 brain.active_trades[vtid] = adopted_meta
                                 brain.dirty = True
                                 matched_post_timeout = True
                         if matched_post_timeout:
                             client.order_guard.clear_intent(intent_fp)
                         brain.save_brain(force=False)
+                else:
+                    if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                        brain.supervisor.discard_last_action_decision()
 
     return action_taken, last_entry_time
 
@@ -3914,6 +4044,8 @@ def main():
                     entry_price=float(_t.get("price") or _t.get("entryPrice") or ind_5m["price"]),
                     carry_fees_sats=_carry,
                     simulated_entry=False,
+                    orig_meta=_meta,
+                    now=now,
                 )
                 edge_score = float(_edge_res["edge_score"])
                 _pnl_atr = float(_edge_res["pnl_atr_raw"])
