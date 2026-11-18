@@ -183,13 +183,25 @@ class SniperControlCenter:
                         defaults[k] = coerced
         return defaults
 
+    def _telemetry_file_path(self, env_mode: str = "mainnet") -> str:
+        env = str(env_mode or "mainnet").strip().lower()
+        primary = os.path.join(self.base_dir, f"telemetry_live_{env}.json")
+        if env == "mainnet" and not os.path.exists(primary):
+            legacy = os.path.join(self.base_dir, "telemetry_live.json")
+            if os.path.exists(legacy):
+                return legacy
+        return primary
+
+    def _config_live_path(self, env_mode: str = "mainnet") -> str:
+        env = str(env_mode or "mainnet").strip().lower()
+        return os.path.join(self.base_dir, "config", f"config_live_{env}.json")
+
     def get_active_trades_count(self, env_mode: Optional[str] = None) -> Tuple[int, List[str]]:
         envs = [env_mode.lower()] if env_mode else ["mainnet", "testnet"]
         total_active = 0
         sources: List[str] = []
         for env in envs:
-            tel_file = "telemetry_live.json" if env == "mainnet" else "telemetry_live_testnet.json"
-            tel_data = self._safe_read_json(os.path.join(self.base_dir, tel_file))
+            tel_data = self._safe_read_json(self._telemetry_file_path(env))
             tel_active = int(tel_data.get("active_trades", 0)) if isinstance(tel_data, dict) else 0
 
             brain_file = "q_brain_advanced_lnm.json" if env == "mainnet" else "q_brain_testnet_lnm.json"
@@ -207,22 +219,71 @@ class SniperControlCenter:
         return total_active, sources
 
     def _pid_file_path(self, env_mode: str) -> str:
-        return os.path.join(self.base_dir, f".sniper_{env_mode.lower()}.pid")
+        return os.path.join(self.base_dir, f"sniper_{env_mode.lower()}.pid")
+
+    @staticmethod
+    def _is_pid_alive(pid: int) -> bool:
+        if pid <= 0:
+            return False
+        if os.path.exists(f"/proc/{pid}"):
+            return True
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    def check_daemon_status(self, env_mode: str = "mainnet") -> Tuple[bool, Optional[int], str]:
+        """
+        Verifica Liveness por Timestamp (snapshot_ts <= 15.0s) + PID bajo fcntl.LOCK_SH
+        en telemetry_live_{env}.json y sniper_{env}.pid.
+        """
+        env = str(env_mode or "mainnet").strip().lower()
+        tel_path = self._telemetry_file_path(env)
+        tel_data = self._safe_read_json(tel_path)
+        now_utc = time.time()
+        snapshot_ts = 0.0
+        tel_pid: Optional[int] = None
+
+        if isinstance(tel_data, dict):
+            raw_snap_ts = tel_data.get("snapshot_ts")
+            if isinstance(raw_snap_ts, (int, float)) and float(raw_snap_ts) > 0.0:
+                snapshot_ts = float(raw_snap_ts)
+            else:
+                raw_iso = str(tel_data.get("timestamp", "")).strip()
+                if raw_iso:
+                    try:
+                        dt = datetime.datetime.fromisoformat(raw_iso.replace("Z", "+00:00"))
+                        snapshot_ts = dt.timestamp()
+                    except Exception:
+                        snapshot_ts = 0.0
+            raw_pid = tel_data.get("pid")
+            if isinstance(raw_pid, int) and raw_pid > 0:
+                tel_pid = raw_pid
+
+        file_pid: Optional[int] = None
+        for p_cand in (self._pid_file_path(env), os.path.join(self.base_dir, f".sniper_{env}.pid")):
+            if os.path.exists(p_cand):
+                try:
+                    with FileLockContext(p_cand, exclusive=False, timeout=1.0, raise_on_timeout=False):
+                        with open(p_cand, "r", encoding="utf-8") as fh:
+                            file_pid = int(fh.read().strip())
+                    break
+                except (ValueError, OSError):
+                    pass
+
+        candidate_pid = tel_pid or file_pid
+        proc_alive = bool(candidate_pid and self._is_pid_alive(candidate_pid))
+        heartbeat_fresh = (snapshot_ts > 0.0) and ((now_utc - snapshot_ts) <= 15.0)
+
+        if heartbeat_fresh or proc_alive:
+            pid_label = str(candidate_pid) if candidate_pid else "LIVE"
+            return True, candidate_pid, f"🟢 ACTIVO / OK (PID: {pid_label})"
+        return False, None, "⚪ DETENIDO / EXTERNO"
 
     def get_running_pid(self, env_mode: str = "mainnet") -> Optional[int]:
-        pid_file = self._pid_file_path(env_mode)
-        if os.path.exists(pid_file):
-            try:
-                with open(pid_file, "r", encoding="utf-8") as fh:
-                    pid = int(fh.read().strip())
-                os.kill(pid, 0)
-                return pid
-            except (ValueError, OSError):
-                try:
-                    os.remove(pid_file)
-                except OSError:
-                    pass
-        return None
+        is_alive, pid, _ = self.check_daemon_status(env_mode)
+        return pid if is_alive else None
 
     def notify_hot_reload_signal(self) -> List[int]:
         signaled_pids: List[int] = []
@@ -615,11 +676,12 @@ def print_status_dashboard(ctrl: SniperControlCenter, env_mode: str = "mainnet",
     sep_eq = "=" * w
     sep_ln = "-" * w
 
-    tel_file = "telemetry_live.json" if env == "mainnet" else "telemetry_live_testnet.json"
+    tel_path = ctrl._telemetry_file_path(env)
+    tel_file = os.path.basename(tel_path)
     brain_file = "q_brain_advanced_lnm.json" if env == "mainnet" else "q_brain_testnet_lnm.json"
     hedge_file = "hedge_state_mainnet.json" if env == "mainnet" else "hedge_state_testnet.json"
 
-    pid = ctrl.get_running_pid(env)
+    _, pid, daemon_badge = ctrl.check_daemon_status(env)
     preset_meta = ctrl._safe_read_json(ACTIVE_PRESET_META_PATH) or {}
     rt_cfg = ctrl.load_runtime_overrides()
     active_preset = preset_meta.get("active_preset", "baseline_v73")
@@ -628,12 +690,12 @@ def print_status_dashboard(ctrl: SniperControlCenter, env_mode: str = "mainnet",
     print(f"  LNM SNIPER v7.3+ — PANEL DE CONTROL [{env.upper()}]")
     print(sep_eq)
     if narrow:
-        print(f"  Demonio : {'🟢 ACTIVO (PID ' + str(pid) + ')' if pid else '⚪ DETENIDO / EXTERNO'}")
+        print(f"  Demonio : {daemon_badge}")
         print(f"  Preset  : {active_preset}")
         print(f"  Boot Cfg: ENV={rt_cfg['ENV_MODE']} | SHADOW={rt_cfg['SHADOW_MODE']} | SAFE={rt_cfg['SAFE_MODE']}")
         print(f"  Límites : MaxPos={rt_cfg['MAX_CONCURRENT_TRADES']} | MaxLev={rt_cfg['MAX_LEVERAGE']}x | Hedge={rt_cfg['ENABLE_HYBRID_HEDGE']}")
     else:
-        print(f"  Demonio CLI    : {'🟢 ACTIVO (PID: ' + str(pid) + ')' if pid else '⚪ DETENIDO / EXTERNO'} | Preset: {active_preset}")
+        print(f"  Demonio CLI    : {daemon_badge} | Preset: {active_preset}")
         print(f"  Overrides Boot : ENV={rt_cfg['ENV_MODE']} | SHADOW={rt_cfg['SHADOW_MODE']} | SAFE={rt_cfg['SAFE_MODE']} | HEDGE={rt_cfg['ENABLE_HYBRID_HEDGE']} | MaxPos={rt_cfg['MAX_CONCURRENT_TRADES']} | MaxLev={rt_cfg['MAX_LEVERAGE']}x")
 
     if fetch_live:
@@ -708,7 +770,7 @@ def print_status_dashboard(ctrl: SniperControlCenter, env_mode: str = "mainnet",
             else:
                 print(f"  Hedge Engine   : {hedge_file} [{'OK' if h_ok else 'WARN'}] | Pares: {len(h_data.get('pairs', {}))} | Estados Hedge Q: {len(h_data.get('hedge_q_table', {}))} | Ahorrado vs SL: {saved_sats:+,} sats")
 
-    tel = ctrl._safe_read_json(os.path.join(ctrl.base_dir, tel_file))
+    tel = ctrl._safe_read_json(tel_path)
     print(sep_ln)
     if not isinstance(tel, dict):
         print(f"  Telemetría Vivo: ℹ️ Sin {tel_file} aún (se genera automáticamente con el bot activo).")

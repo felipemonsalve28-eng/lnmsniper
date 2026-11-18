@@ -159,15 +159,18 @@ class Config:
 
     @classmethod
     def configure_environment(cls, env_name="mainnet"):
-        env = str(env_name or "mainnet").strip().lower()
+        raw_env = str(env_name or os.getenv("ENV_MODE") or os.getenv("SNIPER_ENV") or "mainnet").strip().lower()
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        if env in ("testnet", "test", "explorer"):
+        if raw_env in ("testnet", "test", "explorer"):
             cls.ENV_MODE = "testnet"
             cls.EXPLORER_MODE = True
-            cls.BASE_URL = os.getenv("LNM_TESTNET_BASE_URL", "https://api.signet.lnmarkets.com/v3")
+            cls.BASE_URL = os.getenv("LNM_TESTNET_BASE_URL", "https://api.testnet.lnmarkets.com/v3")
             cls.BRAIN_FILE = "q_brain_testnet_lnm.json"
             cls.HEDGE_STATE_FILE = "hedge_state_testnet.json"
             cls.TELEMETRY_FILE = "telemetry_live_testnet.json"
+            cls.CONFIG_LIVE_FILE = os.path.join(base_dir, "config", "config_live_testnet.json")
+            cls.PID_FILE = os.path.join(base_dir, "sniper_testnet.pid")
+            cls.SHARED_MTF_DISK_CACHE = os.path.join(tempfile.gettempdir(), "sniper_mtf_candles_v73_testnet.json")
             cls.MAX_CONCURRENT_TRADES = 10
             cls.SOFT_EXPOSURE_LIMIT = 0.45
             cls.ENTRY_COOLDOWN_SEC = 18.0
@@ -181,7 +184,10 @@ class Config:
             cls.BASE_URL = os.getenv("LNM_MAINNET_BASE_URL", "https://api.lnmarkets.com/v3")
             cls.BRAIN_FILE = "q_brain_advanced_lnm.json"
             cls.HEDGE_STATE_FILE = "hedge_state_mainnet.json"
-            cls.TELEMETRY_FILE = "telemetry_live.json"
+            cls.TELEMETRY_FILE = "telemetry_live_mainnet.json"
+            cls.CONFIG_LIVE_FILE = os.path.join(base_dir, "config", "config_live_mainnet.json")
+            cls.PID_FILE = os.path.join(base_dir, "sniper_mainnet.pid")
+            cls.SHARED_MTF_DISK_CACHE = os.path.join(tempfile.gettempdir(), "sniper_mtf_candles_v73_mainnet.json")
             cls.MAX_CONCURRENT_TRADES = 5
             cls.SOFT_EXPOSURE_LIMIT = 0.38
             cls.ENTRY_COOLDOWN_SEC = 35.0
@@ -208,8 +214,8 @@ except Exception:
 def load_saved_credentials(env_mode="mainnet"):
     is_test = str(env_mode).lower() == "testnet"
     if is_test:
-        key_names = ("LNM_TESTNET_API_KEY", "TESTNET_API_KEY")
-        sec_names = ("LNM_TESTNET_API_SECRET", "TESTNET_API_SECRET")
+        key_names = ("LNM_TESTNET_KEY", "LNM_TESTNET_API_KEY", "TESTNET_API_KEY")
+        sec_names = ("LNM_TESTNET_SECRET", "LNM_TESTNET_API_SECRET", "TESTNET_API_SECRET")
         pas_names = ("LNM_TESTNET_PASSPHRASE", "TESTNET_PASSPHRASE")
     else:
         key_names = ("LNM_API_KEY", "API_KEY")
@@ -250,7 +256,11 @@ def load_saved_credentials(env_mode="mainnet"):
                         p = m_p.group(1)
             except Exception:
                 continue
-    return k.strip(), s.strip(), p.strip()
+    k_clean, s_clean, p_clean = k.strip(), s.strip(), p.strip()
+    if is_test:
+        if not k_clean or not s_clean or not p_clean or "TU_" in k_clean or "TU_" in s_clean or "TU_" in p_clean:
+            raise SystemExit("ERROR CRITICO: Credenciales Testnet ausentes. Abortando para proteger Mainnet.")
+    return k_clean, s_clean, p_clean
 
 
 # =====================================================================
@@ -3558,7 +3568,7 @@ def evaluate_and_dispatch_entries(
 
 
 def _parse_cli_env():
-    env_val = os.getenv("SNIPER_ENV", "mainnet")
+    env_val = os.getenv("ENV_MODE") or os.getenv("SNIPER_ENV") or "mainnet"
     for idx, arg in enumerate(sys.argv):
         if arg == "--env" and idx + 1 < len(sys.argv):
             env_val = sys.argv[idx + 1]
@@ -3579,8 +3589,19 @@ def main():
 
     api_key, api_secret, api_passphrase = load_saved_credentials(Config.ENV_MODE)
     if not api_key or not api_secret or not api_passphrase:
+        if Config.ENV_MODE == "testnet":
+            raise SystemExit("ERROR CRITICO: Credenciales Testnet ausentes. Abortando para proteger Mainnet.")
         print(f"[ERROR CRÍTICO] Faltan credenciales de LN Markets para el entorno '{Config.ENV_MODE}' en variables o .env.")
         return
+
+    pid_path = getattr(Config, "PID_FILE", f"sniper_{Config.ENV_MODE}.pid")
+    try:
+        with FileLockContext(pid_path, exclusive=True, timeout=2.0, raise_on_timeout=False):
+            with open(pid_path, "w", encoding="utf-8") as pfh:
+                pfh.write(str(os.getpid()))
+                pfh.flush()
+    except Exception:
+        pass
 
     brain = AutonomousGoalBrain(filename=Config.BRAIN_FILE, explorer_mode=Config.EXPLORER_MODE)
     client = LNMarketsClient(api_key, api_secret, api_passphrase, base_url=Config.BASE_URL)
@@ -3952,6 +3973,7 @@ def main():
         except Exception as e:
             api_health.record_error(type(e).__name__, e)
 
+        sys.stdout.flush()
         if once_mode or stop_state["requested"]:
             break
 
@@ -3969,6 +3991,7 @@ def main():
 
     brain.save_brain(force=True)
     hedge_store.save(force=True)
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":

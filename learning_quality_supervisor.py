@@ -1017,6 +1017,8 @@ class AtomicTelemetryDispatcher:
         rl_metrics = supervisor.get_rl_metrics_snapshot()
         payload: Dict[str, Any] = {
             "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "snapshot_ts": round(now, 3),
+            "pid": os.getpid(),
             "balance_sats": int(round(_safe_float(balance_sats, 0.0))),
             "equity_sats": int(round(_safe_float(equity_sats, 0.0))),
             "available_sats": int(round(_safe_float(available_sats, 0.0))),
