@@ -9,6 +9,7 @@ __pycache__/
 
 # Logs del sistema
 *.log
+*.log.*
 logs/
 logs/transitions_audit_*.jsonl
 telemetry_live_*.json

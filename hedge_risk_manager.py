@@ -154,7 +154,8 @@ class HedgeRiskManager:
         if available_balance_sats < (hedge_margin_sats * 2 + est_entry_fee):
             return False, f"BLOCKED_INSUFFICIENT_FREE_MARGIN(avail={available_balance_sats}<req={hedge_margin_sats*2+est_entry_fee})", {}
 
-        orig_side = str(pair_ctx.get("orig_side", "buy")).lower()
+        raw_orig_side = str(pair_ctx.get("orig_side", "buy")).lower()
+        orig_side = "buy" if raw_orig_side in ("buy", "b", "long") else "sell"
         hedge_side = "sell" if orig_side == "buy" else "buy"
 
         # Stop Loss y Take Profit protectores en la pata de cobertura (fuera de zona de ruido)

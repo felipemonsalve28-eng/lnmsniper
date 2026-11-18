@@ -162,8 +162,15 @@ class HedgeStateStore:
         margin_sats = int(orig_trade.get("margin") or 1000)
         lev = float(orig_trade.get("leverage") or 20.0)
         entry_p = float(orig_trade.get("price") or orig_trade.get("entryPrice") or 0.0)
-        side = str(orig_trade.get("side") or "buy").lower()
+        raw_side = str(orig_trade.get("side") or "buy").lower()
+        side = "buy" if raw_side in ("buy", "b", "long") else "sell"
         style = str((orig_meta or {}).get("style") or "REVERSION")
+        opened_ts = float(
+            (orig_meta or {}).get("entry_time")
+            or orig_trade.get("open_ts")
+            or orig_trade.get("entry_time")
+            or now
+        )
 
         if tid not in self.pairs or not isinstance(self.pairs[tid], dict):
             self.pairs[tid] = {
@@ -174,7 +181,7 @@ class HedgeStateStore:
                 "orig_notional_sats": int(round(margin_sats * lev)),
                 "orig_entry_price": entry_p,
                 "orig_strategy": style,
-                "orig_opened_at": float((orig_meta or {}).get("entry_time") or now),
+                "orig_opened_at": opened_ts,
                 "state": "NORMAL",
                 "state_entered_at": now,
                 "state_cycles": 0,
@@ -210,13 +217,14 @@ class HedgeStateStore:
             self.dirty = True
         else:
             p = self.pairs[tid]
+            p["orig_side"] = side
             p["orig_margin_sats"] = margin_sats
             p["orig_leverage"] = lev
             p["orig_notional_sats"] = int(round(margin_sats * lev))
             if entry_p > 0:
                 p["orig_entry_price"] = entry_p
             if "orig_opened_at" not in p:
-                p["orig_opened_at"] = float((orig_meta or {}).get("entry_time") or p.get("state_entered_at", now))
+                p["orig_opened_at"] = float((orig_meta or {}).get("entry_time") or orig_trade.get("open_ts") or p.get("state_entered_at", now))
             p.setdefault("hedges_opened_count", 0)
             p.setdefault("orig_reductions_count", 0)
             p.setdefault("hedge_reductions_count", 0)

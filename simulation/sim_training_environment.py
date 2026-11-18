@@ -23,6 +23,7 @@ from lnm_sniper_v6_advanced import (
 from hedge_state_store import HedgeStateStore
 from adaptive_controller import AdaptiveHedgeController
 from edge_monitor import EdgeMonitor
+from portfolio_hedge import PortfolioHedgeCoordinator
 from predictive_hedge import PredictiveHedgeEngine
 from guardian_execution_core import HardFloorGuardian, compat_np as np
 from sniper_perception_sats_core import SatsExpectancyGate, MarketRegimeClassifier
@@ -174,16 +175,101 @@ class SimTrainingEnvironment:
             max_daily_loss_pct=Config.MAX_DAILY_LOSS_PCT,
         )
         self.brain.active_trades.clear()
+        self.hedge_store.pairs.clear()
 
         return self.feed.get_perception_state()
+
+    def _consolidate_orphan_hedge(
+        self, orig_id: str, orig_info: Optional[dict], close_price: float, now: float
+    ) -> None:
+        """Cierra cobertura huérfana si existe y consolida su PnL/comisiones en la primaria."""
+        oid = str(orig_id)
+        pair_ctx = self.hedge_store.pairs.get(oid)
+        if isinstance(pair_ctx, dict) and pair_ctx.get("hedge_trade_id"):
+            h_tid = str(pair_ctx["hedge_trade_id"])
+            if h_tid in self.exchange.running_trades:
+                ok_oh, rec_oh = self.exchange.close_trade(
+                    h_tid, price=float(close_price), reason="ORPHAN_HEDGE_CLEANUP", now=now
+                )
+                if ok_oh and rec_oh and isinstance(orig_info, dict):
+                    orig_info["realized_hedge_net_sats"] = (
+                        int(orig_info.get("realized_hedge_net_sats", 0))
+                        + int(rec_oh.get("net_pnl_sats", 0))
+                    )
+                    orig_info["realized_hedge_fee_sats"] = (
+                        int(orig_info.get("realized_hedge_fee_sats", 0))
+                        + int(rec_oh.get("entry_fee_sats", 0))
+                        + int(rec_oh.get("exit_fee_sats", 0))
+                        + int(rec_oh.get("carry_fees_sats", 0))
+                    )
+        if oid in self.hedge_store.pairs:
+            self.hedge_store.pairs.pop(oid, None)
+            if self.learning_enabled:
+                self.hedge_store.dirty = True
+
+    def _settle_primary_event(
+        self, ev: dict, curr_state_key: str, now: float, close_price: float
+    ) -> int:
+        """Consolida cobertura vinculada, actualiza métricas y entrena Q-table para una primaria."""
+        tid = str(ev["id"])
+        orig_info = self.brain.active_trades.pop(tid, None)
+        if orig_info is None:
+            return 0
+
+        self._consolidate_orphan_hedge(tid, orig_info, close_price=close_price, now=now)
+
+        orig_st = orig_info.get("state", curr_state_key)
+        act_taken = int(orig_info.get("action", 1))
+        realized_h_net = int(orig_info.get("realized_hedge_net_sats", 0))
+        realized_h_fee = int(orig_info.get("realized_hedge_fee_sats", 0))
+        net_pnl = int(ev.get("net_pnl_sats", 0)) + realized_h_net
+        margin_used = int(orig_info.get("margin", 1000))
+        lev_used = float(orig_info.get("leverage", 10))
+        hit_tp = bool(ev.get("close_reason") == "TAKE_PROFIT")
+        dur_ticks = max(1.0, float(ev.get("duration_s", 60.0)) / 60.0)
+        mae_tracked = float(orig_info.get("mae_sats", max(0, -net_pnl)))
+        mfe_tracked = float(orig_info.get("mfe_sats", max(0, net_pnl)))
+        total_taker_fee = int(ev.get("entry_fee_sats", 0) + ev.get("exit_fee_sats", 0)) + realized_h_fee
+
+        self.total_settled_trades += 1
+        self.total_net_pnl_sats += net_pnl
+        if net_pnl > 0:
+            self.winning_trades += 1
+        else:
+            self.losing_trades += 1
+
+        if self.learning_enabled:
+            self.brain.remember_and_train(
+                orig_st,
+                act_taken,
+                reward_sats=net_pnl,
+                margin_used=margin_used,
+                next_state=curr_state_key,
+                equity_after=self.exchange.equity_sats,
+                available_balance_after=self.exchange.available_balance_sats,
+                real_balance_delta_sats=net_pnl,
+                hit_tp=hit_tp,
+                harvested=bool(ev.get("close_reason") in ("FORCED_EDGE_EXIT", "CLOSE_ORIGINAL_POSITION")),
+                recovery_mode=False,
+                lev_used=lev_used,
+                exact_fee_sats=total_taker_fee,
+                pl_includes_fees=True,
+                funding_fee_sats=int(ev.get("carry_fees_sats", 0)),
+                trade_id=tid,
+                mae_sats=mae_tracked,
+                mfe_sats=mfe_tracked,
+                duration_ticks=dur_ticks,
+                predicted_q_entry=orig_info.get("entry_q", None),
+            )
+        return net_pnl
 
     def step(self) -> Tuple[Optional[dict], int, bool, dict]:
         """
         Avanza un paso de simulación (1 vela de 1 minuto):
         1. Alimenta la vela al feed y al exchange.
-        2. Procesa cierres, stop losses y liquidaciones.
+        2. Procesa cierres, stop losses, FORCED EDGE EXIT con viabilidad neta y liquidaciones.
         3. Entrena la Q-table del cerebro con las operaciones concluidas (Schema v2).
-        4. Supervisa coberturas mediante AdaptiveHedgeController.
+        4. Supervisa coberturas mediante AdaptiveHedgeController y HedgeRiskManager.
         5. Evalúa nuevas aperturas viables respetando compuertas Bayesianas y HardFloorGuardian.
         """
         c = self.feed.next_step()
@@ -205,8 +291,17 @@ class SimTrainingEnvironment:
         perception = mkt_state["perception"]
         cur_atr = max(1.0, float(ind_5m.get("atr", c.close * 0.002)))
 
-        # Actualizar excursiones MFE/MAE y ejecutar Guardián de bloqueo de ganancias / cosecha (homólogo a producción)
+        pre_primary_count = sum(
+            1 for tid_k, tr_v in self.exchange.running_trades.items()
+            if not tr_v.get("_is_hedge", False) and not self.hedge_store.is_hedge_trade(tid_k)
+        )
+        pre_state_key = self.brain.discretize_state(ind_5m, ind_15m, ind_1h, ind_4h, pre_primary_count)
+        pre_q_vec = self.brain.get_state_q_values(pre_state_key)
+
+        # Actualizar excursiones MFE/MAE y ejecutar Guardián (incluyendo FORCED EDGE EXIT con viabilidad neta)
         for live_tid, live_t in list(self.exchange.running_trades.items()):
+            if live_t.get("_is_hedge", False) or self.hedge_store.is_hedge_trade(live_tid):
+                continue
             live_meta = self.brain.active_trades.get(live_tid)
             notional_f = float(live_t.get("notional_sats", 10000))
             est_rt_fee = notional_f * (2.0 * self.exchange.taker_fee_rate)
@@ -224,15 +319,93 @@ class SimTrainingEnvironment:
                 act_id = int(live_meta.get("action", 1))
                 strat_cfg = self.brain.strategies.get(act_id, {})
                 entry_p = max(1.0, float(live_t.get("entry_price", c.close)))
-                is_long = str(live_t.get("side", "b")).startswith("b")
+                raw_side = str(live_t.get("side", "b")).lower()
+                is_long = raw_side in ("b", "buy", "long")
+
+                # Evaluar EdgeMonitor y Compuerta de Viabilidad Neta en FORCED EDGE EXIT (paridad Etapa 25)
+                pair_ctx = self.hedge_store.get_or_create_pair(live_t, orig_meta=live_meta, now=now)
+                pair_ctx_ro = dict(pair_ctx)
+                pair_ctx_ro["edge_history"] = list(pair_ctx.get("edge_history", []))
+                q_val_act = float(pre_q_vec[act_id]) if act_id < len(pre_q_vec) else float(live_meta.get("entry_q", 0.0))
+                edge_info = EdgeMonitor.evaluate_position_edge(
+                    live_t,
+                    pair_ctx_ro,
+                    ind_5m,
+                    ind_15m,
+                    ind_1h,
+                    perception=perception,
+                    q_val_action=q_val_act,
+                    now=now,
+                    orig_meta=live_meta,
+                )
+                edge_score = float(edge_info.get("edge_score", 0.0))
+                live_meta["last_edge_score"] = round(edge_score, 4)
+
+                if edge_score <= Config.EDGE_DEGRADATION_EXIT:
+                    live_meta["edge_deg_streak"] = int(live_meta.get("edge_deg_streak", 0)) + 1
+                elif edge_score <= Config.EDGE_DEGRADATION_WARN:
+                    live_meta["edge_deg_streak"] = min(
+                        int(live_meta.get("edge_deg_streak", 0)),
+                        Config.EDGE_DEGRADATION_PERSISTENCE - 1,
+                    )
+                else:
+                    live_meta["edge_deg_streak"] = 0
+
+                deg_streak = int(live_meta["edge_deg_streak"])
+                opened_at_ts = float(live_meta.get("entry_time") or live_t.get("open_ts") or now)
+                trade_age_sec = max(0.0, float(now) - opened_at_ts)
+                t_margin = max(1000, int(live_t.get("margin") or live_meta.get("margin", 1000)))
+                t_lev = max(1.0, float(live_t.get("leverage") or live_meta.get("leverage", 15.0)))
+                gross_pl_sats = int(live_t.get("pl") or 0)
+                curr_adverse_sats = max(0.0, float(-gross_pl_sats), float(live_meta.get("mae_sats", 0.0)))
+                mae_over_margin = curr_adverse_sats / float(max(1, t_margin))
+                in_grace_period = (trade_age_sec < 45.0) and (mae_over_margin < 0.045)
+                is_hedged_pos = bool(pair_ctx.get("hedge_trade_id")) and (
+                    str(pair_ctx.get("hedge_trade_id")) in self.exchange.running_trades
+                )
+
+                if (
+                    not is_hedged_pos
+                    and not in_grace_period
+                    and deg_streak >= Config.EDGE_DEGRADATION_PERSISTENCE
+                    and edge_score <= Config.EDGE_DEGRADATION_EXIT
+                ):
+                    pnl_atr = float(edge_info.get("pnl_atr", 0.0))
+                    t_notional = t_margin * t_lev
+                    rt_fee_sats = max(2, int(round(t_notional * 2.0 * self.exchange.taker_fee_rate)))
+                    est_net_sats = gross_pl_sats - rt_fee_sats - int(round(carry_f))
+                    min_net_harvest = max(15, int(round(0.25 * rt_fee_sats)))
+                    min_physical_loss = max(30, int(round(0.04 * t_margin)))
+
+                    allow_forced_edge_exit = True
+                    # Regla 1: Prohibir FORCED EDGE EXIT en los primeros 90s salvo colapso físico severo
+                    if trade_age_sec < 90.0 and pnl_atr > -0.85:
+                        allow_forced_edge_exit = False
+                    # Regla 2: Zona muerta de comisiones (pnl_atr > -0.45)
+                    elif pnl_atr > -0.45 and est_net_sats < min_net_harvest:
+                        live_meta["edge_deg_streak"] = max(0, int(live_meta.get("edge_deg_streak", 1)) - 1)
+                        live_meta["edge_decay_streak"] = live_meta["edge_deg_streak"]
+                        allow_forced_edge_exit = False
+                    # Regla 3: En zona negativa (pnl_atr <= -0.45), exigir pérdida física real confirmada
+                    elif pnl_atr <= -0.45 and gross_pl_sats > -min_physical_loss:
+                        allow_forced_edge_exit = False
+
+                    if allow_forced_edge_exit:
+                        ok_fe, rec_fe = self.exchange.close_trade(
+                            live_tid, price=float(c.close), reason="FORCED_EDGE_EXIT", now=now
+                        )
+                        if ok_fe and rec_fe:
+                            events.append(rec_fe)
+                        continue
+
                 rt_fee_rate = (2.0 * self.exchange.taker_fee_rate) + (carry_f / max(1.0, notional_f))
 
                 harvest_atr = float(strat_cfg.get("harvest_atr", 1.15))
-                trail_trig_atr = float(strat_cfg.get("trail_trig_atr", 0.75))
+                trig_atr = float(strat_cfg.get("trail_trig_atr", 0.75))
 
                 atr_pct = cur_atr / entry_p
                 harvest_rate = max(rt_fee_rate * 2.40, atr_pct * harvest_atr)
-                trig_rate = max(rt_fee_rate * 1.80, atr_pct * trail_trig_atr * 0.75)
+                trig_rate = max(rt_fee_rate * 1.80, atr_pct * trig_atr * 0.75)
                 lock_net_rate = rt_fee_rate * 1.62
 
                 fav_p = float(c.high) if is_long else float(c.low)
@@ -295,102 +468,117 @@ class SimTrainingEnvironment:
                     if ok and rec:
                         events.append(rec)
 
-        # 2. Despachar liquidaciones a la Q-table (remember_and_train con Schema v2 solo si learning_enabled)
-        running_count = len(self.exchange.running_trades)
+        # 2. Despachar liquidaciones a la Q-table (separando patas de cobertura y primarias)
+        hedge_to_orig = {}
+        for o_id, p_ctx in self.hedge_store.pairs.items():
+            if isinstance(p_ctx, dict) and p_ctx.get("hedge_trade_id"):
+                hedge_to_orig[str(p_ctx["hedge_trade_id"])] = str(o_id)
+
+        running_count = sum(
+            1 for tid_k, tr_v in self.exchange.running_trades.items()
+            if not tr_v.get("_is_hedge", False) and not self.hedge_store.is_hedge_trade(tid_k)
+        )
         curr_state_key = self.brain.discretize_state(ind_5m, ind_15m, ind_1h, ind_4h, running_count)
+        q_vec_curr = self.brain.get_state_q_values(curr_state_key)
 
         step_net_sats = 0
+        # Paso 2A: Consolidar primero eventos de patas de cobertura cerradas (SL/TP/Liquidación)
         for ev in events:
-            tid = ev["id"]
-            orig_info = self.brain.active_trades.pop(tid, None)
-            if orig_info is not None:
-                orig_st = orig_info.get("state", curr_state_key)
-                act_taken = int(orig_info.get("action", 1))
-                net_pnl = int(ev.get("net_pnl_sats", 0))
-                margin_used = int(orig_info.get("margin", 1000))
-                lev_used = float(orig_info.get("leverage", 10))
-                hit_tp = bool(ev.get("close_reason") == "TAKE_PROFIT")
-                dur_ticks = max(1.0, float(ev.get("duration_s", 60.0)) / 60.0)
-                mae_tracked = float(orig_info.get("mae_sats", max(0, -net_pnl)))
-                mfe_tracked = float(orig_info.get("mfe_sats", max(0, net_pnl)))
-
-                self.total_settled_trades += 1
-                step_net_sats += net_pnl
-                self.total_net_pnl_sats += net_pnl
-                if net_pnl > 0:
-                    self.winning_trades += 1
-                else:
-                    self.losing_trades += 1
-
-                if self.learning_enabled:
-                    self.brain.remember_and_train(
-                        orig_st,
-                        act_taken,
-                        reward_sats=net_pnl,
-                        margin_used=margin_used,
-                        next_state=curr_state_key,
-                        equity_after=self.exchange.equity_sats,
-                        available_balance_after=self.exchange.available_balance_sats,
-                        real_balance_delta_sats=net_pnl,
-                        hit_tp=hit_tp,
-                        harvested=False,
-                        recovery_mode=False,
-                        lev_used=lev_used,
-                        exact_fee_sats=int(ev.get("entry_fee_sats", 0) + ev.get("exit_fee_sats", 0)),
-                        pl_includes_fees=True,
-                        funding_fee_sats=int(ev.get("carry_fees_sats", 0)),
-                        trade_id=tid,
-                        mae_sats=mae_tracked,
-                        mfe_sats=mfe_tracked,
-                        duration_ticks=dur_ticks,
-                        predicted_q_entry=orig_info.get("entry_q", None),
+            tid = str(ev["id"])
+            if tid in hedge_to_orig:
+                orig_id = hedge_to_orig[tid]
+                orig_meta = self.brain.active_trades.get(orig_id)
+                if isinstance(orig_meta, dict):
+                    orig_meta["realized_hedge_net_sats"] = (
+                        int(orig_meta.get("realized_hedge_net_sats", 0))
+                        + int(ev.get("net_pnl_sats", 0))
                     )
+                    orig_meta["realized_hedge_fee_sats"] = (
+                        int(orig_meta.get("realized_hedge_fee_sats", 0))
+                        + int(ev.get("entry_fee_sats", 0))
+                        + int(ev.get("exit_fee_sats", 0))
+                        + int(ev.get("carry_fees_sats", 0))
+                    )
+                if orig_id in self.hedge_store.pairs:
+                    self.hedge_store.pairs[orig_id]["hedge_trade_id"] = None
 
-        # 3. Supervisar coberturas mediante AdaptiveHedgeController
-        for tid, t in list(self.exchange.running_trades.items()):
+        # Paso 2B: Liquidar operaciones primarias cerradas (consolidando cualquier cobertura huérfana)
+        for ev in events:
+            tid = str(ev["id"])
+            if tid not in hedge_to_orig:
+                step_net_sats += self._settle_primary_event(ev, curr_state_key, now, float(c.close))
+
+        # 3. Supervisar coberturas mediante PortfolioHedgeCoordinator + AdaptiveHedgeController + HedgeRiskManager
+        pf_snap = PortfolioHedgeCoordinator.reconcile_portfolio(
+            list(self.exchange.running_trades.values()),
+            self.hedge_store,
+            self.exchange.equity_sats,
+            float(c.close),
+            now=now,
+        )
+        for t in pf_snap["primary_trades"]:
             if t.get("_is_hedge", False):
                 continue
-            pair_ctx = self.hedge_store.get_or_create_pair(t, now=now)
-            prev_net_pl = int(pair_ctx.get("last_combined_net_sats", t.get("pl", 0)))
-            pair_econ = {
-                "combined_net_pl_sats": int(t.get("pl", 0)),
-                "has_active_hedge": bool(pair_ctx.get("hedge_trade_id")),
-                "effective_hedge_ratio": float(pair_ctx.get("hedge_ratio", 0.0)),
-                "hedge_pl_sats": 0,
-                "orig_pl_sats": int(t.get("pl", 0)),
-            }
-            edge_info = EdgeMonitor.evaluate_position_edge(
-                t, pair_ctx, ind_5m, ind_15m, ind_1h, perception=perception, q_val_action=0.0, now=now
+            tid = str(t["id"])
+            live_meta = self.brain.active_trades.get(tid, {})
+            act_idx = int(live_meta.get("action", 2 if str(t.get("side", "b")).lower() in ("b", "buy", "long") else 6))
+            q_val_act = float(q_vec_curr[act_idx]) if act_idx < len(q_vec_curr) else float(live_meta.get("entry_q", 0.0))
+            prev_pair = self.hedge_store.pairs.get(tid)
+            h_tid = str(prev_pair.get("hedge_trade_id")) if (isinstance(prev_pair, dict) and prev_pair.get("hedge_trade_id")) else None
+            hedge_trade_obj = pf_snap["hedge_trades_map"].get(h_tid) if h_tid else None
+
+            hedge_dec = AdaptiveHedgeController.evaluate_and_manage_pair(
+                client=self.exchange,
+                orig_trade=t,
+                hedge_trade=hedge_trade_obj,
+                orig_meta=live_meta,
+                portfolio_snap=pf_snap,
+                hedge_store=self.hedge_store,
+                ind_5m=ind_5m,
+                ind_15m=ind_15m,
+                ind_1h=ind_1h,
+                perception=perception,
+                q_val_main=q_val_act,
+                account_equity_sats=self.exchange.equity_sats,
+                available_balance_sats=self.exchange.available_balance_sats,
+                locked_floor_sats=getattr(self.brain, "locked_floor", 0),
+                latency_degraded=False,
+                explorer_mode=self.explorer_mode,
+                safe_mode=False,
+                learning_enabled=self.learning_enabled,
+                now=now,
             )
-            pred_sig = PredictiveHedgeEngine.forecast_adverse_risk(
-                edge_info, ind_5m, ind_15m, ind_1h, perception=perception
-            )
-            state_fsm = self.hedge_controller._transition_state_with_hysteresis(
-                pair_ctx, pair_econ, edge_info, pred_sig, now
-            )
-            h_key = self.hedge_controller.discretize_hedge_state(
-                edge_info["market_regime"],
-                state_fsm,
-                edge_info["pnl_atr"],
-                edge_info["edge_score"],
-                pair_econ["effective_hedge_ratio"],
-            )
-            prev_h_key = pair_ctx.get("last_hedge_state_key")
-            prev_h_act = int(pair_ctx.get("last_hedge_action", 0))
-            is_exit_transition = ("HEDGE_EXIT" in h_key) or (state_fsm == "HEDGE_EXIT")
-            if self.learning_enabled and prev_h_key is not None:
-                r_h = self.hedge_controller.compute_hedge_reward(
-                    prev_net_pl,
-                    pair_econ["combined_net_pl_sats"],
-                    prev_h_act,
-                    fee_paid_sats=0,
-                    margin_sats=int(t.get("margin", 1000)),
-                )
-                self.hedge_store.update_hedge_q(
-                    prev_h_key, prev_h_act, r_h, h_key, done=is_exit_transition
-                )
-            pair_ctx["last_hedge_state_key"] = None if (is_exit_transition and not pair_econ["has_active_hedge"]) else h_key
-            pair_ctx["last_combined_net_sats"] = pair_econ["combined_net_pl_sats"]
+            exec_info = hedge_dec.get("execution", {})
+            sel_act_name = hedge_dec.get("selected_action_name", "NO_HEDGE")
+            if exec_info.get("executed"):
+                opened_hid = exec_info.get("hedge_trade_id")
+                if opened_hid and str(opened_hid) in self.exchange.running_trades:
+                    self.exchange.running_trades[str(opened_hid)]["_is_hedge"] = True
+                if exec_info.get("action") == "CLOSE_HEDGE" and h_tid:
+                    closed_h_rec = next(
+                        (r for r in reversed(self.exchange.closed_trades) if str(r.get("id")) == str(h_tid)),
+                        None,
+                    )
+                    if closed_h_rec is not None and isinstance(live_meta, dict):
+                        live_meta["realized_hedge_net_sats"] = (
+                            int(live_meta.get("realized_hedge_net_sats", 0))
+                            + int(closed_h_rec.get("net_pnl_sats", 0))
+                        )
+                        live_meta["realized_hedge_fee_sats"] = (
+                            int(live_meta.get("realized_hedge_fee_sats", 0))
+                            + int(closed_h_rec.get("entry_fee_sats", 0))
+                            + int(closed_h_rec.get("exit_fee_sats", 0))
+                            + int(closed_h_rec.get("carry_fees_sats", 0))
+                        )
+                if sel_act_name == "CLOSE_ORIGINAL_POSITION":
+                    closed_orig_rec = next(
+                        (r for r in reversed(self.exchange.closed_trades) if str(r.get("id")) == tid),
+                        None,
+                    )
+                    if closed_orig_rec is not None:
+                        step_net_sats += self._settle_primary_event(
+                            closed_orig_rec, curr_state_key, now, float(c.close)
+                        )
 
         # 4. Actualizar métrica de Drawdown continuo pico-valle
         cur_eq = self.exchange.equity_sats
@@ -403,6 +591,11 @@ class SimTrainingEnvironment:
 
         # 5. Evaluar nuevas aperturas si hay capacidad de concurrencia y cooldown
         max_trades = Config.MAX_CONCURRENT_TRADES
+        running_count = sum(
+            1 for tid_k, tr_v in self.exchange.running_trades.items()
+            if not tr_v.get("_is_hedge", False) and not self.hedge_store.is_hedge_trade(tid_k)
+        )
+        curr_state_key = self.brain.discretize_state(ind_5m, ind_15m, ind_1h, ind_4h, running_count)
         current_dd = (
             (self.peak_equity_sats - cur_eq) / max(1.0, float(self.peak_equity_sats))
             if self.peak_equity_sats > 0 else 0.0
@@ -422,6 +615,7 @@ class SimTrainingEnvironment:
                 recovery_mode=(current_dd >= 0.035), current_dd_pct=current_dd
             )
             q_vec = self.brain.get_state_q_values(curr_state_key)
+            entry_dispatched = False
 
             # Construir orden de evaluación de candidatos alineados con el régimen
             if is_exploring:
@@ -569,11 +763,17 @@ class SimTrainingEnvironment:
                                 "state": curr_state_key,
                                 "entry_time": now,
                                 "entry_q": float(q_vec[action]) if action < len(q_vec) else 0.0,
+                                "is_exploratory": bool(is_exploring or getattr(self.brain, "_last_decision_exploratory", False)),
+                                "edge_deg_streak": 0,
                             }
                             self.last_entry_ts = now
+                            entry_dispatched = True
                             break
                         except Exception:
                             pass
+
+            if raw_action > 0 and not entry_dispatched and hasattr(self.brain, "supervisor") and self.brain.supervisor is not None:
+                self.brain.supervisor.discard_last_action_decision()
 
         done = (self.exchange.balance_sats <= Config.MIN_MARGIN_SATS * 2) or not self.feed.has_next()
         info = {
@@ -602,41 +802,46 @@ class SimTrainingEnvironment:
         if self.exchange.running_trades:
             final_price = self.exchange.last_price
             final_ts = self.exchange.last_ts
+            hedge_to_orig_end = {}
+            for o_id, p_ctx in list(self.hedge_store.pairs.items()):
+                if isinstance(p_ctx, dict) and p_ctx.get("hedge_trade_id"):
+                    hedge_to_orig_end[str(p_ctx["hedge_trade_id"])] = str(o_id)
+
+            # 1. Cerrar primero patas de cobertura vivas y consolidarlas en sus primarias
+            for tid in list(self.exchange.running_trades.keys()):
+                tr_obj = self.exchange.running_trades.get(tid)
+                if tr_obj and (tr_obj.get("_is_hedge", False) or str(tid) in hedge_to_orig_end):
+                    ok_h, rec_h = self.exchange.close_trade(
+                        tid, price=final_price, reason="EPISODE_END_HEDGE", now=final_ts
+                    )
+                    if ok_h and rec_h:
+                        orig_id = hedge_to_orig_end.get(str(tid))
+                        orig_meta = self.brain.active_trades.get(orig_id) if orig_id else None
+                        if isinstance(orig_meta, dict):
+                            orig_meta["realized_hedge_net_sats"] = (
+                                int(orig_meta.get("realized_hedge_net_sats", 0))
+                                + int(rec_h.get("net_pnl_sats", 0))
+                            )
+                            orig_meta["realized_hedge_fee_sats"] = (
+                                int(orig_meta.get("realized_hedge_fee_sats", 0))
+                                + int(rec_h.get("entry_fee_sats", 0))
+                                + int(rec_h.get("exit_fee_sats", 0))
+                                + int(rec_h.get("carry_fees_sats", 0))
+                            )
+                        if orig_id and orig_id in self.hedge_store.pairs:
+                            self.hedge_store.pairs[orig_id]["hedge_trade_id"] = None
+
+            # 2. Cerrar primarias remanentes pasando métricas completas (MFE/MAE, ticks, predicted_q_entry)
             for tid in list(self.exchange.running_trades.keys()):
                 ok, rec = self.exchange.close_trade(tid, price=final_price, reason="EPISODE_END", now=final_ts)
                 if ok and rec:
-                    self.total_settled_trades += 1
-                    net_pnl = rec["net_pnl_sats"]
-                    self.total_net_pnl_sats += net_pnl
-                    if net_pnl > 0:
-                        self.winning_trades += 1
-                    else:
-                        self.losing_trades += 1
-                    if self.learning_enabled:
-                        orig_info = self.brain.active_trades.pop(tid, None)
-                        if orig_info:
-                            orig_st = orig_info.get("state", "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS")
-                            act_taken = int(orig_info.get("action", 1))
-                            margin_used = int(orig_info.get("margin", 1000))
-                            lev_used = float(orig_info.get("leverage", 10))
-                            self.brain.remember_and_train(
-                                orig_st,
-                                act_taken,
-                                reward_sats=net_pnl,
-                                margin_used=margin_used,
-                                next_state=orig_st,
-                                equity_after=self.exchange.equity_sats,
-                                available_balance_after=self.exchange.available_balance_sats,
-                                real_balance_delta_sats=net_pnl,
-                                hit_tp=(net_pnl > 0),
-                                harvested=False,
-                                recovery_mode=False,
-                                lev_used=lev_used,
-                                exact_fee_sats=int(rec.get("entry_fee_sats", 0) + rec.get("exit_fee_sats", 0)),
-                                pl_includes_fees=True,
-                                funding_fee_sats=int(rec.get("carry_fees_sats", 0)),
-                                trade_id=tid,
-                            )
+                    orig_meta_peek = self.brain.active_trades.get(str(tid))
+                    fallback_st = (
+                        orig_meta_peek.get("state", "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS")
+                        if isinstance(orig_meta_peek, dict)
+                        else "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS"
+                    )
+                    self._settle_primary_event(rec, fallback_st, final_ts, final_price)
 
         # Guardar cerebro candidato atómicamente con verificación SHA-256 solo si learning_enabled
         if self.learning_enabled:

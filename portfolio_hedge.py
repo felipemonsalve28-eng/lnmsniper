@@ -38,7 +38,8 @@ class PortfolioHedgeCoordinator:
             tid = str(t["id"])
             live_map[tid] = t
 
-            side = str(t.get("side", "buy")).lower()
+            raw_side = str(t.get("side", "buy")).lower()
+            side = "buy" if raw_side in ("buy", "b", "long") else "sell"
             margin = int(t.get("margin") or 0)
             lev = float(t.get("leverage") or 20.0)
             notional = int(round(margin * lev))
@@ -86,7 +87,8 @@ class PortfolioHedgeCoordinator:
     @classmethod
     def evaluate_pair_economics(cls, orig_trade, hedge_trade, pair_ctx, btc_price):
         price = max(1.0, float(btc_price))
-        orig_side = str(orig_trade.get("side", "buy")).lower()
+        raw_orig_side = str(orig_trade.get("side", "buy")).lower()
+        orig_side = "buy" if raw_orig_side in ("buy", "b", "long") else "sell"
         orig_margin = int(orig_trade.get("margin") or 1000)
         orig_lev = float(orig_trade.get("leverage") or 20.0)
         orig_notional = int(round(orig_margin * orig_lev))
@@ -113,7 +115,8 @@ class PortfolioHedgeCoordinator:
                 "combined_breakeven_price": round(be_price, 1),
             }
 
-        hedge_side = str(hedge_trade.get("side", "sell" if orig_side == "buy" else "buy")).lower()
+        raw_hedge_side = str(hedge_trade.get("side", "sell" if orig_side == "buy" else "buy")).lower()
+        hedge_side = "buy" if raw_hedge_side in ("buy", "b", "long") else "sell"
         hedge_margin = int(hedge_trade.get("margin") or 1000)
         hedge_lev = float(hedge_trade.get("leverage") or 20.0)
         hedge_notional = int(round(hedge_margin * hedge_lev))

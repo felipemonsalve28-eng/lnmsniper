@@ -42,6 +42,7 @@ class EdgeMonitor:
             or pair_ctx.get("entry_time")
             or pair_ctx.get("opened_at")
             or pair_ctx.get("orig_opened_at")
+            or trade.get("open_ts")
             or trade.get("entry_time")
             or trade.get("opened_at")
             or now_ts
@@ -53,8 +54,9 @@ class EdgeMonitor:
             or trade.get("is_exploratory", False)
         )
 
-        side = str(trade.get("side") or pair_ctx.get("orig_side") or "buy").lower()
-        is_long = (side == "buy")
+        raw_side = str(trade.get("side") or pair_ctx.get("orig_side") or "buy").lower()
+        is_long = raw_side in ("buy", "b", "long")
+        side = "buy" if is_long else "sell"
 
         price = max(float(ind_5m.get("price", 1.0)), 1.0)
         atr = max(float(ind_5m.get("atr", price * 0.0015)), 1.0)

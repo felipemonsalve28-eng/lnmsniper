@@ -284,6 +284,7 @@ class AdaptiveHedgeController:
         latency_degraded=False,
         explorer_mode=False,
         safe_mode=False,
+        learning_enabled=True,
         now=None,
     ):
         now = float(now if now is not None else time.time())
@@ -317,7 +318,7 @@ class AdaptiveHedgeController:
         prev_h_key = pair_ctx.get("last_hedge_state_key")
         prev_h_act = int(pair_ctx.get("last_hedge_action", 0))
         is_exit_transition = ("HEDGE_EXIT" in hedge_state_key) or (state == "HEDGE_EXIT")
-        if prev_h_key is not None:
+        if learning_enabled and prev_h_key is not None:
             last_fee_paid = int(pair_ctx.get("last_action_fee_sats", 0))
             avoided_sl = (
                 max(0, int(pred_sig.get("expected_saved_sats", 0)))
@@ -397,7 +398,8 @@ class AdaptiveHedgeController:
             pair_ctx["last_hedge_state_key"] = hedge_state_key
             pair_ctx["last_hedge_action"] = int(act_id)
         pair_ctx["last_combined_net_sats"] = curr_net_pl
-        hedge_store.dirty = True
+        if learning_enabled:
+            hedge_store.dirty = True
 
         return {
             "orig_trade_id": str(orig_trade["id"]),

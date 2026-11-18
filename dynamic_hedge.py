@@ -107,7 +107,8 @@ class DynamicHedgeExecutor:
             if isinstance(hedge_trade, dict):
                 price = float(ind_5m.get("price", 0.0))
                 atr = max(1.0, float(ind_5m.get("atr", price * 0.002)))
-                h_side = str(hedge_trade.get("side", "sell")).lower()
+                raw_h_side = str(hedge_trade.get("side", "sell")).lower()
+                h_side = "buy" if raw_h_side in ("buy", "b", "long") else "sell"
                 h_entry = float(hedge_trade.get("price") or hedge_trade.get("entryPrice") or price)
                 h_pl = int(hedge_trade.get("pl") or 0)
                 fee_off = h_entry * (2.4 * cls.TAKER_FEE)
@@ -168,7 +169,10 @@ class DynamicHedgeExecutor:
             h_notional = int(pair_ctx.get("hedge_notional_sats", 15000))
             exit_fee = max(1, int(round(h_notional * cls.TAKER_FEE)))
             resp = client.close_trade(hedge_tid)
-            confirmed = isinstance(resp, dict) and (resp.get("closed") is True or str(resp.get("id", "")) == str(hedge_tid))
+            confirmed = (
+                (isinstance(resp, dict) and (resp.get("closed") is True or str(resp.get("id", "")) == str(hedge_tid)))
+                or (isinstance(resp, tuple) and len(resp) >= 1 and bool(resp[0]))
+            )
             if confirmed:
                 entry_fee = int(pair_ctx.get("hedge_entry_fee_sats", exit_fee))
                 net_hedge_gain = h_pl - exit_fee - entry_fee
@@ -231,7 +235,8 @@ class DynamicHedgeExecutor:
             # Si está en pérdida moderada, acercar Take Profit a breakeven para salida rápida en rebote
             if orig_pl < 0 and hasattr(client, "update_takeprofit"):
                 orig_entry = float(orig_trade.get("price") or orig_trade.get("entryPrice") or ind_5m.get("price", 0.0))
-                orig_side = str(orig_trade.get("side", "buy")).lower()
+                raw_orig_side = str(orig_trade.get("side", "buy")).lower()
+                orig_side = "buy" if raw_orig_side in ("buy", "b", "long") else "sell"
                 be_tp = int(round(orig_entry * (1.0022 if orig_side == "buy" else 0.9978)))
                 try:
                     client.update_takeprofit(orig_tid, be_tp)
@@ -250,7 +255,10 @@ class DynamicHedgeExecutor:
         # ------------------------------------------------------------------
         if act == "CLOSE_ORIGINAL_POSITION" and orig_tid:
             resp = client.close_trade(orig_tid)
-            confirmed = isinstance(resp, dict) and (resp.get("closed") is True or str(resp.get("id", "")) == str(orig_tid))
+            confirmed = (
+                (isinstance(resp, dict) and (resp.get("closed") is True or str(resp.get("id", "")) == str(orig_tid)))
+                or (isinstance(resp, tuple) and len(resp) >= 1 and bool(resp[0]))
+            )
             if confirmed:
                 hedge_store.hedge_metrics["avoided_stopouts"] = int(hedge_store.hedge_metrics.get("avoided_stopouts", 0)) + 1
                 hedge_store.dirty = True

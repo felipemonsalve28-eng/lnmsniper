@@ -262,6 +262,24 @@ class SimLNMExchange:
 
         return True, {"id": tid, "new_margin": t["margin"], "new_liquidation": t["liquidation"]}
 
+    def update_stoploss(self, trade_id: str, stoploss_price: float) -> dict:
+        """Actualiza el nivel de Stop Loss de una posición simulada activa."""
+        tid = str(trade_id)
+        if tid not in self.running_trades:
+            return {}
+        t = self.running_trades[tid]
+        t["stoploss"] = round(float(stoploss_price), 2)
+        return {"id": tid, "stoploss": t["stoploss"]}
+
+    def update_takeprofit(self, trade_id: str, takeprofit_price: float) -> dict:
+        """Actualiza el nivel de Take Profit de una posición simulada activa."""
+        tid = str(trade_id)
+        if tid not in self.running_trades:
+            return {}
+        t = self.running_trades[tid]
+        t["takeprofit"] = round(float(takeprofit_price), 2)
+        return {"id": tid, "takeprofit": t["takeprofit"]}
+
     def step_candle(self, candle: Any) -> List[dict]:
         """
         Avanza un paso de simulación evaluando las órdenes abiertas contra los extremos
