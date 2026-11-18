@@ -1466,9 +1466,40 @@ class AutonomousGoalBrain:
             self.state_visits[norm_s] = 0
         return self.q_table[norm_s]
 
+    def get_conservative_q_values(self, state):
+        """
+        Penalización Conservadora en Inferencia (CQL Shrinkage) sin mutar la tabla Q:
+        Q_CQL(s, a) = Q(s, a) - (kappa * max(0, B_Q) + beta * sigma_Q) / (S_Q * sqrt(N(s, a) + 1))
+        con kappa = 0.75 y beta = 0.25.
+        """
+        norm_s = self._normalize_state_key(state)
+        raw_q = self.get_state_q_values(norm_s)
+        visits = max(0, int(self.state_visits.get(norm_s, 0)))
+        q_scale = max(1.0, self.thresholds.get_float("q_calibration", "q_to_sats_scale", 100.0))
+        b_q, sigma_q = (0.0, 0.0)
+        if hasattr(self, "supervisor") and self.supervisor is not None and hasattr(self.supervisor, "get_q_bias_stats"):
+            b_q, sigma_q = self.supervisor.get_q_bias_stats()
+        kappa = 0.75
+        beta = 0.25
+        penalty_sats = (kappa * max(0.0, float(b_q)) + beta * max(0.0, float(sigma_q))) / math.sqrt(float(visits) + 1.0)
+        penalty_q = penalty_sats / q_scale
+        q_min = self.thresholds.get_float("q_calibration", "q_clip_min", -2.0)
+        q_max = self.thresholds.get_float("q_calibration", "q_clip_max", 2.0)
+        c_vec = [0.0] * Config.NUM_ACTIONS
+        for idx in range(1, min(len(raw_q), Config.NUM_ACTIONS)):
+            c_vec[idx] = round(float(np.clip(float(raw_q[idx]) - penalty_q, q_min, q_max)), 4)
+        return c_vec
+
+    def get_conservative_q(self, state, action):
+        act_idx = int(action) % Config.NUM_ACTIONS
+        if act_idx == 0:
+            return 0.0
+        c_vec = self.get_conservative_q_values(state)
+        return float(c_vec[act_idx])
+
     def choose_action(self, state, ind_5m, ind_15m, ind_1h, ind_4h, recovery_mode=False, current_dd_pct=0.0):
         norm_s = self._normalize_state_key(state)
-        q_vals = self.get_state_q_values(norm_s)
+        q_vals = self.get_conservative_q_values(norm_s)
         visits = self.state_visits.get(norm_s, 0)
 
         self.epsilon_decay = self.thresholds.get_float("exploration", "epsilon_decay", self.epsilon_decay)
@@ -1546,7 +1577,10 @@ class AutonomousGoalBrain:
         self.supervisor.record_policy_decision(chosen_act)
         return chosen_act
 
-    def _update_q(self, s, a, r, ns, custom_alpha=None, force_negative_on_loss=False, check_guard=False, terminal=True):
+    def _update_q(
+        self, s, a, r, ns, custom_alpha=None, force_negative_on_loss=False,
+        check_guard=False, terminal=True, shadow_virtual=False
+    ):
         norm_s = self._normalize_state_key(s)
         norm_ns = self._normalize_state_key(ns)
         if norm_s not in self.q_table or len(self.q_table[norm_s]) != Config.NUM_ACTIONS:
@@ -1565,14 +1599,15 @@ class AutonomousGoalBrain:
 
         self._last_td_error = signed_td
 
-        if check_guard:
-            allow_update, _ = self.supervisor.evaluate_td_error_pre_update(signed_td)
-            if not allow_update:
+        if not shadow_virtual:
+            if check_guard:
+                allow_update, _ = self.supervisor.evaluate_td_error_pre_update(signed_td)
+                if not allow_update:
+                    self._last_delta_q = 0.0
+                    return 0.0
+            elif not self.supervisor.can_update_q_table():
                 self._last_delta_q = 0.0
                 return 0.0
-        elif not self.supervisor.can_update_q_table():
-            self._last_delta_q = 0.0
-            return 0.0
 
         q_min = self.thresholds.get_float("q_calibration", "q_clip_min", -2.0)
         q_max = self.thresholds.get_float("q_calibration", "q_clip_max", 2.0)
@@ -2827,9 +2862,11 @@ def record_shadow_order(order_data: dict):
         pass
 
 
-def update_shadow_trades(brain, spot_price: float, now: float = None):
+def update_shadow_trades(brain, spot_price: float, now: float = None, current_state: str = None):
     """
-    Simula en tiempo real la evolución de órdenes del modo sombra contra el precio spot (Fase F7).
+    Simula en tiempo real la evolución de órdenes del modo sombra contra el precio spot (Fase F7)
+    y ejecuta la actualización amortiguada de Bellman (alpha_recovery = 0.5 * alpha_base)
+    para desinflar valores Q(s, a) sobreestimados sin arriesgar satoshis reales.
     """
     now_ts = time.time() if now is None else float(now)
     shadow_dict = getattr(brain, "shadow_trades", None)
@@ -2838,13 +2875,14 @@ def update_shadow_trades(brain, spot_price: float, now: float = None):
     closed_sims = []
     for sid in list(shadow_dict.keys()):
         st = shadow_dict[sid]
-        entry = float(st["entry_price"])
+        entry = max(1.0, float(st["entry_price"]))
         sl = float(st["stoploss"])
         tp = float(st["takeprofit"])
         side = st["side"]
         m_sats = float(st["margin_sats"])
         lev = float(st["leverage"])
         cost = float(st.get("total_cost_sats", m_sats * lev * 0.002))
+        opened_ts = float(st.get("opened_at", st.get("timestamp", now_ts)))
         outcome = None
 
         if side == "buy":
@@ -2854,6 +2892,9 @@ def update_shadow_trades(brain, spot_price: float, now: float = None):
             elif spot_price <= sl:
                 gross = -m_sats * lev * (entry - sl) / entry
                 outcome = ("CLOSED_SL", gross - cost)
+            elif (now_ts - opened_ts) >= 900.0:
+                gross = m_sats * lev * (spot_price - entry) / entry
+                outcome = ("CLOSED_TIMEOUT", gross - cost)
         else:
             if spot_price <= tp:
                 gross = m_sats * lev * (entry - tp) / entry
@@ -2861,6 +2902,9 @@ def update_shadow_trades(brain, spot_price: float, now: float = None):
             elif spot_price >= sl:
                 gross = -m_sats * lev * (sl - entry) / entry
                 outcome = ("CLOSED_SL", gross - cost)
+            elif (now_ts - opened_ts) >= 900.0:
+                gross = m_sats * lev * (entry - spot_price) / entry
+                outcome = ("CLOSED_TIMEOUT", gross - cost)
 
         if outcome is not None:
             status, net_sats = outcome
@@ -2869,10 +2913,49 @@ def update_shadow_trades(brain, spot_price: float, now: float = None):
             rec["closed_price"] = spot_price
             rec["closed_timestamp"] = int(now_ts)
             rec["net_realized_sats"] = round(net_sats, 1)
+
+            orig_st = str(st.get("state") or current_state or "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS")
+            next_st = str(current_state or orig_st)
+            act_idx = int(st.get("action", 0)) % Config.NUM_ACTIONS
+            reward_scale = max(1.0, brain.thresholds.get_float("reward", "reward_scale_sats", 100.0))
+            q_min = brain.thresholds.get_float("q_calibration", "q_clip_min", -2.0)
+            q_max = brain.thresholds.get_float("q_calibration", "q_clip_max", 2.0)
+            shaped_r = float(np.clip(float(net_sats) / reward_scale, q_min, q_max))
+            alpha_base = brain.thresholds.get_float("exploration", "alpha_learning_rate", 0.18)
+            alpha_recovery = 0.5 * alpha_base
+
+            if act_idx > 0:
+                dq = brain._update_q(
+                    orig_st,
+                    act_idx,
+                    shaped_r,
+                    next_st,
+                    custom_alpha=alpha_recovery,
+                    force_negative_on_loss=(net_sats < 0.0),
+                    check_guard=False,
+                    terminal=True,
+                    shadow_virtual=True,
+                )
+                brain.state_visits[brain._normalize_state_key(orig_st)] = (
+                    int(brain.state_visits.get(brain._normalize_state_key(orig_st), 0)) + 1
+                )
+                if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                    brain.supervisor.record_shadow_closed_trade(
+                        predicted_q_entry=st.get("entry_q", None),
+                        net_realized_sats=net_sats,
+                        signed_td_error=brain._last_td_error,
+                    )
+                rec["td_error"] = round(brain._last_td_error, 4)
+                rec["delta_q"] = round(dq, 4)
+                brain.dirty = True
+
             record_shadow_order(rec)
             shadow_dict.pop(sid, None)
             closed_sims.append(rec)
-            print(f"  🕶️ [MODO SOMBRA SIMULADO] {status} {sid[:12]} | Net: {net_sats:+.1f} sats | Spot: ${spot_price:.1f}")
+            print(
+                f"  🕶️ [MODO SOMBRA SIMULADO] {status} {sid[:12]} | Net: {net_sats:+.1f} sats | "
+                f"Spot: ${spot_price:.1f} | dQ:{rec.get('delta_q', 0.0):.4f}"
+            )
     return closed_sims
 
 
@@ -3093,7 +3176,8 @@ def evaluate_and_dispatch_entries(
             state, ind_5m, ind_15m, ind_1h, ind_4h,
             recovery_mode=recovery_mode, current_dd_pct=current_dd_pct
         )
-        q_vec = brain.get_state_q_values(state)
+        q_vec = brain.get_conservative_q_values(state)
+        raw_q_vec = brain.get_state_q_values(state)
         action, gate_reason = SatsExpectancyGate.filter_and_rank_action(
             raw_action, state, q_vec, brain.strategies, perception,
             recovery_mode=recovery_mode, current_dd_pct=current_dd_pct,
@@ -3260,6 +3344,12 @@ def evaluate_and_dispatch_entries(
                 ):
                     viable_sats = False
 
+            runtime_shadow_cb = False
+            if hasattr(brain, "supervisor") and brain.supervisor is not None and hasattr(brain.supervisor, "evaluate_runtime_shadow_circuit_breaker"):
+                runtime_shadow_cb = bool(brain.supervisor.evaluate_runtime_shadow_circuit_breaker())
+            effective_shadow = bool(shadow_mode or Config.SHADOW_MODE or runtime_shadow_cb)
+            raw_entry_q = float(raw_q_vec[action]) if action < len(raw_q_vec) else float(q_val)
+
             lat_degraded, lat_reason = client.telemetry.evaluate_execution_health()
             can_send, dup_reason = client.order_guard.can_send_order(
                 strat["side"], margin_sats, lev, running_trades=still_running, now=now
@@ -3281,11 +3371,12 @@ def evaluate_and_dispatch_entries(
                     f"  🛡️ [MODO SEGURO - SIMULACIÓN] Señal válida {strat['name']} "
                     f"(Lev {lev}x | Margen {margin_sats} sats | SL:{sl} | TP:{tp} | ExpProy:{proj_exp*100:.1f}%)"
                 )
-            elif shadow_mode or Config.SHADOW_MODE:
+            elif effective_shadow:
                 shadow_tid = f"shadow-{int(now)}-{action}"
                 shadow_rec = {
                     "id": shadow_tid,
                     "timestamp": int(now),
+                    "opened_at": float(now),
                     "action": action,
                     "style": strat_style,
                     "name": strat["name"],
@@ -3299,6 +3390,7 @@ def evaluate_and_dispatch_entries(
                     "expected_net_sats": sats_meta.get("expected_net_sats", 0.0),
                     "p_hat": sats_meta.get("p_hat", 0.0),
                     "p_star": sats_meta.get("p_star", 0.0),
+                    "entry_q": raw_entry_q,
                     "state": state,
                     "status": "OPEN_SIMULATED",
                 }
@@ -3333,8 +3425,7 @@ def evaluate_and_dispatch_entries(
                                 new_t, ind_5m, state, now, forced_action=action
                             )
                             adopted_meta["decision_price"] = float(ind_5m["price"])
-                            q_val = float(q_vec[action]) if action < len(q_vec) else 0.0
-                            adopted_meta["entry_q"] = float(q_val)
+                            adopted_meta["entry_q"] = float(raw_entry_q)
                             brain.active_trades[nt_id] = adopted_meta
                             brain.dirty = True
                             brain.save_brain(force=False)
@@ -3530,8 +3621,8 @@ def main():
             if closed_ids:
                 last_known_balance = balance
 
-            if Config.SHADOW_MODE or hasattr(brain, "shadow_trades"):
-                update_shadow_trades(brain, float(ind_5m["price"]), now=now)
+            if Config.SHADOW_MODE or getattr(brain.supervisor, "runtime_shadow_active", False) or hasattr(brain, "shadow_trades"):
+                update_shadow_trades(brain, float(ind_5m["price"]), now=now, current_state=state)
 
             for t in primary_running:
                 tid = str(t["id"])
@@ -3605,7 +3696,7 @@ def main():
 
             ovr_tag = perception["override_side"] or "OFF"
             mkt_reg_tag = perception.get("market_regime", ind_5m.get("market_regime", "RANGE"))
-            q_vec = brain.get_state_q_values(state)
+            q_vec = brain.get_conservative_q_values(state)
 
             edge_scores_by_tid = {}
             for _t in primary_running:

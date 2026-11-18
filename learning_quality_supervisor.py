@@ -175,6 +175,7 @@ class LearningQualitySupervisor:
         self.mfe_mae_bad_streak: int = 0
         self.mfe_mae_recovery_streak: int = 0
         self.mfe_mae_defense_active: bool = False
+        self.runtime_shadow_active: bool = False
 
         # Registro estructurado de alertas de supervisión
         self.alerts_log: Deque[Dict[str, Any]] = collections.deque(maxlen=100)
@@ -664,6 +665,118 @@ class LearningQualitySupervisor:
             return 0.0
         return float(sum_net_sats) / float(sum_fees_sats)
 
+    def get_q_bias_stats(self) -> Tuple[float, float]:
+        """Retorna (q_bias_mean_sats, q_bias_std_sats) sobre la ventana móvil actual en O(1)."""
+        with self._lock:
+            n_qb = len(self.q_bias_window)
+            if n_qb == 0:
+                return 0.0, 0.0
+            q_bias_avg = sum(self.q_bias_window) / float(n_qb)
+            q_bias_std = _compute_std(self.q_bias_window, q_bias_avg) if n_qb > 1 else 0.0
+            return float(q_bias_avg), float(q_bias_std)
+
+    def evaluate_runtime_shadow_circuit_breaker(self) -> bool:
+        """
+        Circuit Breaker Automático a SHADOW en CAPITAL_DESTRUCTION:
+        - Activa runtime_shadow_active = True cuando simultáneamente:
+          FER < 1.0, Q-Bias > +25.0 sats y TD-Error_avg50 >= 0.80 (o Learning Guard suspendido).
+        - Rehabilita runtime_shadow_active = False solo cuando simultáneamente:
+          TD-Error_avg50 < 0.45, |Q-Bias| <= 25.0 sats y H_norm >= 0.250.
+        """
+        with self._lock:
+            n_td = len(self.td_error_window)
+            td_avg50 = (sum(self.td_error_window) / float(n_td)) if n_td > 0 else 0.0
+            q_bias_avg, _ = self.get_q_bias_stats()
+            fer_rolling = self.get_rolling_fer()
+            ent_metrics = self.get_policy_entropy_metrics()
+            h_norm = float(ent_metrics.get("normalized_policy_entropy", 0.0))
+
+            if not self.runtime_shadow_active:
+                if (
+                    len(self.fer_trades_window) >= 3
+                    and fer_rolling < 1.0
+                    and q_bias_avg > 25.0
+                    and (td_avg50 >= 0.80 or self.learning_guard_status != "ACTIVE_LEARNING")
+                ):
+                    self.runtime_shadow_active = True
+                    self._emit_alert(
+                        indicator="AUTO_SHADOW_CB",
+                        severity="CRITICAL",
+                        message=(
+                            f"Circuit Breaker AUTO-SHADOW activado (FER={fer_rolling:.2f} < 1.0, "
+                            f"Q-Bias={q_bias_avg:+.1f}s > +25.0s, TD-Avg50={td_avg50:.4f}). "
+                            f"Conmutando ejecucion a RUNTIME_SHADOW=True con deflacion Bellman amortiguada."
+                        ),
+                        meta={"fer": fer_rolling, "q_bias_sats": q_bias_avg, "td_avg50": td_avg50},
+                    )
+            else:
+                if td_avg50 < 0.45 and abs(q_bias_avg) <= 25.0 and h_norm >= 0.250:
+                    self.runtime_shadow_active = False
+                    self.learning_guard_status = "ACTIVE_LEARNING"
+                    self.critical_td_streak = 0
+                    self.hysteresis_recovery_streak = 0
+                    self._emit_alert(
+                        indicator="AUTO_SHADOW_CB",
+                        severity="INFO",
+                        message=(
+                            f"Metricas RL rehabilitadas en modo sombra (TD-Avg50={td_avg50:.4f} < 0.45, "
+                            f"|Q-Bias|={abs(q_bias_avg):.1f}s <= 25.0s, H_norm={h_norm:.3f} >= 0.250). "
+                            f"Restaurando RUNTIME_SHADOW=False."
+                        ),
+                        meta={"td_avg50": td_avg50, "q_bias_sats": q_bias_avg, "h_norm": h_norm},
+                    )
+            return self.runtime_shadow_active
+
+    def record_shadow_closed_trade(
+        self,
+        predicted_q_entry: Optional[float],
+        net_realized_sats: float,
+        signed_td_error: float,
+    ) -> None:
+        """
+        Registra cierres virtuales del modo sombra para permitir que TD-Error y Q-Bias
+        converjan hacia la realidad del mercado sin contaminar el PnL ni fees reales.
+        """
+        with self._lock:
+            abs_td = abs(_safe_float(signed_td_error, 0.0))
+            self.last_abs_td_error = abs_td
+            self.last_signed_td_error = _safe_float(signed_td_error, 0.0)
+            self.td_error_window.append(abs_td)
+            self.signed_td_error_window.append(self.last_signed_td_error)
+
+            stable_thr = self.thresholds.get_float("td_error", "stable_threshold", 0.45)
+            warn_thr = self.thresholds.get_float("td_error", "warning_threshold", 0.85)
+            crit_thr = self.thresholds.get_float("td_error", "critical_threshold", 1.35)
+            n_td = len(self.td_error_window)
+            rolling_avg = (sum(self.td_error_window) / float(n_td)) if n_td > 0 else 0.0
+            if rolling_avg >= crit_thr:
+                self.td_error_status = "CRITICAL"
+            elif rolling_avg >= warn_thr:
+                self.td_error_status = "WARNING"
+            elif rolling_avg <= stable_thr:
+                self.td_error_status = "STABLE"
+            else:
+                self.td_error_status = "IMPROVING"
+            self.td_error_trend = self.td_error_status
+
+            if predicted_q_entry is not None:
+                q_scale = self.thresholds.get_float("q_calibration", "q_to_sats_scale", 100.0)
+                q_entry_sats = _safe_float(predicted_q_entry, 0.0) * q_scale
+                q_bias_trade = q_entry_sats - _safe_float(net_realized_sats, 0.0)
+                self.q_bias_window.append(q_bias_trade)
+                over_alert = self.thresholds.get_float("q_calibration", "overestimation_alert_sats", 25.0)
+                under_alert = self.thresholds.get_float("q_calibration", "underestimation_alert_sats", -25.0)
+                mean_qb = sum(self.q_bias_window) / float(len(self.q_bias_window))
+                if mean_qb > over_alert:
+                    self.q_bias_status = "OVERESTIMATING"
+                elif mean_qb < under_alert:
+                    self.q_bias_status = "UNDERESTIMATING"
+                else:
+                    self.q_bias_status = "CALIBRATED"
+                    self.q_bias_defense_active = False
+
+            self.evaluate_runtime_shadow_circuit_breaker()
+
     def get_rolling_fer(self) -> float:
         with self._lock:
             if not self.fer_trades_window:
@@ -768,9 +881,11 @@ class LearningQualitySupervisor:
                 else 1.0
             )
 
+            self.evaluate_runtime_shadow_circuit_breaker()
             return {
                 "allow_online_q_updates": self.learning_guard_status == "ACTIVE_LEARNING",
                 "learning_guard_status": self.learning_guard_status,
+                "runtime_shadow_active": self.runtime_shadow_active,
                 "effective_min_expectancy_ratio": round(base_exp + exp_boost, 4),
                 "expectancy_boost_applied": round(exp_boost, 4),
                 "q_bias_defense_active": self.q_bias_defense_active,
