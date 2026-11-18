@@ -78,10 +78,13 @@ class DynamicHedgeExecutor:
                     pair_ctx["hedge_leverage"] = float(h_lev)
                     pair_ctx["hedge_notional_sats"] = h_margin * h_lev
                     pair_ctx["hedge_entry_price"] = fill_price
+                    pair_ctx["hedge_entry_fee_sats"] = est_fee
+                    pair_ctx["hedge_opened_at"] = now
+                    pair_ctx["hedges_opened_count"] = int(pair_ctx.get("hedges_opened_count", 0)) + 1
                     pair_ctx["hedge_ratio"] = float(approved_params.get("projected_hedge_ratio", 0.5))
                     pair_ctx["entry_unhedged_pl_sats"] = int(orig_trade.get("pl") or 0)
                     pair_ctx["cumulative_hedge_fees_sats"] = int(pair_ctx.get("cumulative_hedge_fees_sats", 0)) + est_fee
-                    pair_ctx["cooldown_until"] = now + 20.0
+                    pair_ctx["cooldown_until"] = now + 45.0
 
                     hedge_store.hedge_metrics["total_hedges_opened"] = int(hedge_store.hedge_metrics.get("total_hedges_opened", 0)) + 1
                     hedge_store.hedge_metrics["total_hedge_fees_sats"] = int(hedge_store.hedge_metrics.get("total_hedge_fees_sats", 0)) + est_fee
@@ -162,7 +165,8 @@ class DynamicHedgeExecutor:
             resp = client.close_trade(hedge_tid)
             confirmed = isinstance(resp, dict) and (resp.get("closed") is True or str(resp.get("id", "")) == str(hedge_tid))
             if confirmed:
-                net_hedge_gain = h_pl - exit_fee
+                entry_fee = int(pair_ctx.get("hedge_entry_fee_sats", exit_fee))
+                net_hedge_gain = h_pl - exit_fee - entry_fee
                 pair_ctx["cumulative_hedge_fees_sats"] = int(pair_ctx.get("cumulative_hedge_fees_sats", 0)) + exit_fee
                 pair_ctx["cumulative_saved_sats"] = int(pair_ctx.get("cumulative_saved_sats", 0)) + net_hedge_gain
                 pair_ctx["hedge_trade_id"] = None
@@ -171,8 +175,10 @@ class DynamicHedgeExecutor:
                 pair_ctx["hedge_leverage"] = 0.0
                 pair_ctx["hedge_notional_sats"] = 0
                 pair_ctx["hedge_entry_price"] = 0.0
+                pair_ctx["hedge_entry_fee_sats"] = 0
+                pair_ctx["hedge_opened_at"] = 0.0
                 pair_ctx["hedge_ratio"] = 0.0
-                pair_ctx["cooldown_until"] = now + 25.0
+                pair_ctx["cooldown_until"] = now + 60.0
 
                 hedge_store.hedge_metrics["total_hedge_fees_sats"] = int(hedge_store.hedge_metrics.get("total_hedge_fees_sats", 0)) + exit_fee
                 hedge_store.hedge_metrics["net_sats_saved_vs_sl"] = int(hedge_store.hedge_metrics.get("net_sats_saved_vs_sl", 0)) + net_hedge_gain

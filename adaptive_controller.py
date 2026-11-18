@@ -26,14 +26,19 @@ class AdaptiveHedgeController:
     y aprendizaje tabular independiente para el motor de cobertura.
     """
 
-    # Parámetros de histéresis para evitar sobreoperación (whipsaw)
-    WARN_EDGE_THRESHOLD = -0.18
-    WARN_PNL_ATR_THRESHOLD = -0.35
-    CANDIDATE_EDGE_THRESHOLD = -0.30
-    CANDIDATE_MIN_ADVERSE_PROB = 0.55
-    RECOVERY_EDGE_THRESHOLD = 0.06
-    MIN_CANDIDATE_STREAK = 2
-    MIN_RECOVERY_STREAK = 2
+    # Parámetros de histéresis física y temporal para erradicar whipsaw
+    WARN_EDGE_THRESHOLD = -0.25
+    WARN_PNL_ATR_THRESHOLD = -0.45
+    CANDIDATE_EDGE_THRESHOLD = -0.38
+    CANDIDATE_MIN_ADVERSE_PROB = 0.65
+    CANDIDATE_MIN_ADVERSE_PNL_ATR = -0.60
+    CANDIDATE_MIN_LOSS_MARGIN_RATIO = 0.04
+    MIN_PRIMARY_AGE_SEC = 60.0
+    MIN_HEDGE_HOLD_SEC = 45.0
+    MAX_HEDGES_PER_PAIR = 1
+    RECOVERY_EDGE_THRESHOLD = 0.12
+    MIN_CANDIDATE_STREAK = 3
+    MIN_RECOVERY_STREAK = 4
 
     @staticmethod
     def discretize_hedge_state(market_regime, hedge_state, pnl_atr, edge_score, eff_hedge_ratio):
@@ -91,6 +96,17 @@ class AdaptiveHedgeController:
         adv_prob = float(pred_sig.get("adverse_continuation_prob", 0.0))
         rec_prob = float(pred_sig.get("reversion_prob", 0.5))
 
+        orig_pl = int(pair_econ.get("orig_pl_sats", 0))
+        orig_margin = max(1000, int(pair_ctx.get("orig_margin_sats", 1000)))
+        orig_opened_at = float(pair_ctx.get("orig_opened_at", pair_ctx.get("state_entered_at", now)))
+        primary_age_sec = max(0.0, float(now) - orig_opened_at)
+        min_loss_sats = max(30, int(round(orig_margin * cls.CANDIDATE_MIN_LOSS_MARGIN_RATIO)))
+        has_physical_loss = (pnl_atr <= cls.CANDIDATE_MIN_ADVERSE_PNL_ATR) and (orig_pl <= -min_loss_sats)
+        can_open_new_hedge = (
+            primary_age_sec >= cls.MIN_PRIMARY_AGE_SEC
+            and int(pair_ctx.get("hedges_opened_count", 0)) < cls.MAX_HEDGES_PER_PAIR
+        )
+
         pair_ctx["state_cycles"] = int(pair_ctx.get("state_cycles", 0)) + 1
         new_state = cur_state
 
@@ -98,9 +114,9 @@ class AdaptiveHedgeController:
             if cur_state in ("HEDGE_ACTIVE", "HEDGE_ADJUST", "RECOVERY", "HEDGE_EXIT"):
                 new_state = "NORMAL"
             elif cur_state == "NORMAL":
-                if edge_score <= cls.WARN_EDGE_THRESHOLD or pnl_atr <= cls.WARN_PNL_ATR_THRESHOLD:
+                if (edge_score <= cls.WARN_EDGE_THRESHOLD and pnl_atr <= -0.25) or pnl_atr <= cls.WARN_PNL_ATR_THRESHOLD:
                     pair_ctx["warning_streak"] = int(pair_ctx.get("warning_streak", 0)) + 1
-                    if pair_ctx["warning_streak"] >= 1:
+                    if pair_ctx["warning_streak"] >= 2:
                         new_state = "WARNING"
                 else:
                     pair_ctx["warning_streak"] = 0
@@ -114,31 +130,45 @@ class AdaptiveHedgeController:
                         new_state = "NORMAL"
                         pair_ctx["warning_streak"] = 0
                         pair_ctx["candidate_streak"] = 0
-                elif edge_score <= cls.CANDIDATE_EDGE_THRESHOLD and adv_prob >= cls.CANDIDATE_MIN_ADVERSE_PROB:
+                elif (
+                    can_open_new_hedge
+                    and has_physical_loss
+                    and edge_score <= cls.CANDIDATE_EDGE_THRESHOLD
+                    and adv_prob >= cls.CANDIDATE_MIN_ADVERSE_PROB
+                ):
                     pair_ctx["candidate_streak"] = int(pair_ctx.get("candidate_streak", 0)) + 1
                     if pair_ctx["candidate_streak"] >= cls.MIN_CANDIDATE_STREAK:
                         new_state = "HEDGE_CANDIDATE"
+                else:
+                    pair_ctx["candidate_streak"] = 0
             elif cur_state == "HEDGE_CANDIDATE":
-                if edge_score > -0.15 and adv_prob < 0.45:
+                if (not has_physical_loss) or (edge_score > -0.20 and adv_prob < 0.50):
                     new_state = "WARNING"
                     pair_ctx["candidate_streak"] = 0
         else:
             # Con cobertura activa
             hedge_pl = int(pair_econ.get("hedge_pl_sats", 0))
             comb_net = int(pair_econ.get("combined_net_pl_sats", 0))
+            hedge_opened_at = float(pair_ctx.get("hedge_opened_at", pair_ctx.get("state_entered_at", now)))
+            hedge_age_sec = max(0.0, float(now) - hedge_opened_at)
+            hedge_notional = max(1000, int(pair_ctx.get("hedge_notional_sats", 1000)))
+            hedge_rt_fee = max(2, int(round(hedge_notional * 0.0020)))
+
             if cur_state in ("NORMAL", "WARNING", "HEDGE_CANDIDATE"):
                 new_state = "HEDGE_ACTIVE"
             elif cur_state == "HEDGE_ACTIVE":
-                if edge_score >= cls.RECOVERY_EDGE_THRESHOLD and rec_prob >= 0.48:
+                if hedge_age_sec >= cls.MIN_HEDGE_HOLD_SEC and edge_score >= cls.RECOVERY_EDGE_THRESHOLD and rec_prob >= 0.52:
                     pair_ctx["recovery_streak"] = int(pair_ctx.get("recovery_streak", 0)) + 1
                     if pair_ctx["recovery_streak"] >= cls.MIN_RECOVERY_STREAK:
                         new_state = "RECOVERY"
-                elif adv_prob >= 0.72 and float(pair_econ.get("effective_hedge_ratio", 0.0)) < 0.72:
+                elif adv_prob >= 0.78 and pnl_atr <= -0.95 and float(pair_econ.get("effective_hedge_ratio", 0.0)) < 0.68:
                     new_state = "HEDGE_ADJUST"
-                elif comb_net >= max(35, int(pair_ctx.get("orig_margin_sats", 1000) * 0.06)):
+                elif comb_net >= max(35, int(orig_margin * 0.06)):
                     new_state = "HEDGE_EXIT"
+                else:
+                    pair_ctx["recovery_streak"] = 0
             elif cur_state == "HEDGE_ADJUST":
-                if edge_score >= cls.RECOVERY_EDGE_THRESHOLD:
+                if hedge_age_sec >= cls.MIN_HEDGE_HOLD_SEC and edge_score >= cls.RECOVERY_EDGE_THRESHOLD:
                     new_state = "RECOVERY"
                 elif pair_ctx["state_cycles"] >= 2:
                     new_state = "HEDGE_ACTIVE"
@@ -146,7 +176,11 @@ class AdaptiveHedgeController:
                 if edge_score <= -0.32:
                     new_state = "HEDGE_ACTIVE"
                     pair_ctx["recovery_streak"] = 0
-                elif hedge_pl >= 15 or pair_ctx["state_cycles"] >= 2:
+                elif (
+                    hedge_pl >= hedge_rt_fee
+                    or comb_net >= 25
+                    or (hedge_age_sec >= cls.MIN_HEDGE_HOLD_SEC and pair_ctx["state_cycles"] >= 4 and edge_score >= 0.18 and rec_prob >= 0.58)
+                ):
                     new_state = "HEDGE_EXIT"
 
         if new_state != cur_state:
@@ -175,13 +209,15 @@ class AdaptiveHedgeController:
             else:
                 return 0, "NO_HEDGE"
 
-        # 2. Candidato confirmado a cobertura
+        # 2. Candidato confirmado a cobertura (escalonamiento obligatorio: solo PARTIAL_HEDGE en primera pata)
         elif state == "HEDGE_CANDIDATE" and not has_hedge:
             if pred_sig.get("direct_close_preferred", False):
                 return 6, "CLOSE_ORIGINAL_POSITION"
+            if int(pair_ctx.get("hedges_opened_count", 0)) >= cls.MAX_HEDGES_PER_PAIR:
+                return 0, "NO_HEDGE"
             if pred_sig.get("recommend_hedge", False):
-                valid_ids = [0, 1, 2]
-                heuristic_pref = 2 if rec_act_name == "INCREASE_HEDGE" else 1
+                valid_ids = [0, 1]
+                heuristic_pref = 1
             else:
                 return 0, "NO_HEDGE"
 
@@ -199,15 +235,18 @@ class AdaptiveHedgeController:
                 valid_ids = [0, 2]
                 heuristic_pref = 0
 
-        # 4. Recuperación / Salida de cobertura
+        # 4. Recuperación / Salida de cobertura (prohibir desarme prematuro a pérdida)
         elif state in ("RECOVERY", "HEDGE_EXIT") and has_hedge:
-            valid_ids = [3, 4]
-            if comb_net > 25 or hedge_pl >= 15 or float(edge_info.get("edge_score", 0.0)) >= 0.12:
-                heuristic_pref = 4
-            elif hedge_pl >= 40:
-                heuristic_pref = 3
+            hedge_notional = max(1000, int(pair_ctx.get("hedge_notional_sats", 1000)))
+            hedge_rt_fee = max(2, int(round(hedge_notional * 0.0020)))
+            if state == "RECOVERY":
+                if hedge_pl < hedge_rt_fee and comb_net < 25 and float(edge_info.get("edge_score", 0.0)) < 0.18:
+                    return 0, "NO_HEDGE"
+                valid_ids = [0, 3, 4]
+                heuristic_pref = 4 if (comb_net > 25 or hedge_pl >= hedge_rt_fee) else 0
             else:
-                heuristic_pref = 4
+                valid_ids = [3, 4]
+                heuristic_pref = 3 if (hedge_pl >= max(40, hedge_rt_fee * 2) and comb_net < 25) else 4
         else:
             valid_ids = [0, 5, 6] if not has_hedge else [0, 2, 3, 4, 6]
             heuristic_pref = 0

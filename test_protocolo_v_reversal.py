@@ -350,53 +350,55 @@ def run_audit_protocol():
     ind_1h_sup = {"rsi": 52.0, "ema_score": 0.35, "regime": "TREND_BULL"}
     perc_adv = {"vel_ema_atr": -1.10, "clv": -0.55, "override_side": "BEAR", "market_regime": "VOLATILITY_EXPANSION"}
 
-    # Ciclo 1: NORMAL -> WARNING (histéresis impide abrir cobertura en el primer ciclo)
+    # Ciclo 1 y 2: NORMAL -> WARNING (histéresis de 2 ciclos impide abrir cobertura prematura)
+    orig_meta_19 = {"style": "TREND", "entry_time": now - 90.0}
     pf_snap = PortfolioHedgeCoordinator.reconcile_portfolio(h_client.running_list, h_store, 30000, 77600.0, now=now)
-    r1 = AdaptiveHedgeController.evaluate_and_manage_pair(
-        h_client, orig_t, None, {"style": "TREND"}, pf_snap, h_store,
+    r1a = AdaptiveHedgeController.evaluate_and_manage_pair(
+        h_client, orig_t, None, orig_meta_19, pf_snap, h_store,
         ind_5m_adv, ind_15m_adv, ind_1h_sup, perc_adv, q_val_main=-0.15,
         account_equity_sats=30000, available_balance_sats=22000, locked_floor_sats=21000, now=now
     )
+    assert r1a["state"] == "NORMAL" and r1a["selected_action_name"] == "NO_HEDGE"
+    r1 = AdaptiveHedgeController.evaluate_and_manage_pair(
+        h_client, orig_t, None, orig_meta_19, pf_snap, h_store,
+        ind_5m_adv, ind_15m_adv, ind_1h_sup, perc_adv, q_val_main=-0.15,
+        account_equity_sats=30000, available_balance_sats=22000, locked_floor_sats=21000, now=now + 5
+    )
     assert r1["state"] == "WARNING" and r1["selected_action_name"] == "NO_HEDGE"
 
-    # Ciclo 2 y 3: WARNING -> HEDGE_CANDIDATE -> Ejecución de cobertura en API v3
-    r2 = AdaptiveHedgeController.evaluate_and_manage_pair(
-        h_client, orig_t, None, {"style": "TREND"}, pf_snap, h_store,
-        ind_5m_adv, ind_15m_adv, ind_1h_sup, perc_adv, q_val_main=-0.20,
-        account_equity_sats=30000, available_balance_sats=22000, locked_floor_sats=21000, now=now + 10
-    )
-    r3 = AdaptiveHedgeController.evaluate_and_manage_pair(
-        h_client, orig_t, None, {"style": "TREND"}, pf_snap, h_store,
-        ind_5m_adv, ind_15m_adv, ind_1h_sup, perc_adv, q_val_main=-0.28,
-        account_equity_sats=30000, available_balance_sats=22000, locked_floor_sats=21000, now=now + 20
-    )
-    opened_res = r2 if r2["execution"].get("executed") else r3
-    assert opened_res["execution"].get("executed") is True
+    # Ciclos 3, 4 y 5: WARNING -> HEDGE_CANDIDATE (3 ciclos de confirmación) -> Ejecución escalonada PARTIAL_HEDGE
+    opened_res = None
+    for c_i, q_m in enumerate((-0.20, -0.24, -0.28), start=1):
+        rc = AdaptiveHedgeController.evaluate_and_manage_pair(
+            h_client, orig_t, None, orig_meta_19, pf_snap, h_store,
+            ind_5m_adv, ind_15m_adv, ind_1h_sup, perc_adv, q_val_main=q_m,
+            account_equity_sats=30000, available_balance_sats=22000, locked_floor_sats=21000, now=now + 5 + c_i * 10
+        )
+        if rc["execution"].get("executed"):
+            opened_res = rc
+    assert opened_res is not None and opened_res["execution"].get("executed") is True
+    assert opened_res["selected_action_name"] == "PARTIAL_HEDGE"
     assert len(h_client.open_calls) == 1 and h_client.open_calls[0]["side"] == "sell"
 
-    # Ciclo 4: Con cobertura activa, giro alcista en 5m -> RECOVERY -> CLOSE_HEDGE
+    # Ciclos de recuperación: Con cobertura activa (>45s hold y hedge_pl cubriendo round-trip fee) -> RECOVERY -> CLOSE_HEDGE
     hedge_leg = h_client.open_calls[0]
-    hedge_leg["pl"] = 95
-    pf_snap2 = PortfolioHedgeCoordinator.reconcile_portfolio(h_client.running_list, h_store, 30000, 77750.0, now=now + 50)
+    hedge_leg["pl"] = 120
+    t_rec_base = now + 90
+    pf_snap2 = PortfolioHedgeCoordinator.reconcile_portfolio(h_client.running_list, h_store, 30000, 77750.0, now=t_rec_base)
     assert len(pf_snap2["primary_trades"]) == 1 and len(pf_snap2["hedge_trades_map"]) == 1
     ind_5m_rec = dict(ind_5m_bull, price=77750.0)
     perc_rec = {"vel_ema_atr": 0.85, "clv": 0.45, "override_side": "BULL", "market_regime": "TREND_BULL"}
-    AdaptiveHedgeController.evaluate_and_manage_pair(
-        h_client, orig_t, hedge_leg, {"style": "TREND"}, pf_snap2, h_store,
-        ind_5m_rec, ind_15m_bull, ind_1h_sup, perc_rec, q_val_main=0.25,
-        account_equity_sats=30000, available_balance_sats=20000, locked_floor_sats=21000, now=now + 50
-    )
-    AdaptiveHedgeController.evaluate_and_manage_pair(
-        h_client, orig_t, hedge_leg, {"style": "TREND"}, pf_snap2, h_store,
-        ind_5m_rec, ind_15m_bull, ind_1h_sup, perc_rec, q_val_main=0.30,
-        account_equity_sats=30000, available_balance_sats=20000, locked_floor_sats=21000, now=now + 60
-    )
-    r_unwind = AdaptiveHedgeController.evaluate_and_manage_pair(
-        h_client, orig_t, hedge_leg, {"style": "TREND"}, pf_snap2, h_store,
-        ind_5m_rec, ind_15m_bull, ind_1h_sup, perc_rec, q_val_main=0.35,
-        account_equity_sats=30000, available_balance_sats=20000, locked_floor_sats=21000, now=now + 90
-    )
-    assert r_unwind["selected_action_name"] == "CLOSE_HEDGE" and r_unwind["execution"].get("executed") is True
+    r_unwind = None
+    for rec_i in range(6):
+        r_tmp = AdaptiveHedgeController.evaluate_and_manage_pair(
+            h_client, orig_t, hedge_leg, orig_meta_19, pf_snap2, h_store,
+            ind_5m_rec, ind_15m_bull, ind_1h_sup, perc_rec, q_val_main=0.25 + 0.02 * rec_i,
+            account_equity_sats=30000, available_balance_sats=20000, locked_floor_sats=21000, now=t_rec_base + rec_i * 10
+        )
+        if r_tmp["selected_action_name"] == "CLOSE_HEDGE" and r_tmp["execution"].get("executed"):
+            r_unwind = r_tmp
+            break
+    assert r_unwind is not None and r_unwind["selected_action_name"] == "CLOSE_HEDGE" and r_unwind["execution"].get("executed") is True
     print("✅ ESCENARIO 19 (Hybrid Edge Hedging Engine: Máquina 7 Estados + Apertura y Cierre de Cobertura API v3): PASÓ.")
 
     # 20. ESCENARIO 20: Subordinación de Cobertura al HardFloorGuardian, Bloqueo por Latencia y Persistencia SHA-256
@@ -440,14 +442,15 @@ def run_audit_protocol():
     }
     int_client = MockLNMClient(running_list=[prim_t])
     int_brain.active_trades["prim-int-1"] = {
-        "action": 1, "style": "TREND", "state": "S_INT", "edge_deg_streak": 3, "last_pnl_atr": -0.90
+        "action": 1, "style": "TREND", "state": "S_INT", "edge_deg_streak": 3, "last_pnl_atr": -0.90,
+        "entry_time": now - 90.0,
     }
     account_st = {
         "equity_sats": 32000, "balance_sats": 24000, "locked_margin_sats": 3000,
         "locked_floor_sats": 21000, "hard_floor_breach": False, "current_dd_pct": 0.04
     }
-    # Ciclo 1, 2 y 3 integrados: abre cobertura y verifica que execute_strategy_guardian NO fuerza cierre mientras está cubierta
-    for step_idx in range(3):
+    # Ciclos 1..5 integrados (histéresis 2+3): abre PARTIAL_HEDGE y verifica que execute_strategy_guardian NO fuerza cierre mientras está cubierta
+    for step_idx in range(5):
         _, pf_st = reconcile_portfolio_with_hedges(
             int_client, int_brain, h_store_int, int_client.running_list,
             equity_sats=32000, btc_price=77600.0, now=now + step_idx * 10
@@ -455,7 +458,7 @@ def run_audit_protocol():
         still_prim = run_integrated_guardian_and_hedge_cycle(
             int_client, int_brain, h_store_int, pf_st, pf_st["primary_trades"],
             ind_5m_adv, ind_15m_adv, ind_1h_sup, "S_INT", "NORMAL",
-            edge_scores_by_tid={"prim-int-1": -0.35 if step_idx < 2 else -0.72},
+            edge_scores_by_tid={"prim-int-1": -0.35 if step_idx < 4 else -0.72},
             perception=perc_adv, q_vec=[0.0, -0.22, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             account_state=account_st, now=now + step_idx * 10, safe_mode=False
         )

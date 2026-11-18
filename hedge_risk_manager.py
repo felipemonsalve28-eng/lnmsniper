@@ -22,6 +22,9 @@ class HedgeRiskManager:
     MIN_HEDGE_LEVERAGE = 1
     MAX_HEDGE_RATIO = 1.00
     MAX_HEDGE_LEVERAGE = 35
+    MAX_HEDGES_PER_PAIR = 1
+    MIN_PRIMARY_AGE_SEC = 60.0
+    MIN_ADVERSE_LOSS_MARGIN_RATIO = 0.04
 
     @classmethod
     def authorize_hedge_action(
@@ -67,19 +70,33 @@ class HedgeRiskManager:
         if locked_floor_sats > 0 and (account_equity_sats - safety_buffer) <= locked_floor_sats:
             return False, f"BLOCKED_HARD_FLOOR_PROXIMITY(eq={account_equity_sats}<=floor={locked_floor_sats}+{safety_buffer})", {}
 
-        # 2. Evitar sobrecobertura (máximo 100% de la exposición nocional original)
+        # 2. Escalonamiento obligatorio, tope de coberturas por par y prueba física de pérdida
+        has_active = bool(pair_econ.get("has_active_hedge", False))
         current_ratio = float(pair_econ.get("effective_hedge_ratio", 0.0))
-        if act == "PARTIAL_HEDGE" and pair_econ.get("has_active_hedge", False):
+        if act == "PARTIAL_HEDGE" and has_active:
             return False, "BLOCKED_PARTIAL_HEDGE_ALREADY_ACTIVE", {}
+        if act == "INCREASE_HEDGE" and not has_active:
+            return False, "BLOCKED_INCREASE_REQUIRES_PARTIAL_FIRST", {}
+        if not has_active:
+            if int(pair_ctx.get("hedges_opened_count", 0)) >= cls.MAX_HEDGES_PER_PAIR:
+                return False, f"BLOCKED_MAX_HEDGES_PER_PAIR({pair_ctx.get('hedges_opened_count', 0)}>={cls.MAX_HEDGES_PER_PAIR})", {}
+            orig_opened_at = float(pair_ctx.get("orig_opened_at", pair_ctx.get("state_entered_at", now)))
+            if (now - orig_opened_at) < cls.MIN_PRIMARY_AGE_SEC:
+                return False, f"BLOCKED_HEDGE_PRIMARY_GRACE_PERIOD({now - orig_opened_at:.0f}s<{cls.MIN_PRIMARY_AGE_SEC:.0f}s)", {}
+            orig_pl_sats = int(pair_econ.get("orig_pl_sats", 0))
+            orig_margin_sats = max(1000, int(pair_ctx.get("orig_margin_sats", 1000)))
+            min_loss_req = max(30, int(round(orig_margin_sats * cls.MIN_ADVERSE_LOSS_MARGIN_RATIO)))
+            if orig_pl_sats > -min_loss_req:
+                return False, f"BLOCKED_HEDGE_NO_PHYSICAL_LOSS(pl={orig_pl_sats}>-{min_loss_req})", {}
         if current_ratio >= 0.92:
             return False, f"BLOCKED_MAX_HEDGE_RATIO_REACHED(h={current_ratio:.2f})", {}
 
         orig_notional = max(1000, int(pair_ctx.get("orig_notional_sats", 20000)))
         orig_lev = max(1.0, float(pair_ctx.get("orig_leverage", 25.0)))
-        target_ratio = float(predictive_signal.get("optimal_hedge_ratio", 0.50))
+        target_ratio = float(predictive_signal.get("optimal_hedge_ratio", 0.45))
         if act == "PARTIAL_HEDGE":
-            target_ratio = max(0.38, min(0.65, target_ratio if target_ratio > 0 else 0.50))
-        else:  # INCREASE_HEDGE
+            target_ratio = max(0.40, min(0.55, target_ratio if target_ratio > 0 else 0.45))
+        else:  # INCREASE_HEDGE (solo permitido sobre cobertura parcial ya abierta)
             target_ratio = max(0.75, min(cls.MAX_HEDGE_RATIO, target_ratio if target_ratio > 0 else 0.85))
 
         delta_ratio = max(0.0, min(cls.MAX_HEDGE_RATIO - current_ratio, target_ratio - current_ratio))
@@ -144,10 +161,10 @@ class HedgeRiskManager:
 
         market_regime = str((ind_5m or {}).get("market_regime", (ind_5m or {}).get("regime", "RANGE"))).upper()
         adv_prob = float((predictive_signal or {}).get("adverse_continuation_prob", 0.0))
-        if act == "PARTIAL_HEDGE" and market_regime in ("RANGE_SQUEEZE", "CHOP_HIGHVOL") and adv_prob < 0.78:
+        if act in ("PARTIAL_HEDGE", "INCREASE_HEDGE") and market_regime in ("RANGE_SQUEEZE", "CHOP_HIGHVOL") and adv_prob < 0.78:
             return False, "BLOCKED_HEDGE_SQUEEZE_WHIPSAW_RISK", {}
 
-        # 5. Garantizar que el ahorro esperado supere las comisiones de ida y vuelta con margen de seguridad
+        # 5. Garantizar que el ahorro esperado supere las comisiones de ida y vuelta con margen de seguridad unificado
         expected_saved_sats = int(
             predictive_signal.get(
                 "expected_saved_sats",
@@ -155,7 +172,7 @@ class HedgeRiskManager:
             )
         )
         net_saving_sats = int(predictive_signal.get("net_expected_saving_sats", expected_saved_sats - est_round_fee))
-        min_fee_mult = 1.35 if explorer_mode else (1.75 if market_regime in ("RANGE_SQUEEZE", "CHOP_HIGHVOL") else 1.45)
+        min_fee_mult = 1.85 if market_regime in ("RANGE_SQUEEZE", "CHOP_HIGHVOL", "RANGE") else 1.65
         if expected_saved_sats < int(round(est_round_fee * min_fee_mult)) or net_saving_sats <= 0:
             return False, f"BLOCKED_HEDGE_COST_EXCEEDS_UNHEDGED_RISK(fee={est_round_fee}>=saved={expected_saved_sats})", {}
 

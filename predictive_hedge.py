@@ -108,11 +108,12 @@ class PredictiveHedgeEngine:
             and close_now_loss < (hedge_fees_sats * 2 + int(0.35 * remaining_loss_to_sl))
         )
 
-        # Solo recomendar cobertura si el ahorro esperado supera la fricción total (C_hedge,net < 0) + margen de seguridad
-        fee_eff_mult = 1.75 if market_regime in ("RANGE_SQUEEZE", "RANGE", "CHOP_HIGHVOL") else 1.45
+        # Solo recomendar cobertura si existe excursión adversa real (pnl_atr <= -0.50) y el ahorro supera la fricción total
+        fee_eff_mult = 1.85 if market_regime in ("RANGE_SQUEEZE", "RANGE", "CHOP_HIGHVOL") else 1.65
         min_fee_efficiency = saved_move_sats >= int(round((hedge_fees_sats + hedge_slippage_sats) * fee_eff_mult))
         recommend_hedge = (
-            optimal_h >= 0.35
+            pnl_atr <= -0.50
+            and optimal_h >= 0.35
             and min_fee_efficiency
             and expected_hedge_net_cost_sats < 0
             and net_expected_saving_sats > 0

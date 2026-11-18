@@ -529,14 +529,18 @@ def run_all_tests() -> None:
     # -------------------------------------------------------------------------
     base_pair_ctx = {
         "orig_notional_sats": 30000,
+        "orig_margin_sats": 1500,
         "orig_leverage": 20,
         "orig_side": "buy",
+        "orig_opened_at": time.time() - 120.0,
+        "hedges_opened_count": 0,
         "cooldown_until": 0.0,
     }
     base_pair_econ = {
         "has_active_hedge": False,
         "effective_hedge_ratio": 0.0,
         "hedge_notional_sats": 0,
+        "orig_pl_sats": -120,
     }
     base_pf_snap = {"locked_margin_sats": 1500}
 

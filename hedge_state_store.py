@@ -174,6 +174,7 @@ class HedgeStateStore:
                 "orig_notional_sats": int(round(margin_sats * lev)),
                 "orig_entry_price": entry_p,
                 "orig_strategy": style,
+                "orig_opened_at": float((orig_meta or {}).get("entry_time") or now),
                 "state": "NORMAL",
                 "state_entered_at": now,
                 "state_cycles": 0,
@@ -183,12 +184,15 @@ class HedgeStateStore:
                 "candidate_streak": 0,
                 "adverse_streak": 0,
                 "recovery_streak": 0,
+                "hedges_opened_count": 0,
                 "hedge_trade_id": None,
                 "hedge_side": None,
                 "hedge_margin_sats": 0,
                 "hedge_leverage": 0.0,
                 "hedge_notional_sats": 0,
                 "hedge_entry_price": 0.0,
+                "hedge_entry_fee_sats": 0,
+                "hedge_opened_at": 0.0,
                 "hedge_ratio": 0.0,
                 "cumulative_hedge_fees_sats": 0,
                 "cumulative_cashed_in_sats": 0,
@@ -208,6 +212,11 @@ class HedgeStateStore:
             p["orig_notional_sats"] = int(round(margin_sats * lev))
             if entry_p > 0:
                 p["orig_entry_price"] = entry_p
+            if "orig_opened_at" not in p:
+                p["orig_opened_at"] = float((orig_meta or {}).get("entry_time") or p.get("state_entered_at", now))
+            p.setdefault("hedges_opened_count", 0)
+            p.setdefault("hedge_entry_fee_sats", 0)
+            p.setdefault("hedge_opened_at", 0.0)
         return self.pairs[tid]
 
     def get_all_hedge_trade_ids(self):
@@ -247,11 +256,13 @@ class HedgeStateStore:
                 p["hedge_leverage"] = 0.0
                 p["hedge_notional_sats"] = 0
                 p["hedge_entry_price"] = 0.0
+                p["hedge_entry_fee_sats"] = 0
+                p["hedge_opened_at"] = 0.0
                 p["hedge_ratio"] = 0.0
                 p["state"] = "NORMAL"
                 p["state_entered_at"] = now
                 p["state_cycles"] = 0
-                p["cooldown_until"] = now + 25.0
+                p["cooldown_until"] = now + 60.0
                 self.dirty = True
             elif not orig_alive and hedge_alive:
                 # La pata original cerró pero la cobertura sigue abierta -> promover cobertura a primaria

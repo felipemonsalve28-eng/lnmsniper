@@ -3,7 +3,7 @@
 
 > **Archivo de Contexto Persistente para Agentes Autónomos e Ingenieros**  
 > **Última Actualización:** 2026-11-18  
-> **Último Commit Base:** `0fd8d86` (`master`, pre-normalización canónica 1k-sat y aislamiento de umbrales por entorno)  
+> **Último Commit Base:** `90634a4` (`master`, etapa 23 certificada + cirugía Testnet)  
 > **Directiva de Operación:** [AGENT_MAINTENANCE_DIRECTIVE.md](file:///c:/Users/mberm/OneDrive/Documentos/sniper/AGENT_MAINTENANCE_DIRECTIVE.md)
 
 ---
@@ -445,6 +445,22 @@
   - [test_protocolo_v_reversal.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_protocolo_v_reversal.py): **`23/23`** escenarios superados.
   - [test_sniper_cli.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_sniper_cli.py): **`8/8`** pruebas superadas (incluye `test_08`).
   - Simulación `unittest`: **`22/22`** (`OK`); Integridad SHA-256 (`strict_sha=True`): `MAIN=True`, `TEST=True`, `HEDGE_MAIN=True`, `HEDGE_TEST=True`.
+
+### Etapa 24: Blindaje Integral del Hedge Engine y Conciliación Anti-Equity-Fantasma
+- **Estado:** **Completada, certificada al 100% en WSL y desplegada en vivo sobre Mainnet (`PID 2671`) y Testnet (`PID 2672`)**.
+- **Parches Estructurales Aplicados (6 módulos core + tests):**
+  1. **[hedge_state_store.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_store.py):** Incorporados `orig_opened_at`, `hedges_opened_count`, `hedge_entry_fee_sats` y `hedge_opened_at` por par; cooldown de reconciliación ampliado a `60.0s`.
+  2. **[adaptive_controller.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/adaptive_controller.py):** Histéresis física y temporal endurecida (`MIN_PRIMARY_AGE_SEC=60.0`, `MIN_HEDGE_HOLD_SEC=45.0`, `CANDIDATE_MIN_ADVERSE_PNL_ATR=-0.60`, `CANDIDATE_MIN_LOSS_MARGIN_RATIO=0.04`, `MAX_HEDGES_PER_PAIR=1`, `MIN_CANDIDATE_STREAK=3`, `MIN_RECOVERY_STREAK=4`, `warning_streak>=2`); escalonamiento obligatorio (`PARTIAL_HEDGE` único permitido en primera pata); inclusión de `NO_HEDGE` en `RECOVERY` para prohibir desarmes prematuros a pérdida.
+  3. **[hedge_risk_manager.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_risk_manager.py):** Bloqueos duros `BLOCKED_INCREASE_REQUIRES_PARTIAL_FIRST`, `BLOCKED_MAX_HEDGES_PER_PAIR`, `BLOCKED_HEDGE_PRIMARY_GRACE_PERIOD`, `BLOCKED_HEDGE_NO_PHYSICAL_LOSS`; `PARTIAL_HEDGE` acotado a `h ∈ [0.40, 0.55]`; `BLOCKED_HEDGE_SQUEEZE_WHIPSAW_RISK` extendido a `INCREASE_HEDGE`; `min_fee_mult` unificado (`1.85` en rango/squeeze/chop, `1.65` en tendencia/expansión).
+  4. **[dynamic_hedge.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/dynamic_hedge.py):** Registro de `hedge_entry_fee_sats`, `hedge_opened_at` y `hedges_opened_count` al abrir (`cooldown=45s`), y contabilidad round-trip exacta `net_hedge_gain = h_pl - exit_fee - entry_fee` al cerrar (`cooldown=60s`).
+  5. **[predictive_hedge.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/predictive_hedge.py):** Exigencia física `pnl_atr <= -0.50` y `fee_eff_mult` unificado (`1.85` / `1.65`) para recomendar cobertura.
+  6. **[lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py):** Registro de `realized_hedge_net_sats` / `realized_hedge_fee_sats` al cerrar cobertura huérfana en `reconcile_portfolio_with_hedges`, y refresco inmediato `client.get_user(force_refresh=True)` en `main()` cuando `len(running) < pre_reconcile_count`, erradicando la caída fantasma de equity (`25%–29.9% DD`) y falsos Kill-Switch.
+- **Certificación en WSL (`Ubuntu`):**
+  - [test_anti_whipsaw_hedge.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_anti_whipsaw_hedge.py): **`7/7`** pruebas dedicadas aprobadas (`OK`).
+  - [test_learning_quality_and_sats.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_learning_quality_and_sats.py): **`11/11`** escenarios aprobados.
+  - [test_protocolo_v_reversal.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_protocolo_v_reversal.py): **`23/23`** escenarios aprobados (Walk-Forward OOS: `Hybrid Net=+2544 sats`, `MaxDD=0.51%`, `PF=1.45`, `Evitado=2283 sats`, `Empeoró=0`).
+  - [test_sniper_cli.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_sniper_cli.py): **`8/8`** (`OK`) y simulación `unittest`: **`22/22`** (`OK`).
+  - Integridad SHA-256 (`strict_sha=True`): `MAIN=True`, `TEST=True`, `HEDGE_MAIN=True`, `HEDGE_TEST=True`.
 
 ---
 

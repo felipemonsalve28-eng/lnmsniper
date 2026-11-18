@@ -2820,7 +2820,21 @@ def reconcile_portfolio_with_hedges(
                     resp = client.close_trade(hedge_id)
                     if isinstance(resp, dict) and (resp.get("closed") is True or str(resp.get("id", "")) == hedge_id):
                         closed_orphan_ids.add(hedge_id)
-                        print(f"  🧹 [LIMPIEZA HEDGE HUÉRFANO] Cerrada cobertura {hedge_id[:6]} tras cierre de primaria {orig_id[:6]} en servidor.")
+                        h_obj = live_map.get(hedge_id) or {}
+                        h_pl = int(h_obj.get("pl") or 0)
+                        h_mrg = int(h_obj.get("margin") or p.get("hedge_margin_sats", 0))
+                        h_lev = float(h_obj.get("leverage") or p.get("hedge_leverage", 15.0))
+                        h_notional = int(round(h_mrg * h_lev))
+                        h_rt_fee = max(2, int(round(h_notional * 2.0 * Config.TAKER_FEE)))
+                        if orig_id in brain.active_trades and isinstance(brain.active_trades[orig_id], dict):
+                            brain.active_trades[orig_id]["realized_hedge_net_sats"] = (
+                                int(brain.active_trades[orig_id].get("realized_hedge_net_sats", 0)) + (h_pl - h_rt_fee)
+                            )
+                            brain.active_trades[orig_id]["realized_hedge_fee_sats"] = (
+                                int(brain.active_trades[orig_id].get("realized_hedge_fee_sats", 0)) + h_rt_fee
+                            )
+                            brain.dirty = True
+                        print(f"  🧹 [LIMPIEZA HEDGE HUÉRFANO] Cerrada cobertura {hedge_id[:6]} tras cierre de primaria {orig_id[:6]} en servidor (net_est:{h_pl - h_rt_fee:+,}s).")
                 except Exception:
                     pass
             hedge_store.pairs.pop(orig_id, None)
@@ -3751,6 +3765,7 @@ def main():
             prelim_equity, _, _ = compute_account_equity(balance, running)
             lnm_price = client.get_ticker_price()
 
+            pre_reconcile_count = len(running or [])
             running, portfolio_state = reconcile_portfolio_with_hedges(
                 client, brain, hedge_store, running,
                 equity_sats=max(1, prelim_equity or last_known_balance or 30000),
@@ -3758,6 +3773,9 @@ def main():
                 now=now,
                 safe_mode=safe_mode,
             )
+            if len(running or []) < pre_reconcile_count:
+                user = client.get_user(force_refresh=True)
+                balance = int(user.get("balance", balance))
             primary_running = portfolio_state["primary_trades"]
             hedge_running = list(portfolio_state["hedge_trades_map"].values())
             primary_id_set = {str(x["id"]) for x in primary_running}

@@ -150,7 +150,7 @@ def generate_walk_forward_oos_episodes():
       - Operaciones contratendencia (`REVERSION` / `DEF_SCALP`) en expansión de volatilidad
     """
     episodes = []
-    base_price = 80000.0
+    base_price = 62500.0
     ep_id = 0
 
     regime_specs = {
@@ -237,9 +237,13 @@ def generate_walk_forward_oos_episodes():
                 "bb_expansion_rate": spec["bb_exp"],
                 "ema_spread": spec["ema_spread"],
                 "mtf_alignment": spec["mtf_align"],
-                "path_atr": list(path_atr),
-                "sl_atr": 1.65,
-                "tp_atr": 2.10,
+                "path_atr": (
+                    [-0.25, -0.65, -1.00, -1.35, -1.70, -2.05, -2.25, -2.40]
+                    if ptype == "ADVERSE_SL"
+                    else list(path_atr)
+                ),
+                "sl_atr": 1.95,
+                "tp_atr": 2.25,
             })
     return episodes
 
@@ -406,7 +410,8 @@ def simulate_variant_episode(variant_name, ep, hedge_store, equity_sats, now_bas
     closed_early_orig_gross = None
 
     for s_idx, move_atr in enumerate(ep["path_atr"]):
-        now_step = now_base + s_idx * 16.0
+        now_step = now_base + (s_idx + 1) * 60.0
+        orig_meta_wf = {"style": style, "entry_time": now_base}
         cur_p = entry_p + side_sign * move_atr * atr
         orig_trade["_cur_price"] = cur_p
         orig_gross_step = int(round(notional_sats * (move_atr * atr / entry_p)))
@@ -483,11 +488,11 @@ def simulate_variant_episode(variant_name, ep, hedge_store, equity_sats, now_bas
                 sim_client.running_list, hedge_store, equity_sats, cur_p, now=now_step
             )
             q_main = -0.38 if (ptype == "ADVERSE_SL" and move_atr <= -0.50) else (0.18 if ptype == "WHIPSAW_RECOVER" and move_atr > -0.60 else 0.05)
-            # En WHIPSAW_RECOVER la deterioro es transitorio; en ADVERSE_SL es persistente (2+ ciclos)
-            if ptype == "ADVERSE_SL" and move_atr <= -0.45:
-                p_ctx = hedge_store.get_or_create_pair(orig_trade, orig_meta={"style": style}, now=now_step)
+            # En WHIPSAW_RECOVER el deterioro es transitorio; en ADVERSE_SL es persistente (3+ ciclos)
+            if ptype == "ADVERSE_SL" and move_atr <= -0.60:
+                p_ctx = hedge_store.get_or_create_pair(orig_trade, orig_meta=orig_meta_wf, now=now_step)
                 p_ctx["warning_streak"] = max(2, int(p_ctx.get("warning_streak", 0)) + 1)
-                p_ctx["candidate_streak"] = max(2, int(p_ctx.get("candidate_streak", 0)) + 1)
+                p_ctx["candidate_streak"] = max(3, int(p_ctx.get("candidate_streak", 0)) + 1)
                 if p_ctx["state"] in ("NORMAL", "WARNING"):
                     p_ctx["state"] = "HEDGE_CANDIDATE"
 
@@ -496,7 +501,7 @@ def simulate_variant_episode(variant_name, ep, hedge_store, equity_sats, now_bas
                 client=sim_client,
                 orig_trade=orig_trade,
                 hedge_trade=active_hedge,
-                orig_meta={"style": style},
+                orig_meta=orig_meta_wf,
                 portfolio_snap=pf_snap,
                 hedge_store=hedge_store,
                 ind_5m=ind_5m,
