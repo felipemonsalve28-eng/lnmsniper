@@ -19,7 +19,9 @@ from lnm_sniper_v6_advanced import (
     Config,
     THRESHOLDS_MANAGER,
     calculate_strategy_order_params,
+    compute_live_edge,
 )
+from learning_thresholds_manager import get_thresholds_manager
 from hedge_state_store import HedgeStateStore
 from adaptive_controller import AdaptiveHedgeController
 from edge_monitor import EdgeMonitor
@@ -28,6 +30,12 @@ from predictive_hedge import PredictiveHedgeEngine
 from guardian_execution_core import HardFloorGuardian, compat_np as np
 from sniper_perception_sats_core import SatsExpectancyGate, MarketRegimeClassifier
 from liquidity_radar import LiquidityConfig, compute_liquidity_bias, compute_opposite_pool_room
+from limit_execution_manager import (
+    LimitExecutionConfig,
+    LimitExecutionManager,
+    should_route_limit,
+    compute_limit_entry_plan,
+)
 
 
 class SimTrainingEnvironment:
@@ -89,6 +97,13 @@ class SimTrainingEnvironment:
         self.total_fees_paid_sats: int = 0
         self.peak_equity_sats: int = self.initial_balance_sats
         self.max_seen_drawdown_pct: float = 0.0
+        self.limit_config_override: Optional[LimitExecutionConfig] = None
+        self.limit_manager = LimitExecutionManager(
+            env_mode="testnet",
+            base_dir=".",
+            max_concurrent_trades=Config.MAX_CONCURRENT_TRADES,
+            persist_to_disk=False,
+        )
 
     def _seed_canonical_states_if_needed(self) -> None:
         """Siembra los 175 estados canónicos si el cerebro candidato es nuevo."""
@@ -177,6 +192,12 @@ class SimTrainingEnvironment:
         )
         self.brain.active_trades.clear()
         self.hedge_store.pairs.clear()
+        self.limit_manager = LimitExecutionManager(
+            env_mode="testnet",
+            base_dir=".",
+            max_concurrent_trades=Config.MAX_CONCURRENT_TRADES,
+            persist_to_disk=False,
+        )
 
         return self.feed.get_perception_state()
 
@@ -291,6 +312,38 @@ class SimTrainingEnvironment:
         ind_4h = mkt_state["ind_4h"]
         perception = mkt_state["perception"]
         cur_atr = max(1.0, float(ind_5m.get("atr", c.close * 0.002)))
+
+        # 1b. Reconciliar órdenes límite pasivas (incluye fills cerrados pesimistamente en la misma vela 1m)
+        if self.limit_manager.pending:
+            _tm_rec = getattr(self, "thresholds", None) or getattr(self.brain, "thresholds", None) or THRESHOLDS_MANAGER
+            _lim_cfg_rec = self.limit_config_override or LimitExecutionConfig.from_thresholds(_tm_rec)
+            _combined_trades = list(self.exchange.running_trades.values()) + list(events)
+            _rec_res = self.limit_manager.reconcile_open_orders(
+                client=self.exchange,
+                running_trades=_combined_trades,
+                spot_price=float(c.close),
+                perception=perception,
+                cfg=_lim_cfg_rec,
+                force_cancel_all=False,
+                now=now,
+            )
+            for _f_ev in _rec_res.get("filled", []):
+                _tr_f = _f_ev.get("trade") or {}
+                _mt_f = _f_ev.get("meta") or {}
+                _fid = str(_tr_f.get("id") or "")
+                if _fid and _fid not in self.brain.active_trades:
+                    self.brain.active_trades[_fid] = {
+                        "action": int(_mt_f.get("action", 1)),
+                        "style": str(_mt_f.get("style", "SNIPER")),
+                        "margin": int(_mt_f.get("margin_sats", _tr_f.get("margin", 0))),
+                        "leverage": float(_mt_f.get("leverage", _tr_f.get("leverage", 1))),
+                        "state": str(_mt_f.get("state_key", "RANGE_NORMAL|MID|LOW_EXP|CHOP|EMA_TRANS")),
+                        "entry_time": float(_tr_f.get("open_ts", now)),
+                        "entry_q": float(_mt_f.get("entry_q", 0.0)),
+                        "is_exploratory": bool(_mt_f.get("is_exploratory", False)),
+                        "edge_deg_streak": 0,
+                        "entry_type": "limit",
+                    }
 
         pre_primary_count = sum(
             1 for tid_k, tr_v in self.exchange.running_trades.items()
@@ -608,7 +661,7 @@ class SimTrainingEnvironment:
         rem_bars = len(self.feed.candles_1m) - self.feed.cursor
         min_rem_bars = min(35, max(5, len(self.feed.candles_1m) // 12))
 
-        if not dd_throttle_halt and rem_bars >= min_rem_bars and running_count < max_trades and (now - self.last_entry_ts) >= Config.ENTRY_COOLDOWN_SEC:
+        if not dd_throttle_halt and rem_bars >= min_rem_bars and self.limit_manager.effective_slots_used(running_count) < max_trades and (now - self.last_entry_ts) >= Config.ENTRY_COOLDOWN_SEC:
             is_exploring = self.learning_enabled and (random.random() < self.brain.epsilon)
 
             raw_action = self.brain.choose_action(
@@ -759,31 +812,88 @@ class SimTrainingEnvironment:
                         )
                         if liq_room.get("blocked_by_wall", False):
                             viable = False
-                        else:
-                            pre_edge = compute_live_edge(
-                                brain=self.brain,
-                                state=curr_state_key,
-                                action=action,
-                                ind_5m=ind_5m,
-                                perception=perception,
-                                margin_sats=int(margin_sats),
-                                leverage=float(lev),
-                                entry_price=float(price),
-                                simulated_entry=True,
-                                now=now,
-                            )
-                            # Garantizar consistencia si liquidity_config_override difiere de THRESHOLDS_MANAGER
-                            base_edge_no_liq = float(pre_edge["edge_score"]) - float(pre_edge.get("liq_bias", 0.0))
-                            eff_liq_bias = compute_liquidity_bias(
+
+                    if viable and (not self.explorer_mode):
+                        pre_edge = compute_live_edge(
+                            brain=self.brain,
+                            state=curr_state_key,
+                            action=action,
+                            ind_5m=ind_5m,
+                            perception=perception,
+                            margin_sats=int(margin_sats),
+                            leverage=float(lev),
+                            entry_price=float(price),
+                            simulated_entry=True,
+                            now=now,
+                        )
+                        base_edge_no_liq = float(pre_edge["edge_score"]) - float(pre_edge.get("liq_bias", 0.0))
+                        eff_liq_bias = (
+                            compute_liquidity_bias(
                                 action=action,
                                 liquidity_signal=liq_sig,
                                 cfg=liq_cfg,
                                 num_actions=getattr(self.brain, "num_actions", 9),
                             )
-                            if (base_edge_no_liq + eff_liq_bias) < 0.0:
-                                viable = False
+                            if (liq_cfg.enabled and (not liq_cfg.shadow_only))
+                            else 0.0
+                        )
+                        min_preflight_edge = 0.15 if (current_dd >= 0.035) else 0.0
+                        if (base_edge_no_liq + eff_liq_bias) < min_preflight_edge:
+                            viable = False
 
                     if viable and margin_sats <= self.exchange.available_balance_sats:
+                        lim_cfg = self.limit_config_override or LimitExecutionConfig.from_thresholds(_tm_sim)
+                        use_limit = False
+                        if lim_cfg.enabled and (not self.explorer_mode):
+                            use_limit, _ = should_route_limit(
+                                action=action,
+                                style=strat_style,
+                                market_regime=mkt_reg_tag,
+                                liquidity_signal=liq_sig,
+                                spot_price=float(price),
+                                atr_5m=float(atr),
+                                taker_fee=float(_tm_sim.get_float("fees", "taker_fee_rate", 0.001)),
+                                recovery_mode=(current_dd >= 0.035),
+                                cfg=lim_cfg,
+                            )
+                        if use_limit:
+                            lim_plan = compute_limit_entry_plan(
+                                side=side,
+                                style=strat_style,
+                                spot_price=float(price),
+                                atr_5m=float(atr),
+                                base_sl=float(sl),
+                                base_tp=float(tp),
+                                liquidity_signal=liq_sig,
+                                cfg=lim_cfg,
+                            )
+                            if not lim_plan.get("valid", False):
+                                continue
+                            lim_meta = {
+                                "action": action,
+                                "style": strat["style"],
+                                "state": curr_state_key,
+                                "entry_q": float(q_vec[action]) if action < len(q_vec) else 0.0,
+                                "is_exploratory": bool(is_exploring or getattr(self.brain, "_last_decision_exploratory", False)),
+                                "liq_score": float((liq_sig or {}).get("liquidity_score", 0.0)),
+                            }
+                            ok_lim, _, _ = self.limit_manager.submit_limit_order(
+                                client=self.exchange,
+                                side=side,
+                                margin_sats=margin_sats,
+                                leverage=lev,
+                                plan=lim_plan,
+                                meta=lim_meta,
+                                running_count=running_count,
+                                atr_5m=float(atr),
+                                max_slots=max_trades,
+                                now=now,
+                            )
+                            if ok_lim:
+                                self.last_entry_ts = now
+                                entry_dispatched = True
+                                break
+                            continue
                         try:
                             trade = self.exchange.open_trade(
                                 side=side,
@@ -838,6 +948,12 @@ class SimTrainingEnvironment:
         last_info = {}
         while not done:
             _, _, done, last_info = self.step()
+
+        # Cancelar órdenes límite pendientes al finalizar el episodio
+        if self.limit_manager.pending:
+            self.limit_manager.cancel_all_for_shutdown(
+                self.exchange, list(self.exchange.running_trades.values())
+            )
 
         # Si quedaron posiciones vivas al agotar las velas, cerrarlas a precio de mercado de la última vela
         if self.exchange.running_trades:
@@ -902,6 +1018,7 @@ class SimTrainingEnvironment:
             "total_funding_paid_sats": self.exchange.total_funding_paid_sats,
             "epsilon_final": round(self.brain.epsilon, 4),
             "total_trained_transitions": self.brain.total_trained,
+            "limit_stats": dict(self.limit_manager.stats),
             "closed_trades": list(self.exchange.closed_trades),
         }
 
