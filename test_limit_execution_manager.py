@@ -106,19 +106,16 @@ class TestLimitExecutionManager(unittest.TestCase):
             cfg = LimitExecutionConfig(enabled=True)
             plan = compute_limit_entry_plan("b", "LONG_REVERSION", 62500.0, 100.0, 62300.0, 62900.0, None, cfg)
 
-            # Con 4 running -> puede colocar 1 open (total 5)
-            ok1, _, rec1 = mgr.submit_limit_order(cli, "b", 1000, 20.0, plan, {"style": "LONG_REVERSION", "action": 2}, running_count=4, atr_5m=100.0, now=1000.0)
+            ok1, _, _ = mgr.submit_limit_order(cli, "b", 1000, 20.0, plan, {"style": "LONG_REVERSION", "action": 2}, running_count=4, atr_5m=100.0, now=1000.0)
             self.assertTrue(ok1)
             self.assertEqual(mgr.effective_slots_used(4), 5)
             self.assertEqual(mgr.reserved_margin_sats(), 1000)
 
-            # Con 4 running + 1 open = 5 -> bloqueado por SLOTS_FULL incluso en dirección opuesta
             plan_s = compute_limit_entry_plan("s", "SHORT_REVERSION", 62500.0, 100.0, 62700.0, 62100.0, None, cfg)
             ok2, r2, _ = mgr.submit_limit_order(cli, "s", 1000, 20.0, plan_s, {"style": "SHORT_REVERSION", "action": 6}, running_count=4, atr_5m=100.0, now=1005.0)
             self.assertFalse(ok2)
             self.assertIn("SLOTS_FULL", r2)
 
-            # Mismo lado bloqueado incluso con slots libres
             ok3, r3, _ = mgr.submit_limit_order(cli, "b", 1000, 20.0, plan, {"style": "LONG_REVERSION", "action": 2}, running_count=1, atr_5m=100.0, now=1006.0)
             self.assertFalse(ok3)
             self.assertIn("OPEN_LIMIT_SAME_SIDE_EXISTS", r3)
@@ -127,7 +124,6 @@ class TestLimitExecutionManager(unittest.TestCase):
         """Valida cancelación temprana por TTL, Runaway (>= 55% TP) e invalidación de mecha."""
         cfg = LimitExecutionConfig(enabled=True, ttl_sec_5m=90.0, runaway_tp_frac=0.55)
         with tempfile.TemporaryDirectory() as tmpd:
-            # A. TTL
             mgr = LimitExecutionManager("testnet", base_dir=tmpd)
             cli = MockLimitClient()
             plan = {"limit_price": 62480.0, "stoploss": 62300.0, "takeprofit": 62880.0, "invalidation_price": 62400.0, "ttl_sec": 90.0}
@@ -136,13 +132,11 @@ class TestLimitExecutionManager(unittest.TestCase):
             self.assertEqual(len(rep_ttl["cancelled"]), 1)
             self.assertIn("TTL_EXPIRED", rep_ttl["cancelled"][0]["reason"])
 
-            # B. Runaway (TP span = 400 -> 55% = 220 -> spot 62710 dispara runaway)
             mgr.submit_limit_order(cli, "b", 1000, 20.0, plan, {"style": "LONG_SNIPER", "action": 3}, 0, 100.0, now=2000.0)
             rep_run = mgr.reconcile_open_orders(cli, [], spot_price=62710.0, cfg=cfg, now=2020.0)
             self.assertEqual(len(rep_run["cancelled"]), 1)
             self.assertIn("RUNAWAY_GUARD", rep_run["cancelled"][0]["reason"])
 
-            # C. Invalidación de mecha (spot < 62400)
             mgr.submit_limit_order(cli, "b", 1000, 20.0, plan, {"style": "LONG_SNIPER", "action": 3}, 0, 100.0, now=3000.0)
             rep_inv = mgr.reconcile_open_orders(cli, [], spot_price=62390.0, cfg=cfg, now=3010.0)
             self.assertEqual(len(rep_inv["cancelled"]), 1)
@@ -170,16 +164,14 @@ class TestLimitExecutionManager(unittest.TestCase):
             cli = MockLimitClient()
             plan = {"limit_price": 62480.0, "stoploss": 62300.0, "takeprofit": 62880.0, "invalidation_price": 62400.0, "ttl_sec": 120.0}
             mgr1 = LimitExecutionManager("mainnet", base_dir=tmpd)
-            ok, _, rec = mgr1.submit_limit_order(cli, "b", 1200, 18.0, plan, {"style": "LONG_SNIPER", "action": 3}, 0, 100.0, now=5000.0)
+            ok, _, _ = mgr1.submit_limit_order(cli, "b", 1200, 18.0, plan, {"style": "LONG_SNIPER", "action": 3}, 0, 100.0, now=5000.0)
             self.assertTrue(ok)
             self.assertTrue(os.path.exists(mgr1.filepath))
 
-            # Simular reinicio de proceso con nueva instancia
             mgr2 = LimitExecutionManager("mainnet", base_dir=tmpd)
             self.assertEqual(mgr2.active_open_count(), 1)
             self.assertEqual(mgr2.reserved_margin_sats(), 1200)
 
-            # Simular SIGTERM -> cancelación total
             rep_sd = mgr2.cancel_all_for_shutdown(cli)
             self.assertEqual(len(rep_sd["cancelled"]), 1)
             self.assertEqual(mgr2.active_open_count(), 0)

@@ -187,7 +187,6 @@ def compute_limit_entry_plan(
             p_raw = min(spot - buf, swept_level + (lam * atr))
             p_floor = wick_ext + 0.15 * (swept_level - wick_ext)
             p_clamped = max(p_raw, p_floor)
-            # Garantizar non-crossing estricto tras el clamp
             p_clamped = min(p_clamped, spot - tick)
             p_lim = round_to_tick(p_clamped, "b", tick)
             if p_lim >= spot:
@@ -228,14 +227,12 @@ def compute_limit_entry_plan(
             "offset_atr": round(offset_atr, 3),
         }
 
-    # Recalcular TP y SL anclados a P_lim preservando presupuesto de riesgo original
     orig_sl_dist = max(atr * 0.4, abs(spot - float(base_sl)))
     orig_tp_dist = max(atr * 0.6, abs(float(base_tp) - spot))
     if is_long:
         new_sl = p_lim - orig_sl_dist
         if has_aligned_sweep:
             wick_sl = wick_ext - (0.20 * atr)
-            # Ajustar SL cerca de la mecha solo si reduce riesgo sin quedar absurdamente pegado (>= 0.40 ATR)
             if new_sl < wick_sl <= (p_lim - 0.40 * atr):
                 new_sl = wick_sl
         new_tp = p_lim + orig_tp_dist
@@ -277,8 +274,10 @@ class LimitExecutionManager:
         env_mode: str = "mainnet",
         base_dir: Optional[str] = None,
         max_concurrent_trades: int = 5,
+        persist_to_disk: bool = True,
     ):
         self.env_mode = str(env_mode or "mainnet").strip().lower()
+        self.persist_to_disk = bool(persist_to_disk)
         root = base_dir or os.path.dirname(os.path.abspath(__file__))
         self.filepath = os.path.abspath(os.path.join(root, f"pending_orders_{self.env_mode}.json"))
         self.max_concurrent_trades = max(1, int(max_concurrent_trades))
@@ -295,7 +294,7 @@ class LimitExecutionManager:
         self.load()
 
     def load(self) -> None:
-        if not os.path.exists(self.filepath):
+        if not self.persist_to_disk or not os.path.exists(self.filepath):
             self.pending = {}
             return
         try:
@@ -318,6 +317,8 @@ class LimitExecutionManager:
             self.pending = {}
 
     def save(self) -> bool:
+        if not self.persist_to_disk:
+            return True
         parent = os.path.dirname(self.filepath)
         if parent and not os.path.exists(parent):
             os.makedirs(parent, exist_ok=True)
@@ -485,13 +486,11 @@ class LimitExecutionManager:
         spot = float(spot_price or 0.0)
 
         if spot > 0.0 and p_lim > 0.0:
-            # 1. Invalidación estructural por ruptura de la mecha barrida
             if is_long and p_inv > 0.0 and spot < p_inv:
                 return f"WICK_INVALIDATED(spot={spot:.1f}<inv={p_inv:.1f})"
             if (not is_long) and p_inv > 0.0 and spot > p_inv:
                 return f"WICK_INVALIDATED(spot={spot:.1f}>inv={p_inv:.1f})"
 
-            # 2. Runaway / Chasing Guard (>= 55% recorrido hacia TP sin llenado)
             sign = 1.0 if is_long else -1.0
             tp_span = sign * (p_tp - p_lim)
             if tp_span > 1e-6:
@@ -499,7 +498,6 @@ class LimitExecutionManager:
                 if progress >= cfg.runaway_tp_frac:
                     return f"RUNAWAY_GUARD(progress={progress*100:.0f}%)"
 
-        # 3. Giro violento de OVR en contra
         if (is_long and ovr_side == "BEAR") or ((not is_long) and ovr_side == "BULL"):
             return f"OVR_FLIP({ovr_side})"
 
@@ -541,7 +539,6 @@ class LimitExecutionManager:
                 if isinstance(o, dict) and o.get("id"):
                     open_by_id[str(o["id"])] = o
         except Exception:
-            # Si la consulta de open falla transitoriamente, conservamos el mapa local y verificamos running
             open_by_id = {str(v.get("order_id")): v for v in self.pending.values() if v.get("order_id")}
 
         ovr_side = perception.get("override_side") if isinstance(perception, dict) else None
@@ -551,7 +548,6 @@ class LimitExecutionManager:
             rec = self.pending[cid]
             oid = str(rec.get("order_id") or "")
 
-            # Caso 1: Ya se llenó y apareció en running_trades
             matched_trade = running_by_id.get(oid) or running_by_cid.get(cid)
             if matched_trade is not None:
                 rec["status"] = "FILLED"
@@ -561,7 +557,6 @@ class LimitExecutionManager:
                 changed = True
                 continue
 
-            # Caso 2: Desapareció de open_orders del exchange y no está en running -> ya fue cancelada/expirada en servidor
             if oid and oid not in open_by_id:
                 rec["status"] = "CANCELLED"
                 cancelled_events.append({"order_id": oid, "client_id": cid, "reason": "GONE_FROM_SERVER"})
@@ -569,7 +564,6 @@ class LimitExecutionManager:
                 changed = True
                 continue
 
-            # Caso 3: Evaluar reglas de cancelación temprana
             reason = self._cancel_reason(rec, spot_price, ovr_side, now_ts, conf, force_cancel_all)
             if reason is not None:
                 try:
@@ -588,7 +582,6 @@ class LimitExecutionManager:
                         self.stats["cancelled_safety"] += 1
                     changed = True
                 except Exception as exc:
-                    # Carrera cancel-vs-fill: si el server retorna 404/already running, refrescar running antes de descartar
                     err_low = str(exc).lower()
                     if "404" in err_low or "not found" in err_low or "running" in err_low:
                         try:
