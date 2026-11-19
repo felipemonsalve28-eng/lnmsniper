@@ -653,7 +653,7 @@
       "structural_lock_when_open": false
     },
     "shadow_only": {
-      "value": 1,
+      "value": 0,
       "unit": "flag",
       "description": "Modo observacion del radar de liquidez: registra telemetria con liq_bias=0 y sin bloqueos (1=sombra, 0=activo).",
       "min_limit": 0,
@@ -751,7 +751,7 @@
   },
   "limit_execution": {
     "enabled": {
-      "value": 0,
+      "value": 1,
       "unit": "flag",
       "description": "Habilita el enrutamiento de ordenes limite pasivas con TTL para estilos SNIPER/REVERSION/SCALP (1=activo, 0=solo market).",
       "min_limit": 0,
