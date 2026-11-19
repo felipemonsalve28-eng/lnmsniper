@@ -48,10 +48,53 @@ from portfolio_hedge import PortfolioHedgeCoordinator
 from adaptive_controller import AdaptiveHedgeController
 from learning_thresholds_manager import get_thresholds_manager
 from learning_quality_supervisor import LearningQualitySupervisor, AtomicTelemetryDispatcher
+from liquidity_radar import (
+    LiquidityConfig,
+    LiquidityRadar,
+    compute_liquidity_bias,
+    compute_opposite_pool_room,
+)
 
 PERCEPTION_ENGINE = ShortTermPerceptionEngine()
 THRESHOLDS_MANAGER = get_thresholds_manager()
 TELEMETRY_DISPATCHER = AtomicTelemetryDispatcher()
+LIQUIDITY_RADAR = LiquidityRadar()
+
+
+def _evaluate_liquidity_from_mtf(mtf_cache, ind_5m, ind_15m, lnm_price):
+    """Evalúa LiquidityRadar en O(1) sobre velas cacheadas con invarianza al basis BTCUSD/BTCUSDT."""
+    try:
+        cfg = LiquidityConfig.from_thresholds(THRESHOLDS_MANAGER)
+        if not cfg.enabled:
+            return LIQUIDITY_RADAR.evaluate(None, None, 1.0, 1.0, float(lnm_price or 0.0), config_override=cfg)
+        c5_item = mtf_cache.cache.get("5m", {})
+        c15_item = mtf_cache.cache.get("15m", {})
+        d5 = c5_item.get("data")
+        d15 = c15_item.get("data")
+        b_ratio = float(c5_item.get("basis_ratio") or 1.0)
+        if not (0.95 <= b_ratio <= 1.05):
+            b_ratio = 1.0
+        spot_lnm = float(lnm_price or (ind_5m or {}).get("price") or 0.0)
+        spot_bin = (spot_lnm / b_ratio) if spot_lnm > 0.0 else 0.0
+        atr_5m_bin = max(1.0, float((ind_5m or {}).get("atr") or 1.0) / b_ratio)
+        atr_15m_bin = max(1.0, float((ind_15m or {}).get("atr") or atr_5m_bin) / b_ratio)
+        sig = LIQUIDITY_RADAR.evaluate(
+            candles_5m=d5,
+            candles_15m=d15,
+            atr_5m=atr_5m_bin,
+            atr_15m=atr_15m_bin,
+            spot_price=spot_bin,
+            volumes_5m=c5_item.get("vol"),
+            volumes_15m=c15_item.get("vol"),
+            config_override=cfg,
+        )
+        if abs(b_ratio - 1.0) > 1e-6:
+            for _pk in ("swept_level", "wick_extreme", "nearest_high_pool", "nearest_low_pool"):
+                if float(sig.get(_pk) or 0.0) > 0.0:
+                    sig[_pk] = round(float(sig[_pk]) * b_ratio, 2)
+        return sig
+    except Exception:
+        return LIQUIDITY_RADAR.evaluate(None, None, 1.0, 1.0, 0.0, config_override=LiquidityConfig(enabled=False))
 
 
 # =====================================================================
@@ -452,6 +495,11 @@ class MultiTimeframeCache:
                     h_arr, l_arr, c_arr, volumes=vols, lnm_price=current_lnm_price
                 )
                 item["prefix_has_basis"] = bool(current_lnm_price > 0.0)
+                if current_lnm_price > 0.0 and len(c_arr) > 0 and float(c_arr[-1]) > 0.0:
+                    _br = float(current_lnm_price) / float(c_arr[-1])
+                    item["basis_ratio"] = _br if (0.95 <= _br <= 1.05) else 1.0
+                else:
+                    item["basis_ratio"] = 1.0
             ind = compute_indicators_from_prefix(item["prefix"], current_lnm_price)
         else:
             ind = compute_indicators(h_arr, l_arr, c_arr, current_lnm_price if tf in ("1m", "5m", "15m") else 0.0, volumes=vols)
@@ -2408,7 +2456,19 @@ def compute_live_edge(
     else:
         ovr_bias = 0.0
 
-    edge_score = round(effective_q_cql + edge_pnl_term - fee_drag_q + ovr_bias, 4)
+    liq_sig = perception.get("liquidity") if isinstance(perception, dict) else None
+    if simulated_entry and isinstance(liq_sig, dict):
+        _liq_cfg = LiquidityConfig.from_thresholds(THRESHOLDS_MANAGER)
+        liq_bias = compute_liquidity_bias(
+            action=action,
+            liquidity_signal=liq_sig,
+            cfg=_liq_cfg,
+            num_actions=getattr(brain, "num_actions", 9),
+        )
+    else:
+        liq_bias = 0.0
+
+    edge_score = round(effective_q_cql + edge_pnl_term - fee_drag_q + ovr_bias + liq_bias, 4)
     if not simulated_entry and (is_exploratory or has_age_meta) and (-0.35 < pnl_atr_raw < 0.45) and (trade_age_sec < 90.0):
         edge_score = round(max(float(edge_score), -0.65), 4)
 
@@ -2420,6 +2480,7 @@ def compute_live_edge(
         "pnl_atr_net": round(pnl_atr_net, 4),
         "c_rt_sats": round(c_rt_sats, 2),
         "ovr_bias": round(ovr_bias, 4),
+        "liq_bias": round(liq_bias, 4),
     }
 
 
@@ -3621,6 +3682,32 @@ def evaluate_and_dispatch_entries(
                 ):
                     viable_sats = False
 
+            _liq_cfg_entry = LiquidityConfig.from_thresholds(THRESHOLDS_MANAGER)
+            _liq_sig_entry = perception.get("liquidity") if isinstance(perception, dict) else None
+            _liq_room = compute_opposite_pool_room(
+                side_is_long=(1 <= (int(action) % 9) <= 4),
+                entry_price=float(ind_5m["price"]),
+                margin_sats=int(margin_sats),
+                leverage=float(lev),
+                taker_fee=THRESHOLDS_MANAGER.get_float("fees", "taker_fee_rate", 0.001),
+                liquidity_signal=_liq_sig_entry,
+                min_wall_fee_ratio=_liq_cfg_entry.min_opposite_wall_fee_ratio,
+                min_wall_touches=_liq_cfg_entry.min_wall_touches,
+            )
+            sats_meta["liq_room"] = _liq_room
+            if (
+                viable_sats
+                and _liq_cfg_entry.enabled
+                and (not _liq_cfg_entry.shadow_only)
+                and (not Config.EXPLORER_MODE)
+                and _liq_room.get("blocked_by_wall", False)
+            ):
+                viable_sats = False
+                sats_meta["reason"] = (
+                    f"BLOCKED_OPPOSITE_LIQ_WALL(pool={_liq_room['opposite_pool']}|"
+                    f"ratio={_liq_room['room_fee_ratio']:.2f}x<{_liq_cfg_entry.min_opposite_wall_fee_ratio:.2f}x)"
+                )
+
             pre_edge_info = compute_live_edge(
                 brain=brain,
                 state=state,
@@ -4026,6 +4113,7 @@ def main():
             sprint_mode = goal_pct >= 88.0
 
             perception = PERCEPTION_ENGINE.evaluate(state, ind_5m, ind_15m, ind_1h, ind_4h, now=now)
+            perception["liquidity"] = _evaluate_liquidity_from_mtf(mtf_cache, ind_5m, ind_15m, lnm_price)
             client.telemetry.record("processing_ms", (time.perf_counter() - proc_t0) * 1000.0)
 
             ovr_tag = perception["override_side"] or "OFF"
@@ -4173,12 +4261,29 @@ def main():
                     ind_1d=ind_1d,
                 )
 
+            _liq_sig_tel = perception.get("liquidity") if isinstance(perception, dict) else {}
+            _liq_cfg_tel = LiquidityConfig.from_thresholds(THRESHOLDS_MANAGER)
             TELEMETRY_DISPATCHER.publish(
                 balance_sats=balance,
                 equity_sats=equity,
                 available_sats=balance,
                 active_trades=len(still_running) if primary_running else 0,
                 supervisor=brain.supervisor,
+                extra_meta={
+                    "liquidity_radar": {
+                        "enabled": bool(_liq_cfg_tel.enabled),
+                        "shadow_only": bool(_liq_cfg_tel.shadow_only),
+                        "score": float(_liq_sig_tel.get("liquidity_score", 0.0)),
+                        "event_type": str(_liq_sig_tel.get("event_type", "NONE")),
+                        "confirmation": str(_liq_sig_tel.get("confirmation", "NONE")),
+                        "timeframe": str(_liq_sig_tel.get("timeframe", "NONE")),
+                        "swept_level": float(_liq_sig_tel.get("swept_level", 0.0)),
+                        "nearest_high_pool": float(_liq_sig_tel.get("nearest_high_pool", 0.0)),
+                        "nearest_low_pool": float(_liq_sig_tel.get("nearest_low_pool", 0.0)),
+                        "active_high_pools": int(_liq_sig_tel.get("active_high_pools", 0)),
+                        "active_low_pools": int(_liq_sig_tel.get("active_low_pools", 0)),
+                    }
+                },
                 force=bool(closed_ids),
             )
             brain.save_brain(force=False)

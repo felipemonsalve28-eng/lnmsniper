@@ -93,7 +93,7 @@ def run_all_tests() -> None:
             if p_name not in py_code:
                 orphaned_keys.append(f"{cat}.{p_name}")
     assert len(orphaned_keys) == 0, f"Existen claves en JSON sin consumidor en el código: {orphaned_keys}"
-    print(f"✅ TEST 1 (Esquema 10 Categorías, Validación de Límites y 0 Claves Huérfanas en learning_thresholds.json): PASÓ.")
+    print(f"✅ TEST 1 (Esquema {len(REQUIRED_CATEGORIES)} Categorías, Validación de Límites y 0 Claves Huérfanas en learning_thresholds.json): PASÓ.")
 
     # -------------------------------------------------------------------------
     # ESCENARIO 2: Hot-Reload Atómico, Rechazo de Corrupción y Bloqueo Estructural
@@ -699,7 +699,7 @@ def run_all_tests() -> None:
     fb_keys = {f"{c}.{p}" for c, d in FALLBACK_THRESHOLDS.items() for p in d}
     cat_keys = set(PARAM_OPERATIONAL_GUIDE.keys())
     assert fb_keys == cat_keys, f"Discrepancia en FALLBACK_THRESHOLDS: {fb_keys ^ cat_keys}"
-    assert len(fb_keys) == 78, f"Se esperaban 78 claves, encontradas {len(fb_keys)}"
+    assert len(fb_keys) == 91, f"Se esperaban 91 claves, encontradas {len(fb_keys)}"
 
     # 10.2: Invarianza al Basis (BTCUSDT vs BTCUSD) en compute_indicators
     base_c = [70000.0 + i * 5.0 for i in range(60)]
@@ -752,7 +752,7 @@ def run_all_tests() -> None:
         assert chosen == 1
         assert int(b_inst.state_visits[st_key]) == 10, "choose_action inflo state_visits sin despachar ni cerrar orden"
 
-    print("✅ TEST 10 (Invariantes Etapa 22: 78 Umbrales, Basis BTCUSD/BTCUSDT, Sync Idempotente y No-Inflación state_visits): PASÓ.")
+    print("✅ TEST 10 (Invariantes Etapa 22+F1: 91 Umbrales, Basis BTCUSD/BTCUSDT, Sync Idempotente y No-Inflación state_visits): PASÓ.")
 
     # -------------------------------------------------------------------------
     # ESCENARIO 11: Normalización Canónica 1k-sat, Aislamiento de Umbrales por Entorno y Shadow Trailing Lock
@@ -972,6 +972,38 @@ def run_all_tests() -> None:
             margin_sats=1000, leverage=24.0, entry_price=62800.0, simulated_entry=True,
         )
         assert pf_ct["edge_score"] < 0.0, f"Contratendencia macro debe seguir bloqueada: {pf_ct}"
+
+        # 12.2c: Radar de liquidez en Pre-Flight (shadow_only=1 neutro vs activo acotado; trades abiertos siempre neutros)
+        from lnm_sniper_v6_advanced import THRESHOLDS_MANAGER as _TM_LIQ
+        _orig_shadow = _TM_LIQ._data["liquidity_radar"]["shadow_only"]["value"]
+        try:
+            _TM_LIQ._data["liquidity_radar"]["shadow_only"]["value"] = 1
+            pf_sh = compute_live_edge(
+                brain=b_12, state=st_pf_ok, action=1,
+                ind_5m={"price": 62800.0, "atr": 160.0},
+                perception={"override_side": None, "liquidity": {"liquidity_score": -0.90}},
+                margin_sats=1000, leverage=24.0, entry_price=62800.0, simulated_entry=True,
+            )
+            assert pf_sh["liq_bias"] == 0.0 and pf_sh["edge_score"] > 0.0, f"Modo sombra debe ser neutro: {pf_sh}"
+
+            _TM_LIQ._data["liquidity_radar"]["shadow_only"]["value"] = 0
+            pf_trap = compute_live_edge(
+                brain=b_12, state=st_pf_ok, action=1,
+                ind_5m={"price": 62800.0, "atr": 160.0},
+                perception={"override_side": None, "liquidity": {"liquidity_score": -0.85}},
+                margin_sats=1000, leverage=24.0, entry_price=62800.0, simulated_entry=True,
+            )
+            assert pf_trap["liq_bias"] < -0.09 and pf_trap["edge_score"] < 0.0, f"Sweep opuesto debe bloquear Pre-Flight: {pf_trap}"
+
+            open_no_liq = compute_live_edge(
+                brain=b_12, state=st_pf_ok, action=1,
+                ind_5m={"price": 62800.0, "atr": 160.0},
+                perception={"override_side": None, "liquidity": {"liquidity_score": -0.95}},
+                margin_sats=1000, leverage=24.0, entry_price=62800.0, simulated_entry=False,
+            )
+            assert open_no_liq["liq_bias"] == 0.0, f"Trade abierto nunca debe recibir liq_bias: {open_no_liq}"
+        finally:
+            _TM_LIQ._data["liquidity_radar"]["shadow_only"]["value"] = _orig_shadow
 
         # 12.3: Bloqueo de REDUCE_ORIGINAL_POSITION cuando orig_pl < 1.50 * orig_rt_fee
         ok_red, reason_red, _ = HedgeRiskManager.authorize_hedge_action(

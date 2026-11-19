@@ -422,6 +422,71 @@ _RAW_GUIDE: Dict[str, Tuple[str, str, str]] = {
         "SUBIR (↑): Evita cerrar posiciones por un único tick de ruido adverso.",
         "BAJAR (↓): Ejecuta la salida defensiva tras menos confirmaciones consecutivas.",
     ),
+    "liquidity_radar.enabled": (
+        "Habilita el cálculo en memoria del radar causal de liquidez Sweep+Reclaim (5m/15m) sin I/O adicional.",
+        "SUBIR (1): Activa el monitoreo de pools EQH/EQL y eventos de barrida.",
+        "BAJAR (0): Desactiva completamente el radar devolviendo señal neutra.",
+    ),
+    "liquidity_radar.shadow_only": (
+        "Mantiene el radar en modo observador puro: registra telemetría sin modificar Pre-Flight ni bloquear muros.",
+        "SUBIR (1): Modo sombra seguro (liq_bias=0.0, cero impacto en ejecución).",
+        "BAJAR (0): Activa el sesgo acotado liq_bias en Pre-Flight y bloqueo ante muro EQH/EQL.",
+    ),
+    "liquidity_radar.swing_k_5m": (
+        "Orden causal k de pivotes Swing en velas de 5m (bloqueado con posiciones abiertas).",
+        "SUBIR (↑): Detecta únicamente pivotes más amplios y estructurales (menos señales).",
+        "BAJAR (↓): Detecta swings locales más rápido con mayor frecuencia de pools.",
+    ),
+    "liquidity_radar.swing_k_15m": (
+        "Orden causal k de pivotes Swing en velas de 15m (bloqueado con posiciones abiertas).",
+        "SUBIR (↑): Filtra ruido intradía y prioriza niveles macro de 15m.",
+        "BAJAR (↓): Acelera la confirmación causal de pivotes en 15m.",
+    ),
+    "liquidity_radar.cluster_atr_mult": (
+        "Distancia máxima (en múltiplos de ATR) para fusionar swings cercanos en un cluster EQH/EQL.",
+        "SUBIR (↑): Agrupa pivotes más dispersos generando clusters con mayor peso.",
+        "BAJAR (↓): Exige máximos/mínimos casi idénticos para clasificar EQH/EQL.",
+    ),
+    "liquidity_radar.mitigation_atr_mult": (
+        "Cierre mínimo más allá del pool (en ATR) para considerarlo mitigado y retirarlo del radar.",
+        "SUBIR (↑): Mantiene pools activos ante cierres marginales cercanos al nivel.",
+        "BAJAR (↓): Descarta más rápido pools que fueron atravesados al cierre.",
+    ),
+    "liquidity_radar.min_pierce_atr": (
+        "Penetración mínima de la mecha más allá del pool (en ATR) para reconocer una barrida real.",
+        "SUBIR (↑): Exige barridas más profundas descartando simples toques del nivel.",
+        "BAJAR (↓): Permite detectar barridas superficiales en rangos estrechos.",
+    ),
+    "liquidity_radar.max_pierce_atr": (
+        "Penetración máxima permitida (en ATR) para descartar rupturas violentas y cuchillos cayendo.",
+        "SUBIR (↑): Tolera mechas más extensas en spikes de alta volatilidad.",
+        "BAJAR (↓): Filtra con mayor rigor cualquier ruptura excesiva del nivel.",
+    ),
+    "liquidity_radar.min_wick_ratio_close": (
+        "Fracción mínima de mecha de rechazo respecto al rango total en velas cerradas.",
+        "SUBIR (↑): Exige rechazo agresivo y cierre limpio lejos del extremo.",
+        "BAJAR (↓): Acepta velas de rechazo con cuerpo más amplio.",
+    ),
+    "liquidity_radar.min_wick_ratio_intrabar": (
+        "Fracción mínima de mecha de rechazo exigida en la vela viva para señal intrabar.",
+        "SUBIR (↑): Reduce falsos positivos antes del cierre de vela.",
+        "BAJAR (↓): Anticipa entradas intrabar más temprano tras el rebote.",
+    ),
+    "liquidity_radar.max_liq_bonus": (
+        "Bono máximo en unidades Q aplicado en Pre-Flight cuando la operación confluye con un Sweep+Reclaim.",
+        "SUBIR (↑): Da mayor peso a entradas respaldadas por barrida de liquidez (nunca vence OVR).",
+        "BAJAR (↓): Limita la influencia alcista del radar dejando dominar a la Q-table.",
+    ),
+    "liquidity_radar.max_liq_penalty": (
+        "Penalización máxima en unidades Q aplicada en Pre-Flight al operar contra un Sweep reciente.",
+        "SUBIR (↑): Endurece el veto contra entradas que actúan como liquidez de salida.",
+        "BAJAR (↓): Suaviza el bloqueo direccional ante barridas opuestas.",
+    ),
+    "liquidity_radar.min_opposite_wall_fee_ratio": (
+        "Ratio mínimo de espacio bruto hasta un muro EQH/EQL opuesto respecto al costo ida-vuelta C_RT.",
+        "SUBIR (↑): Exige mayor recorrido libre antes de abrir frente a una resistencia/soporte fuerte.",
+        "BAJAR (↓): Permite abrir operaciones más cerca de clusters opuestos.",
+    ),
 }
 
 PARAM_OPERATIONAL_GUIDE: Dict[str, Dict[str, str]] = {

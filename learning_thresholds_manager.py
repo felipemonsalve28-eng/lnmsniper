@@ -64,6 +64,7 @@ REQUIRED_CATEGORIES: Tuple[str, ...] = (
     "exploration",
     "learning_guard",
     "market_sensitivity",
+    "liquidity_radar",
 )
 
 REQUIRED_PARAM_FIELDS: Tuple[str, ...] = (
@@ -85,6 +86,8 @@ STRUCTURAL_LOCKED_PARAMS: Tuple[Tuple[str, str], ...] = (
     ("reward", "reward_scale_sats"),
     ("reward", "decouple_floating_pnl"),
     ("exploration", "gamma_discount"),
+    ("liquidity_radar", "swing_k_5m"),
+    ("liquidity_radar", "swing_k_15m"),
 )
 
 FALLBACK_THRESHOLDS: Dict[str, Dict[str, Dict[str, Any]]] = {
@@ -732,6 +735,112 @@ FALLBACK_THRESHOLDS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "structural_lock_when_open": False,
         },
     },
+    "liquidity_radar": {
+        "enabled": {
+            "value": 1,
+            "unit": "flag",
+            "description": "Activa el calculo del radar causal de liquidez Sweep+Reclaim en 5m/15m (1=si, 0=no).",
+            "min_limit": 0,
+            "max_limit": 1,
+            "structural_lock_when_open": False,
+        },
+        "shadow_only": {
+            "value": 1,
+            "unit": "flag",
+            "description": "Modo observacion del radar de liquidez: registra telemetria con liq_bias=0 y sin bloqueos (1=sombra, 0=activo).",
+            "min_limit": 0,
+            "max_limit": 1,
+            "structural_lock_when_open": False,
+        },
+        "swing_k_5m": {
+            "value": 3,
+            "unit": "bars",
+            "description": "Orden causal k de pivotes Swing High/Low en velas de 5m (requiere k velas cerradas a ambos lados).",
+            "min_limit": 2,
+            "max_limit": 6,
+            "structural_lock_when_open": True,
+        },
+        "swing_k_15m": {
+            "value": 2,
+            "unit": "bars",
+            "description": "Orden causal k de pivotes Swing High/Low en velas de 15m.",
+            "min_limit": 2,
+            "max_limit": 5,
+            "structural_lock_when_open": True,
+        },
+        "cluster_atr_mult": {
+            "value": 0.25,
+            "unit": "atr_mult",
+            "description": "Tolerancia de agrupacion de pivotes en clusters EQH/EQL como fraccion de ATR.",
+            "min_limit": 0.10,
+            "max_limit": 0.50,
+            "structural_lock_when_open": False,
+        },
+        "mitigation_atr_mult": {
+            "value": 0.35,
+            "unit": "atr_mult",
+            "description": "Penetracion minima al cierre (en ATR) para marcar un pool de liquidez como mitigado.",
+            "min_limit": 0.10,
+            "max_limit": 0.80,
+            "structural_lock_when_open": False,
+        },
+        "min_pierce_atr": {
+            "value": 0.10,
+            "unit": "atr_mult",
+            "description": "Penetracion minima de mecha sobre el pool (en ATR) para validar una barrida de liquidez.",
+            "min_limit": 0.05,
+            "max_limit": 0.40,
+            "structural_lock_when_open": False,
+        },
+        "max_pierce_atr": {
+            "value": 1.20,
+            "unit": "atr_mult",
+            "description": "Penetracion maxima de mecha (en ATR) para evitar atrapar rupturas violentas (cuchillos).",
+            "min_limit": 0.60,
+            "max_limit": 2.00,
+            "structural_lock_when_open": False,
+        },
+        "min_wick_ratio_close": {
+            "value": 0.45,
+            "unit": "ratio",
+            "description": "Proporcion minima de mecha de rechazo sobre el rango de vela cerrada en Sweep+Reclaim.",
+            "min_limit": 0.30,
+            "max_limit": 0.75,
+            "structural_lock_when_open": False,
+        },
+        "min_wick_ratio_intrabar": {
+            "value": 0.55,
+            "unit": "ratio",
+            "description": "Proporcion minima de mecha de rechazo en vela viva para confirmacion intrabar.",
+            "min_limit": 0.40,
+            "max_limit": 0.85,
+            "structural_lock_when_open": False,
+        },
+        "max_liq_bonus": {
+            "value": 0.10,
+            "unit": "q_units",
+            "description": "Tope positivo de liq_bias en Pre-Flight cuando la entrada confluye con un Sweep+Reclaim.",
+            "min_limit": 0.00,
+            "max_limit": 0.20,
+            "structural_lock_when_open": False,
+        },
+        "max_liq_penalty": {
+            "value": 0.12,
+            "unit": "q_units",
+            "description": "Tope de penalizacion de liq_bias en Pre-Flight al intentar entrar contra un Sweep opuesto.",
+            "min_limit": 0.00,
+            "max_limit": 0.25,
+            "structural_lock_when_open": False,
+        },
+        "min_opposite_wall_fee_ratio": {
+            "value": 1.80,
+            "unit": "ratio",
+            "description": "Multiplo minimo de comision ida-vuelta disponible hasta un muro EQH/EQL opuesto para autorizar entrada.",
+            "min_limit": 1.00,
+            "max_limit": 5.00,
+            "structural_lock_when_open": False,
+        },
+    },
 }
 
 
@@ -994,6 +1103,15 @@ class LearningThresholdsManager:
             return int(round(float(val)))
         except (TypeError, ValueError):
             return int(default)
+
+    def get_bool(self, category: str, param_name: str, default: bool = False) -> bool:
+        val = self.get(category, param_name, 1 if default else 0)
+        if isinstance(val, bool):
+            return val
+        try:
+            return float(val) >= 0.5
+        except (TypeError, ValueError):
+            return bool(default)
 
     def get_meta(self, category: str, param_name: str) -> Optional[Dict[str, Any]]:
         """Retorna el diccionario completo (value, unit, description, min_limit, max_limit)."""
