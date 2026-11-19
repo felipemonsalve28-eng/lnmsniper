@@ -59,7 +59,7 @@ class TestSniperCLI(unittest.TestCase):
         with open(self.thr_path, "r", encoding="utf-8") as fh:
             raw_thr = json.load(fh)
         total_json_params = sum(len(v) for v in raw_thr.values())
-        self.assertEqual(total_json_params, 91)
+        self.assertEqual(total_json_params, 99)
         self.assertEqual(len(catalog), total_json_params + len(RUNTIME_PARAMETERS_SPEC))
         for key, item in catalog.items():
             self.assertTrue(len(str(item["description"]).strip()) > 10)

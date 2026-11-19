@@ -65,6 +65,7 @@ REQUIRED_CATEGORIES: Tuple[str, ...] = (
     "learning_guard",
     "market_sensitivity",
     "liquidity_radar",
+    "limit_execution",
 )
 
 REQUIRED_PARAM_FIELDS: Tuple[str, ...] = (
@@ -88,6 +89,8 @@ STRUCTURAL_LOCKED_PARAMS: Tuple[Tuple[str, str], ...] = (
     ("exploration", "gamma_discount"),
     ("liquidity_radar", "swing_k_5m"),
     ("liquidity_radar", "swing_k_15m"),
+    ("limit_execution", "enabled"),
+    ("limit_execution", "tick_size_usd"),
 )
 
 FALLBACK_THRESHOLDS: Dict[str, Dict[str, Dict[str, Any]]] = {
@@ -838,6 +841,72 @@ FALLBACK_THRESHOLDS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "description": "Multiplo minimo de comision ida-vuelta disponible hasta un muro EQH/EQL opuesto para autorizar entrada.",
             "min_limit": 1.00,
             "max_limit": 5.00,
+            "structural_lock_when_open": False,
+        },
+    },
+    "limit_execution": {
+        "enabled": {
+            "value": 0,
+            "unit": "flag",
+            "description": "Habilita el enrutamiento de ordenes limite pasivas con TTL para estilos SNIPER/REVERSION/SCALP (1=activo, 0=solo market).",
+            "min_limit": 0,
+            "max_limit": 1,
+            "structural_lock_when_open": True,
+        },
+        "tick_size_usd": {
+            "value": 0.5,
+            "unit": "usd",
+            "description": "Incremento minimo de precio (tick) para redondeo pasivo non-crossing en futuros BTCUSD.",
+            "min_limit": 0.5,
+            "max_limit": 5.0,
+            "structural_lock_when_open": True,
+        },
+        "ttl_sec_5m": {
+            "value": 90,
+            "unit": "seconds",
+            "description": "Tiempo maximo de vida (TTL) en segundos para ordenes limite ancladas a barridas de 5m o pullback.",
+            "min_limit": 30,
+            "max_limit": 300,
+            "structural_lock_when_open": False,
+        },
+        "ttl_sec_15m": {
+            "value": 150,
+            "unit": "seconds",
+            "description": "Tiempo maximo de vida (TTL) en segundos para ordenes limite ancladas a barridas de 15m.",
+            "min_limit": 60,
+            "max_limit": 600,
+            "structural_lock_when_open": False,
+        },
+        "runaway_tp_frac": {
+            "value": 0.55,
+            "unit": "ratio",
+            "description": "Fraccion del recorrido hacia TP que dispara cancelacion anticipada por fuga de precio (Runaway Guard).",
+            "min_limit": 0.30,
+            "max_limit": 0.80,
+            "structural_lock_when_open": False,
+        },
+        "max_entry_offset_atr": {
+            "value": 0.75,
+            "unit": "atr_mult",
+            "description": "Distancia maxima permitida (en ATR) entre spot actual y P_lim para evitar colocar ordenes muertas.",
+            "min_limit": 0.25,
+            "max_limit": 1.50,
+            "structural_lock_when_open": False,
+        },
+        "retest_atr_sniper": {
+            "value": 0.05,
+            "unit": "atr_mult",
+            "description": "Desplazamiento en ATR sobre el nivel barrido para fijar P_lim en entradas SNIPER.",
+            "min_limit": 0.00,
+            "max_limit": 0.30,
+            "structural_lock_when_open": False,
+        },
+        "retest_atr_reversion": {
+            "value": 0.12,
+            "unit": "atr_mult",
+            "description": "Desplazamiento en ATR sobre el nivel barrido para fijar P_lim en entradas REVERSION.",
+            "min_limit": 0.00,
+            "max_limit": 0.35,
             "structural_lock_when_open": False,
         },
     },

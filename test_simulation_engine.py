@@ -208,6 +208,31 @@ class TestSimLNMExchange(unittest.TestCase):
         # Balance = 100,000 - 100 (entry fee) - 10 (funding) = 99,890 sats
         self.assertEqual(self.exchange.balance_sats, 99890)
 
+    def test_conservative_limit_fill_and_same_bar_sl(self):
+        """Orden limite solo llena al cruzar >= $0.5 y aplica SL pesimista si la misma vela rompe SL."""
+        o = self.exchange.open_limit_trade(
+            side="b", margin=10000, leverage=10, price=69500.0, stoploss=69000.0, takeprofit=70500.0, now=1000.0
+        )
+        self.assertEqual(self.exchange.available_balance_sats, 90000)
+
+        # Toque exacto a 69500.0 sin atravesar $0.5 -> NO llena
+        self.exchange.step_candle(Candle(timestamp=1060.0, open=69600.0, high=69650.0, low=69500.0, close=69580.0))
+        self.assertEqual(len(self.exchange.running_trades), 0)
+        self.assertEqual(len(self.exchange.open_orders), 1)
+
+        # Cruza a 69499.5 -> llena exactamente a 69500.0 sin slippage
+        self.exchange.step_candle(Candle(timestamp=1120.0, open=69580.0, high=69620.0, low=69499.5, close=69590.0))
+        self.assertEqual(len(self.exchange.open_orders), 0)
+        self.assertIn(o["id"], self.exchange.running_trades)
+        self.assertEqual(self.exchange.running_trades[o["id"]]["entry_price"], 69500.0)
+
+        # Caso pesimista: vela que llena SHORT a 69700 y rompe SL 69850 en la misma barra -> cierra en STOP_LOSS
+        o2 = self.exchange.open_limit_trade(
+            side="s", margin=5000, leverage=10, price=69700.0, stoploss=69850.0, takeprofit=69100.0, now=1120.0
+        )
+        evs = self.exchange.step_candle(Candle(timestamp=1180.0, open=69600.0, high=69900.0, low=69590.0, close=69880.0))
+        self.assertTrue(any(e["id"] == o2["id"] and e["close_reason"] == "STOP_LOSS" for e in evs))
+
 
 if __name__ == "__main__":
     unittest.main()

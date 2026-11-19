@@ -58,6 +58,13 @@ from liquidity_radar import (
 PERCEPTION_ENGINE = ShortTermPerceptionEngine()
 THRESHOLDS_MANAGER = get_thresholds_manager()
 TELEMETRY_DISPATCHER = AtomicTelemetryDispatcher()
+from limit_execution_manager import (
+    LimitExecutionConfig,
+    LimitExecutionManager,
+    compute_limit_entry_plan,
+    should_route_limit,
+)
+
 LIQUIDITY_RADAR = LiquidityRadar()
 
 
@@ -2159,6 +2166,50 @@ class LNMarketsClient(ResilientLNMClient):
         self.telemetry.record("confirm_ms", (time.perf_counter() - t0) * 1000.0)
         return res
 
+    def get_open_orders(self, force_refresh=False):
+        r = self._request("GET", "/futures/isolated/trades/open", max_retries=2)
+        rows = r.get("data", []) if isinstance(r, dict) else r
+        if not isinstance(rows, list):
+            return []
+        unique = {}
+        for row in rows:
+            if isinstance(row, dict) and "id" in row:
+                unique[str(row["id"])] = row
+        return list(unique.values())
+
+    def open_limit_trade(self, side, margin, leverage, price, stoploss, takeprofit, client_id=""):
+        self._user_cache_ts = 0.0
+        self._running_cache_ts = 0.0
+        t0 = time.perf_counter()
+        lim_px = round(round(float(price) * 2.0) / 2.0, 2)
+        payload = {
+            "type": "limit",
+            "side": side,
+            "margin": int(margin),
+            "leverage": int(leverage),
+            "price": lim_px,
+            "stoploss": int(round(stoploss)),
+            "takeprofit": int(round(takeprofit)),
+        }
+        res = self._request("POST", "/futures/isolated/trade", payload, max_retries=1)
+        self.telemetry.record("confirm_ms", (time.perf_counter() - t0) * 1000.0)
+        return res
+
+    def cancel_open_order(self, trade_id):
+        self._user_cache_ts = 0.0
+        self._running_cache_ts = 0.0
+        t0 = time.perf_counter()
+        try:
+            res = self._request("POST", "/futures/isolated/trade/cancel", {"id": str(trade_id)}, max_retries=2)
+        except Exception as err:
+            err_l = str(err).lower()
+            if "404" in err_l or "405" in err_l:
+                res = self._request("DELETE", "/futures/isolated/trade", {"id": str(trade_id)}, max_retries=2)
+            else:
+                raise
+        self.telemetry.record("confirm_ms", (time.perf_counter() - t0) * 1000.0)
+        return res
+
     def update_stoploss(self, trade_id, new_sl):
         t0 = time.perf_counter()
         res = self._request(
@@ -3478,12 +3529,14 @@ def evaluate_and_dispatch_entries(
     shadow_mode=False,
     ind_1m=None,
     ind_1d=None,
+    limit_mgr=None,
 ):
     """
     Evalúa compuertas Bayesianas, calcula sizing 1/4 Kelly y despacha o simula en sombra (Fases F4, F5, F6, F7).
     """
     action_taken = 0
-    if active_count >= dynamic_max_pos:
+    _open_lim_cnt = limit_mgr.active_open_count() if limit_mgr is not None else 0
+    if (active_count + _open_lim_cnt) >= min(dynamic_max_pos, Config.MAX_CONCURRENT_TRADES):
         return action_taken, last_entry_time
 
     fer_mult = 1.0
@@ -3806,56 +3859,120 @@ def evaluate_and_dispatch_entries(
                 live_running = client.get_running_trades(force_refresh=False)
                 hedge_tid_set = hedge_store.get_all_hedge_trade_ids() if Config.ENABLE_HYBRID_HEDGE else set()
                 live_primary = [t for t in live_running if str(t.get("id")) not in hedge_tid_set]
-                if len(live_primary) < min(dynamic_max_pos, Config.MAX_CONCURRENT_TRADES):
-                    last_entry_time = now
-                    action_taken = action
-                    intent_fp = client.order_guard.register_intent(
-                        strat["side"], margin_sats, lev, state_key=state, now=now
+                _eff_slot_cap = min(dynamic_max_pos, Config.MAX_CONCURRENT_TRADES)
+                _open_lim_now = limit_mgr.active_open_count() if limit_mgr is not None else 0
+                if (len(live_primary) + _open_lim_now) < _eff_slot_cap:
+                    _lim_cfg = LimitExecutionConfig.from_thresholds(THRESHOLDS_MANAGER)
+                    _liq_sig_cur = perception.get("liquidity") if isinstance(perception, dict) else None
+                    _use_limit, _lim_route_reason = should_route_limit(
+                        action=action,
+                        style=strat_style,
+                        market_regime=mkt_reg_tag,
+                        liquidity_signal=_liq_sig_cur,
+                        spot_price=float(ind_5m["price"]),
+                        atr_5m=float(ind_5m["atr"]),
+                        taker_fee=THRESHOLDS_MANAGER.get_float("fees", "taker_fee_rate", 0.001),
+                        recovery_mode=recovery_mode,
+                        cfg=_lim_cfg,
                     )
-                    client.telemetry.record("order_dispatch_ms", (time.perf_counter() - dec_t0) * 1000.0)
-                    try:
-                        new_t = client.open_trade(strat["side"], margin_sats, lev, sl, tp)
-                        client.order_guard.clear_intent(intent_fp)
-                        if isinstance(new_t, dict) and "id" in new_t:
-                            nt_id = str(new_t["id"])
-                            adopted_meta = infer_adopted_trade(
-                                new_t, ind_5m, state, now, forced_action=action
+                    if _use_limit and limit_mgr is not None:
+                        _lim_plan = compute_limit_entry_plan(
+                            side=strat["side"],
+                            style=strat_style,
+                            spot_price=float(ind_5m["price"]),
+                            atr_5m=float(ind_5m["atr"]),
+                            base_sl=float(sl),
+                            base_tp=float(tp),
+                            liquidity_signal=_liq_sig_cur,
+                            cfg=_lim_cfg,
+                        )
+                        if not _lim_plan.get("valid", False):
+                            if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                                brain.supervisor.discard_last_action_decision()
+                            print(f"  ⏸️ [LÍMITE OMITIDA] {strat['name']} | {_lim_plan.get('reason')} ({_lim_route_reason})")
+                        else:
+                            client.telemetry.record("order_dispatch_ms", (time.perf_counter() - dec_t0) * 1000.0)
+                            _ok_lim, _sub_reason, _sub_rec = limit_mgr.submit_limit_order(
+                                client=client,
+                                side=strat["side"],
+                                margin_sats=int(margin_sats),
+                                leverage=float(lev),
+                                plan=_lim_plan,
+                                meta={
+                                    "style": strat_style,
+                                    "action": int(action),
+                                    "state": state,
+                                    "entry_q": float(raw_entry_q),
+                                    "is_exploratory": bool(getattr(brain, "_last_decision_exploratory", False)),
+                                    "liq_score": float((_liq_sig_cur or {}).get("liquidity_score", 0.0)),
+                                },
+                                running_count=len(live_primary),
+                                atr_5m=float(ind_5m["atr"]),
+                                max_slots=_eff_slot_cap,
+                                now=now,
                             )
-                            adopted_meta["decision_price"] = float(ind_5m["price"])
-                            adopted_meta["entry_q"] = float(raw_entry_q)
-                            adopted_meta["is_exploratory"] = bool(getattr(brain, "_last_decision_exploratory", False))
-                            adopted_meta["entry_time"] = float(now)
-                            adopted_meta["opened_at"] = float(now)
-                            brain.active_trades[nt_id] = adopted_meta
-                            brain.dirty = True
-                            brain.save_brain(force=False)
-                            print(
-                                f"  → Abierta {strat['name']} [{len(live_primary)+1}/{Config.MAX_CONCURRENT_TRADES}] "
-                                f"(Lev {lev}x | Margen {margin_sats} sats | ExpProy:{proj_exp*100:.1f}% | Salida:{strat['exit_mode']})"
-                            )
-                    except Exception as open_err:
-                        print(f"  [VERIFICANDO ORDEN POST-TIMEOUT] {open_err}")
-                        time.sleep(1.2)
-                        verify_running = client.get_running_trades(force_refresh=True)
-                        hedge_tid_set = hedge_store.get_all_hedge_trade_ids() if Config.ENABLE_HYBRID_HEDGE else set()
-                        matched_post_timeout = False
-                        for vt in verify_running:
-                            vtid = str(vt["id"])
-                            if vtid not in brain.active_trades and vtid not in hedge_tid_set:
+                            if _ok_lim and _sub_rec is not None:
+                                last_entry_time = now
+                                action_taken = action
+                                print(
+                                    f"  🎯 [LÍMITE COLOCADA] {strat['name']} [{len(live_primary)}+{limit_mgr.active_open_count()}/{_eff_slot_cap}] "
+                                    f"@ ${_lim_plan['limit_price']:.1f} (Mejora:${_lim_plan['improvement_usd']:.1f} | TTL:{int(_lim_plan['ttl_sec'])}s | "
+                                    f"SL:{_lim_plan['stoploss']:.1f} | TP:{_lim_plan['takeprofit']:.1f} | {_lim_route_reason})"
+                                )
+                            else:
+                                if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                                    brain.supervisor.discard_last_action_decision()
+                                print(f"  ⏸️ [LÍMITE RECHAZADA] {strat['name']} | {_sub_reason}")
+                    else:
+                        last_entry_time = now
+                        action_taken = action
+                        intent_fp = client.order_guard.register_intent(
+                            strat["side"], margin_sats, lev, state_key=state, now=now
+                        )
+                        client.telemetry.record("order_dispatch_ms", (time.perf_counter() - dec_t0) * 1000.0)
+                        try:
+                            new_t = client.open_trade(strat["side"], margin_sats, lev, sl, tp)
+                            client.order_guard.clear_intent(intent_fp)
+                            if isinstance(new_t, dict) and "id" in new_t:
+                                nt_id = str(new_t["id"])
                                 adopted_meta = infer_adopted_trade(
-                                    vt, ind_5m, state, now, forced_action=action
+                                    new_t, ind_5m, state, now, forced_action=action
                                 )
                                 adopted_meta["decision_price"] = float(ind_5m["price"])
-                                adopted_meta["entry_q"] = float(q_val)
+                                adopted_meta["entry_q"] = float(raw_entry_q)
                                 adopted_meta["is_exploratory"] = bool(getattr(brain, "_last_decision_exploratory", False))
                                 adopted_meta["entry_time"] = float(now)
                                 adopted_meta["opened_at"] = float(now)
-                                brain.active_trades[vtid] = adopted_meta
+                                brain.active_trades[nt_id] = adopted_meta
                                 brain.dirty = True
-                                matched_post_timeout = True
-                        if matched_post_timeout:
-                            client.order_guard.clear_intent(intent_fp)
-                        brain.save_brain(force=False)
+                                brain.save_brain(force=False)
+                                print(
+                                    f"  → Abierta {strat['name']} [{len(live_primary)+1}/{Config.MAX_CONCURRENT_TRADES}] "
+                                    f"(Lev {lev}x | Margen {margin_sats} sats | ExpProy:{proj_exp*100:.1f}% | Salida:{strat['exit_mode']})"
+                                )
+                        except Exception as open_err:
+                            print(f"  [VERIFICANDO ORDEN POST-TIMEOUT] {open_err}")
+                            time.sleep(1.2)
+                            verify_running = client.get_running_trades(force_refresh=True)
+                            hedge_tid_set = hedge_store.get_all_hedge_trade_ids() if Config.ENABLE_HYBRID_HEDGE else set()
+                            matched_post_timeout = False
+                            for vt in verify_running:
+                                vtid = str(vt["id"])
+                                if vtid not in brain.active_trades and vtid not in hedge_tid_set:
+                                    adopted_meta = infer_adopted_trade(
+                                        vt, ind_5m, state, now, forced_action=action
+                                    )
+                                    adopted_meta["decision_price"] = float(ind_5m["price"])
+                                    adopted_meta["entry_q"] = float(q_val)
+                                    adopted_meta["is_exploratory"] = bool(getattr(brain, "_last_decision_exploratory", False))
+                                    adopted_meta["entry_time"] = float(now)
+                                    adopted_meta["opened_at"] = float(now)
+                                    brain.active_trades[vtid] = adopted_meta
+                                    brain.dirty = True
+                                    matched_post_timeout = True
+                            if matched_post_timeout:
+                                client.order_guard.clear_intent(intent_fp)
+                            brain.save_brain(force=False)
                 else:
                     if hasattr(brain, "supervisor") and brain.supervisor is not None:
                         brain.supervisor.discard_last_action_decision()
@@ -3917,10 +4034,21 @@ def main():
 
     stop_state = {"requested": False, "sig": None}
 
+    limit_mgr = LimitExecutionManager(
+        env_mode=Config.ENV_MODE,
+        base_dir=os.path.dirname(os.path.abspath(__file__)),
+        max_concurrent_trades=Config.MAX_CONCURRENT_TRADES,
+    )
+
     def _handle_shutdown_signal(signum, _frame):
         stop_state["requested"] = True
         stop_state["sig"] = signum
-        print(f"\n[SEÑAL RECIBIDA ({signum})] Guardando estado de forma atómica antes de cerrar...")
+        print(f"\n[SEÑAL RECIBIDA ({signum})] Cancelando límites pendientes y guardando estado atómicamente...")
+        try:
+            if limit_mgr.active_open_count() > 0:
+                limit_mgr.cancel_all_for_shutdown(client)
+        except Exception as exc:
+            print(f"[AVISO CIERRE LÍMITES] {exc}")
         try:
             brain.save_brain(force=True)
         except Exception as exc:
@@ -4228,7 +4356,46 @@ def main():
                 else:
                     dynamic_max_pos = capital_max_pos
 
-            if new_entries_allowed and active_count < dynamic_max_pos:
+            _lim_cfg_loop = LimitExecutionConfig.from_thresholds(THRESHOLDS_MANAGER)
+            _lim_rec = limit_mgr.reconcile_open_orders(
+                client=client,
+                running_trades=still_running,
+                spot_price=float(ind_5m["price"]),
+                perception=perception,
+                cfg=_lim_cfg_loop,
+                force_cancel_all=bool(safe_mode or floor_threat),
+                now=now,
+            )
+            _still_ids = {str(x.get("id")) for x in still_running if isinstance(x, dict) and x.get("id")}
+            for _fev in _lim_rec.get("filled", []):
+                _ft = _fev["trade"]
+                _fm = _fev["meta"]
+                _ftid = str(_ft.get("id") or "")
+                if _ftid:
+                    _am = infer_adopted_trade(
+                        _ft, ind_5m, _fm.get("state_key") or state, now,
+                        forced_action=int(_fm.get("action") or 1),
+                    )
+                    _am["entry_mode"] = "LIMIT"
+                    _am["decision_price"] = float(_fm.get("limit_price") or ind_5m["price"])
+                    _am["entry_q"] = float(_fm.get("entry_q", 0.0))
+                    _am["is_exploratory"] = bool(_fm.get("is_exploratory", False))
+                    _am["liq_score"] = float(_fm.get("liq_score", 0.0))
+                    _am["entry_time"] = float(now)
+                    _am["opened_at"] = float(now)
+                    brain.active_trades[_ftid] = _am
+                    brain.dirty = True
+                    if _ftid not in _still_ids:
+                        still_running.append(_ft)
+                        _still_ids.add(_ftid)
+                    print(f"  ✅ [LÍMITE LLENADA] {_fm.get('style')} id={_ftid[:8]} @ ${_ft.get('price', _fm.get('limit_price'))}")
+            for _cev in _lim_rec.get("cancelled", []):
+                print(f"  🧹 [LÍMITE CANCELADA] id={str(_cev.get('order_id',''))[:8]} | Motivo: {_cev.get('reason')}")
+
+            _eff_avail_balance = max(0, int(balance) - limit_mgr.reserved_margin_sats())
+            _eff_active_count = max(len(still_running), len(brain.active_trades)) + limit_mgr.active_open_count()
+
+            if new_entries_allowed and _eff_active_count < dynamic_max_pos:
                 _action_taken, last_entry_time = evaluate_and_dispatch_entries(
                     client=client,
                     brain=brain,
@@ -4241,10 +4408,10 @@ def main():
                     recovery_mode=recovery_mode,
                     current_dd_pct=current_dd_pct,
                     dynamic_max_pos=dynamic_max_pos,
-                    active_count=active_count,
-                    locked_margin=locked_margin,
+                    active_count=max(len(still_running), len(brain.active_trades)),
+                    locked_margin=locked_margin + limit_mgr.reserved_margin_sats(),
                     equity=equity,
-                    balance=balance,
+                    balance=_eff_avail_balance,
                     last_entry_time=last_entry_time,
                     now=now,
                     consecutive_losses=consecutive_losses,
@@ -4259,6 +4426,7 @@ def main():
                     shadow_mode=Config.SHADOW_MODE,
                     ind_1m=ind_1m,
                     ind_1d=ind_1d,
+                    limit_mgr=limit_mgr,
                 )
 
             _liq_sig_tel = perception.get("liquidity") if isinstance(perception, dict) else {}
@@ -4266,8 +4434,8 @@ def main():
             TELEMETRY_DISPATCHER.publish(
                 balance_sats=balance,
                 equity_sats=equity,
-                available_sats=balance,
-                active_trades=len(still_running) if primary_running else 0,
+                available_sats=_eff_avail_balance,
+                active_trades=len(still_running) if still_running else 0,
                 supervisor=brain.supervisor,
                 extra_meta={
                     "liquidity_radar": {
@@ -4282,7 +4450,13 @@ def main():
                         "nearest_low_pool": float(_liq_sig_tel.get("nearest_low_pool", 0.0)),
                         "active_high_pools": int(_liq_sig_tel.get("active_high_pools", 0)),
                         "active_low_pools": int(_liq_sig_tel.get("active_low_pools", 0)),
-                    }
+                    },
+                    "limit_execution": {
+                        "enabled": bool(_lim_cfg_loop.enabled),
+                        "open_count": int(limit_mgr.active_open_count()),
+                        "reserved_margin_sats": int(limit_mgr.reserved_margin_sats()),
+                        "stats": dict(limit_mgr.stats),
+                    },
                 },
                 force=bool(closed_ids),
             )

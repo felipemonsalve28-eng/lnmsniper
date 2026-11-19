@@ -487,6 +487,46 @@ _RAW_GUIDE: Dict[str, Tuple[str, str, str]] = {
         "SUBIR (↑): Exige mayor recorrido libre antes de abrir frente a una resistencia/soporte fuerte.",
         "BAJAR (↓): Permite abrir operaciones más cerca de clusters opuestos.",
     ),
+    "limit_execution.enabled": (
+        "Activa el motor FSM de órdenes límite pasivas con TTL y Runaway Guard (bloqueado con posiciones abiertas).",
+        "SUBIR (1): Enruta SNIPER/REVERSION/SCALP por orden límite buscando mejor precio y mayor FER.",
+        "BAJAR (0): Mantiene 100% ejecución clásica a mercado.",
+    ),
+    "limit_execution.tick_size_usd": (
+        "Tamaño mínimo de tick del libro BTCUSD para redondeo pasivo floor (LONG) / ceil (SHORT).",
+        "SUBIR (↑): Redondea precios límite a múltiplos más gruesos de USD.",
+        "BAJAR (↓): Ajusta al tick nativo de $0.5 USD de LN Markets.",
+    ),
+    "limit_execution.ttl_sec_5m": (
+        "Segundos máximos de espera antes de cancelar una orden límite sin llenado en señales de 5m.",
+        "SUBIR (↑): Incrementa tasa de llenado a cambio de mayor exposición a selección adversa.",
+        "BAJAR (↓): Cancela rápido si el retesteo no ocurre de inmediato.",
+    ),
+    "limit_execution.ttl_sec_15m": (
+        "Segundos máximos de espera para órdenes límite respaldadas por barridas estructurales de 15m.",
+        "SUBIR (↑): Da más margen a retesteos lentos en marcos de 15m.",
+        "BAJAR (↓): Libera cupo y margen más rápido ante falta de llenado.",
+    ),
+    "limit_execution.runaway_tp_frac": (
+        "Fracción del recorrido al TP que cancela automáticamente una orden límite si el precio se escapó.",
+        "SUBIR (↑): Tolera mayor recorrido sin cancelar la orden en reposo.",
+        "BAJAR (↓): Cancela antes evitando llenados tardíos en rupturas fallidas.",
+    ),
+    "limit_execution.max_entry_offset_atr": (
+        "Desvío máximo en ATR permitido entre el precio spot y P_lim para autorizar la colocación.",
+        "SUBIR (↑): Permite dejar órdenes límite más lejos del precio actual.",
+        "BAJAR (↓): Descarta oportunidades cuyo precio ya se alejó del nivel barrido.",
+    ),
+    "limit_execution.retest_atr_sniper": (
+        "Colchón en ATR sobre el nivel barrido para colocar P_lim en entradas SNIPER.",
+        "SUBIR (↑): Acerca la orden al spot mejorando probabilidad de llenado.",
+        "BAJAR (↓): Busca entrar más profundo en la mecha maximizando R:R.",
+    ),
+    "limit_execution.retest_atr_reversion": (
+        "Colchón en ATR sobre el nivel barrido para colocar P_lim en entradas REVERSION.",
+        "SUBIR (↑): Mejora fill rate en retesteos superficiales de rango.",
+        "BAJAR (↓): Exige retroceso más profundo hacia el extremo del cluster.",
+    ),
 }
 
 PARAM_OPERATIONAL_GUIDE: Dict[str, Dict[str, str]] = {

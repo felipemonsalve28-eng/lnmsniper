@@ -37,7 +37,10 @@ class SimLNMExchange:
         self.inverse_contract_math = bool(inverse_contract_math)
 
         self.running_trades: Dict[str, dict] = {}
+        self.open_orders: Dict[str, dict] = {}
         self.closed_trades: List[dict] = []
+        self.limit_fills_count: int = 0
+        self.limit_cancelled_count: int = 0
         self.run_id: str = f"{int(time.time() * 1000) % 10000000:07d}"
         self.trade_counter: int = 1000
 
@@ -51,7 +54,9 @@ class SimLNMExchange:
 
     @property
     def total_locked_margin_sats(self) -> int:
-        return sum(int(t.get("margin", 0)) for t in self.running_trades.values())
+        run_m = sum(int(t.get("margin", 0)) for t in self.running_trades.values())
+        open_m = sum(int(o.get("margin", 0)) for o in self.open_orders.values())
+        return run_m + open_m
 
     @property
     def available_balance_sats(self) -> int:
@@ -74,6 +79,59 @@ class SimLNMExchange:
     def get_running_trades(self, force_refresh: bool = False) -> List[dict]:
         """Emula client.get_running_trades()."""
         return list(self.running_trades.values())
+
+    def get_open_orders(self, force_refresh: bool = False) -> List[dict]:
+        """Emula client.get_open_orders()."""
+        return list(self.open_orders.values())
+
+    def open_limit_trade(
+        self,
+        side: str,
+        margin: int,
+        leverage: int,
+        price: float,
+        stoploss: Optional[float] = None,
+        takeprofit: Optional[float] = None,
+        client_id: str = "",
+        now: Optional[float] = None,
+    ) -> dict:
+        """Registra una orden limite pasiva reservando margen aislado sin slippage."""
+        side_norm = "b" if str(side).lower() in ("b", "buy", "long") else "s"
+        m = int(margin)
+        lev = int(leverage)
+        lim_px = round(round(float(price) * 2.0) / 2.0, 2)
+        cur_ts = float(now if now is not None else self.last_ts)
+        if m <= 0 or lev <= 0 or lim_px <= 0.0:
+            raise ValueError("Parametros invalidos en open_limit_trade.")
+        if m > self.available_balance_sats:
+            raise RuntimeError(f"Saldo disponible insuficiente ({self.available_balance_sats} sats) para limite de {m} sats.")
+        self.trade_counter += 1
+        oid = f"simlim-{self.run_id}-{self.trade_counter}"
+        rec = {
+            "id": oid,
+            "client_id": str(client_id),
+            "side": side_norm,
+            "type": "limit",
+            "margin": m,
+            "leverage": lev,
+            "price": lim_px,
+            "entry_price": lim_px,
+            "stoploss": round(float(stoploss), 2) if stoploss else 0.0,
+            "takeprofit": round(float(takeprofit), 2) if takeprofit else 0.0,
+            "open_ts": cur_ts,
+            "status": "open",
+        }
+        self.open_orders[oid] = rec
+        return dict(rec)
+
+    def cancel_open_order(self, order_id: str) -> dict:
+        oid = str(order_id)
+        if oid in self.open_orders:
+            rec = self.open_orders.pop(oid)
+            rec["status"] = "cancelled"
+            self.limit_cancelled_count += 1
+            return dict(rec)
+        raise RuntimeError(f"HTTP 404 (/futures/isolated/trade/cancel): order {oid} not found")
 
     def open_trade(
         self,
@@ -295,6 +353,51 @@ class SimLNMExchange:
         self.last_ts = c_ts
 
         events_triggered = []
+
+        # 0. Llenado conservador estricto de ordenes limite (requiere cruzar >= 1 tick = $0.5).
+        #    Evaluado ANTES de running_trades: si la misma barra 1m toca SL, cierra pesimistamente en SL.
+        for oid in list(self.open_orders.keys()):
+            ord_rec = self.open_orders.get(oid)
+            if not ord_rec:
+                continue
+            p_lim = float(ord_rec["price"])
+            o_side = ord_rec["side"]
+            filled = (c_low <= (p_lim - 0.5)) if o_side == "b" else (c_high >= (p_lim + 0.5))
+            if filled:
+                self.open_orders.pop(oid, None)
+                m = int(ord_rec["margin"])
+                lev = int(ord_rec["leverage"])
+                notional_sats = m * lev
+                entry_fee = max(1, int(round(notional_sats * self.taker_fee_rate)))
+                self.balance_sats -= entry_fee
+                self.total_fees_paid_sats += entry_fee
+                if self.inverse_contract_math:
+                    liq_px = (p_lim / (1.0 + (0.99 / lev))) if o_side == "b" else (p_lim / max(0.05, 1.0 - (0.99 / lev)))
+                else:
+                    liq_px = (p_lim * (1.0 - (0.99 / lev))) if o_side == "b" else (p_lim * (1.0 + (0.99 / lev)))
+                trade = {
+                    "id": oid,
+                    "client_id": ord_rec.get("client_id", ""),
+                    "side": o_side,
+                    "type": "limit",
+                    "margin": m,
+                    "leverage": lev,
+                    "notional_sats": notional_sats,
+                    "price": round(p_lim, 2),
+                    "entry_price": round(p_lim, 2),
+                    "liquidation": round(liq_px, 2),
+                    "stoploss": float(ord_rec.get("stoploss", 0.0)),
+                    "takeprofit": float(ord_rec.get("takeprofit", 0.0)),
+                    "pl": 0,
+                    "open_ts": c_ts,
+                    "last_funding_ts": c_ts,
+                    "entry_fee_sats": entry_fee,
+                    "sum_carry_fees": 0,
+                    "cashed_in_sats": 0,
+                    "running": True,
+                }
+                self.running_trades[oid] = trade
+                self.limit_fills_count += 1
 
         # 1. Evaluar Funding Rate periódico (cada 8h = 28,800 segundos)
         for tid, t in list(self.running_trades.items()):

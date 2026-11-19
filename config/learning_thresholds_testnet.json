@@ -748,5 +748,71 @@
       "max_limit": 5.0,
       "structural_lock_when_open": false
     }
+  },
+  "limit_execution": {
+    "enabled": {
+      "value": 0,
+      "unit": "flag",
+      "description": "Habilita el enrutamiento de ordenes limite pasivas con TTL para estilos SNIPER/REVERSION/SCALP (1=activo, 0=solo market).",
+      "min_limit": 0,
+      "max_limit": 1,
+      "structural_lock_when_open": true
+    },
+    "tick_size_usd": {
+      "value": 0.5,
+      "unit": "usd",
+      "description": "Incremento minimo de precio (tick) para redondeo pasivo non-crossing en futuros BTCUSD.",
+      "min_limit": 0.5,
+      "max_limit": 5.0,
+      "structural_lock_when_open": true
+    },
+    "ttl_sec_5m": {
+      "value": 90,
+      "unit": "seconds",
+      "description": "Tiempo maximo de vida (TTL) en segundos para ordenes limite ancladas a barridas de 5m o pullback.",
+      "min_limit": 30,
+      "max_limit": 300,
+      "structural_lock_when_open": false
+    },
+    "ttl_sec_15m": {
+      "value": 150,
+      "unit": "seconds",
+      "description": "Tiempo maximo de vida (TTL) en segundos para ordenes limite ancladas a barridas de 15m.",
+      "min_limit": 60,
+      "max_limit": 600,
+      "structural_lock_when_open": false
+    },
+    "runaway_tp_frac": {
+      "value": 0.55,
+      "unit": "ratio",
+      "description": "Fraccion del recorrido hacia TP que dispara cancelacion anticipada por fuga de precio (Runaway Guard).",
+      "min_limit": 0.3,
+      "max_limit": 0.8,
+      "structural_lock_when_open": false
+    },
+    "max_entry_offset_atr": {
+      "value": 0.75,
+      "unit": "atr_mult",
+      "description": "Distancia maxima permitida (en ATR) entre spot actual y P_lim para evitar colocar ordenes muertas.",
+      "min_limit": 0.25,
+      "max_limit": 1.5,
+      "structural_lock_when_open": false
+    },
+    "retest_atr_sniper": {
+      "value": 0.05,
+      "unit": "atr_mult",
+      "description": "Desplazamiento en ATR sobre el nivel barrido para fijar P_lim en entradas SNIPER.",
+      "min_limit": 0.0,
+      "max_limit": 0.3,
+      "structural_lock_when_open": false
+    },
+    "retest_atr_reversion": {
+      "value": 0.12,
+      "unit": "atr_mult",
+      "description": "Desplazamiento en ATR sobre el nivel barrido para fijar P_lim en entradas REVERSION.",
+      "min_limit": 0.0,
+      "max_limit": 0.35,
+      "structural_lock_when_open": false
+    }
   }
 }
