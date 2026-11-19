@@ -2181,16 +2181,20 @@ class LNMarketsClient(ResilientLNMClient):
         self._user_cache_ts = 0.0
         self._running_cache_ts = 0.0
         t0 = time.perf_counter()
+        api_side = "buy" if str(side).lower().strip() in ("b", "buy", "long") else "sell"
         lim_px = round(round(float(price) * 2.0) / 2.0, 2)
         payload = {
             "type": "limit",
-            "side": side,
+            "side": api_side,
             "margin": int(margin),
             "leverage": int(leverage),
             "price": lim_px,
             "stoploss": int(round(stoploss)),
             "takeprofit": int(round(takeprofit)),
         }
+        cid_clean = str(client_id or "").strip()[:64]
+        if cid_clean:
+            payload["clientId"] = cid_clean
         res = self._request("POST", "/futures/isolated/trade", payload, max_retries=1)
         self.telemetry.record("confirm_ms", (time.perf_counter() - t0) * 1000.0)
         return res
