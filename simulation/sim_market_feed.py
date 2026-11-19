@@ -18,6 +18,8 @@ import time
 from guardian_execution_core import compat_np as np
 from lnm_sniper_v6_advanced import compute_indicators
 from sniper_perception_sats_core import MarketRegimeClassifier, ShortTermPerceptionEngine
+from learning_thresholds_manager import get_thresholds_manager
+from liquidity_radar import LiquidityConfig, LiquidityRadar
 
 
 @dataclass
@@ -145,6 +147,23 @@ class MTFAggregator:
         closes = np.array([c.close for c in hist], dtype=np.float64)
         return highs, lows, closes
 
+    def get_ohlcv_arrays(self, tf: str) -> Tuple[Any, Any, Any, Any, Any, float]:
+        """Extrae (opens, highs, lows, closes, volumes, current_bar_start) para paridad de LiquidityRadar."""
+        hist = list(self._get_history(tf))
+        cur = self.current_bar.get(tf)
+        if cur is not None:
+            hist.append(cur)
+        bar_ts = float(self.current_bar_start.get(tf) or 0.0)
+        if not hist:
+            z = np.zeros(1)
+            return z, z, z, z, z, bar_ts
+        opens = np.array([c.open for c in hist], dtype=np.float64)
+        highs = np.array([c.high for c in hist], dtype=np.float64)
+        lows = np.array([c.low for c in hist], dtype=np.float64)
+        closes = np.array([c.close for c in hist], dtype=np.float64)
+        vols = np.array([c.volume for c in hist], dtype=np.float64)
+        return opens, highs, lows, closes, vols, bar_ts
+
 
 class SimMarketFeed:
     """
@@ -159,6 +178,8 @@ class SimMarketFeed:
         self.aggregator = MTFAggregator()
         self.last_candle: Optional[Candle] = None
         self.perception_engine = ShortTermPerceptionEngine()
+        self.liquidity_radar = LiquidityRadar()
+        self.liquidity_config_override: Optional[LiquidityConfig] = None
 
     def load_candles(self, candles: List[Candle]) -> None:
         self.candles_1m = candles
@@ -166,6 +187,7 @@ class SimMarketFeed:
         self.aggregator = MTFAggregator()
         self.last_candle = None
         self.perception_engine = ShortTermPerceptionEngine()
+        self.liquidity_radar = LiquidityRadar()
 
     def warmup(self, warmup_bars: int = 150) -> int:
         """
@@ -217,6 +239,28 @@ class SimMarketFeed:
         perception = self.perception_engine.evaluate(
             None, ind_5m, ind_15m, ind_1h, ind_4h, now=now_ts
         )
+        liq_cfg = self.liquidity_config_override or LiquidityConfig.from_thresholds(get_thresholds_manager())
+        if liq_cfg.enabled:
+            o5, h5, l5, c5, v5, ts5 = self.aggregator.get_ohlcv_arrays("5m")
+            o15, h15, l15, c15, v15, ts15 = self.aggregator.get_ohlcv_arrays("15m")
+            perception["liquidity"] = self.liquidity_radar.evaluate(
+                candles_5m=(h5, l5, c5),
+                candles_15m=(h15, l15, c15),
+                atr_5m=float(ind_5m.get("atr") or 1.0),
+                atr_15m=float(ind_15m.get("atr") or 1.0),
+                spot_price=float(ind_5m["price"]),
+                opens_5m=o5,
+                opens_15m=o15,
+                volumes_5m=v5,
+                volumes_15m=v15,
+                bar_ts_5m=ts5,
+                bar_ts_15m=ts15,
+                config_override=liq_cfg,
+            )
+        else:
+            perception["liquidity"] = self.liquidity_radar.evaluate(
+                None, None, 1.0, 1.0, float(ind_5m["price"]), config_override=liq_cfg
+            )
         return {
             "price": float(ind_5m["price"]),
             "ind_5m": ind_5m,

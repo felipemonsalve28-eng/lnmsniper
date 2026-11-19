@@ -27,6 +27,7 @@ from portfolio_hedge import PortfolioHedgeCoordinator
 from predictive_hedge import PredictiveHedgeEngine
 from guardian_execution_core import HardFloorGuardian, compat_np as np
 from sniper_perception_sats_core import SatsExpectancyGate, MarketRegimeClassifier
+from liquidity_radar import LiquidityConfig, compute_liquidity_bias, compute_opposite_pool_room
 
 
 class SimTrainingEnvironment:
@@ -741,6 +742,46 @@ class SimTrainingEnvironment:
                         q_val=q_val_entry,
                         state_visits=st_visits_entry,
                     )
+
+                    _tm_sim = getattr(self, "thresholds", None) or getattr(self.brain, "thresholds", None) or get_thresholds_manager()
+                    liq_cfg = getattr(self.feed, "liquidity_config_override", None) or LiquidityConfig.from_thresholds(_tm_sim)
+                    liq_sig = perception.get("liquidity") if isinstance(perception, dict) else None
+                    if viable and liq_cfg.enabled and (not liq_cfg.shadow_only) and (not self.explorer_mode):
+                        liq_room = compute_opposite_pool_room(
+                            side_is_long=(1 <= (int(action) % 9) <= 4),
+                            entry_price=float(price),
+                            margin_sats=int(margin_sats),
+                            leverage=float(lev),
+                            taker_fee=float(_tm_sim.get_float("fees", "taker_fee_rate", 0.001)),
+                            liquidity_signal=liq_sig,
+                            min_wall_fee_ratio=liq_cfg.min_opposite_wall_fee_ratio,
+                            min_wall_touches=liq_cfg.min_wall_touches,
+                        )
+                        if liq_room.get("blocked_by_wall", False):
+                            viable = False
+                        else:
+                            pre_edge = compute_live_edge(
+                                brain=self.brain,
+                                state=curr_state_key,
+                                action=action,
+                                ind_5m=ind_5m,
+                                perception=perception,
+                                margin_sats=int(margin_sats),
+                                leverage=float(lev),
+                                entry_price=float(price),
+                                simulated_entry=True,
+                                now=now,
+                            )
+                            # Garantizar consistencia si liquidity_config_override difiere de THRESHOLDS_MANAGER
+                            base_edge_no_liq = float(pre_edge["edge_score"]) - float(pre_edge.get("liq_bias", 0.0))
+                            eff_liq_bias = compute_liquidity_bias(
+                                action=action,
+                                liquidity_signal=liq_sig,
+                                cfg=liq_cfg,
+                                num_actions=getattr(self.brain, "num_actions", 9),
+                            )
+                            if (base_edge_no_liq + eff_liq_bias) < 0.0:
+                                viable = False
 
                     if viable and margin_sats <= self.exchange.available_balance_sats:
                         try:
