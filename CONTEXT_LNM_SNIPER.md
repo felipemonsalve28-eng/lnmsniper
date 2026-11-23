@@ -2,8 +2,8 @@
 ## LNM SNIPER v7.3+ (EDICIÓN SATS REALES, OBSERVABILIDAD Y UMBRALES DINÁMICOS)
 
 > **Archivo de Contexto Persistente para Agentes Autónomos e Ingenieros**  
-> **Última Actualización:** 2026-11-18  
-> **Último Commit Base:** `90634a4` (`master`, etapa 23 certificada + cirugía Testnet)  
+> **Última Actualización:** 2026-11-23  
+> **Último Commit Base:** `d133d28` (`master`, Etapa 27 — Refactorización Versionada hacia `C1_STREAK3_24H_INV`)  
 > **Directiva de Operación:** [AGENT_MAINTENANCE_DIRECTIVE.md](file:///c:/Users/mberm/OneDrive/Documentos/sniper/AGENT_MAINTENANCE_DIRECTIVE.md)
 
 ---
@@ -494,6 +494,33 @@
     * [hedge_state_mainnet.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_mainnet.json) (`162` estados, `SHA-256: e98eb4584ac5384e...`)
     * [hedge_state_testnet.json](file:///c:/Users/mberm/OneDrive/Documentos/sniper/hedge_state_testnet.json) (`162` estados, `SHA-256: 780a54f95c36ef56...`)
   - **Limpieza de Repositorio:** Eliminados 26 residuos temporales/backups (`.snapshot_guard*`, `.pre_promote_*`, `.pre_surgery_*`, `.pre_v2_schema.bak`, `.recalibrated.json*`, `.sniper_*.pid*`, locks obsoletos), desrastreados los logs rotados (`sniper_mainnet.log.1`, `sniper_mainnet.log.2`, `sniper_testnet.log.1`) y añadida la regla `*.log.*` en [.gitignore](file:///c:/Users/mberm/OneDrive/Documentos/sniper/.gitignore).
+
+### Etapa 27: Consolidación de `C1_STREAK3_24H_INV` (Política Determinista Simétrica, `E2_FE_OFF`, `C1_SHORT_EXP_PHYS` y Freno por Lado Persistente POSIX `fcntl` + SHA-256)
+- **Estado:** **Completada y Certificada al 100% en WSL (`Ubuntu`) mediante 4 Commits Atómicos (Fases 0 a 4)**.
+- **Evidencia Empírica de Investigación (18 Meses Reales `M01..M18`, 2 Folds Cruzados OOS `12M` con Purga $\ge 24\text{h}$ y Matemática de Futuros Inversos `inverse_contract_math = True`):**
+  1. **Módulos y Ramas Descartados Definitivamente (Falsificados Empíricamente):**
+     - **Percepción v2 (`Wilder ADX(14)` + histeresis):** Descartada. El suavizado doble llegó tarde a rupturas rápidas y perdió `-30,657 sats` de `GrossPnL` en Train frente a Percepción v1 (`DX EMA(14)` + `RANGE_SQUEEZE`).
+     - **Reentrenamiento Q-learning Tabular (`SCALE_1600`) y TD Online:** Descartado en vivo (`DETERMINISTIC_TREND_POLICY = True`). Sufre colapso por *state aliasing* (`TREND_BULL|PEAK|LOW_EXP|BULL|FULL_BULL` absorbe `1,156` trades en Fold 1 y apaga `M16 BULL`) y parálisis 100% `HOLD` por `lcb_penalty` cuando `visits = 0`. Se preserva el esquema de 9 acciones (`0..8`) y llave de 5 segmentos intacto por contrato P0 #1, con `q_table` congelada en producción.
+     - **`FORCED_EDGE_EXIT` en `TREND` y `Hybrid Hedge Engine`:** Descartados (`FE_OFF_TREND = True`, `ENABLE_HYBRID_HEDGE = False`). Apagar `FORCED_EDGE_EXIT` en `TREND` (`E2_FE_OFF`) sumó **`+15,250 sats`** en 18M y eliminó las salidas prematuras antes del piso `sl_floor = 0.65%`.
+     - **Entradas `LIMIT` en Retroceso (`D2`/`D3`) y `LONG_ONLY` (`D1`):** Descartadas (`limit_execution.enabled = 0`). Sufren selección adversa severa (pierden el 25% de las mejores rupturas y desploman `GrossPnL` un 52%).
+     - **Veto/Sesgo de `liquidity_radar.py` (`BLOCKED_OPPOSITE_LIQ_WALL`) en `TREND`:** Descartado para `TREND` (`shadow_only = 1`). Los 44 trades adyacentes a muros `EQH/EQL` tuvieron `63.64% WR` y `+1,633 sats` (`PF 1.17`); en rupturas tendenciales el pool opuesto actúa como imán de liquidez.
+     - **Soft-Sizing Continuo Online (`OnlineExpectedRModel` / `FastSoftExpectedRModel` `B1..B3`, `C2..C4B`):** Descartado. Reducir tamaño a `0.25x..0.55x` impidió alcanzar `recovery_mode (3.5%)` / `dd_throttle_halt (4.5%)` en meses laterales (inflando trades en `RANGE` de `334` a `619..924`) y provocó *whipsaw* intra-rally en `M16 BULL` (`63.5%..68.5%` de captura).
+  2. **Arquitectura Certificada `C1_STREAK3_24H_INV` (`4/4 PASS` en Fase 3):**
+     - **Selección Determinista Simétrica (`P1_NO_CASCADE_SYM` + `G1_STRICT_DIR` + `H4` + `OTR = 0`):** Top-1 candidato sin cascada (`max_cands = 1`), inicialización `_init_q_vector` estrictamente simétrica sin sesgo `BULL > BEAR`, empate inter-lado $\rightarrow$ `HOLD (0)`, `lcb_penalty = 0.0`, `action in (0, 1, 5)` (`OTR = 0`), y `recovery_mode` (`DD >= 3.5%`) devolviendo `HOLD (0)` limpio sin remapear `TREND (1, 5)` a `SNIPER (3, 7)`.
+     - **Asimetría Física en Cortos (`C1_SHORT_EXP_PHYS`):** `L_TREND (1)` opera a `1.00x` con piso `TREND_SL_FLOOR_PCT = 0.0065` (`0.65%`). `S_TREND (5)` exige expansión orgánica de volatilidad **`sl_dist_pct > 0.006505`** ($2 \times \text{ATR}_{5m} > 0.65\%$); cuando `sl_dist_pct <= 0.006505` (mercado calmo donde `S_TREND` tenía `PF 0.56` y `-37,463 sats` en Train), bloquea a `HOLD (0)` (`BLOCKED_SHORT_NO_EXPANSION`).
+     - **Freno Discreto por Lado Persistente (`C1_STREAK3_24H`, [side_streak_brake.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/side_streak_brake.py)):** `SideStreakBrakeStore` mantiene contadores independientes `side_loss_streak[s]` y `side_pause_until_ts[s]` para $s \in \{\text{'b'}, \text{'s'}\}$. Al acumular `3` pérdidas consecutivas (`net_pnl_sats <= 0`) en el lado $s$, pausa únicamente ese lado por `24 horas` (`+86,400 s`) y reinicia `side_loss_streak[s] = 0`, dejando el lado opuesto libre a `1.00x`. Se persiste atómicamente (`tmp + os.fsync + os.replace`) con bloqueo POSIX `fcntl` (`FileLockContext`) y verificación `.sha256` en `$HOME/.sniper_state/side_brake_state_{env}.json` únicamente al cerrar un trade.
+  3. **Métricas Certificadas en Fase 3 (`C1_STREAK3_24H_INV`, `inverse_contract_math = True`):**
+     - **`12M OOS` (Fold 1 + Fold 2, `0.20% RT`):** **`+18,092 sats`** (`PF = 1.15`, `536` trades, `WR = 49.44%`, `MaxDD = 4.40%`, `0/12` meses con `DD >= 4.5%`, `DDG = 0`, `PosMo = 5/12`; sube a **`+31,603 sats`, `PF = 1.27`** a `0.15% RT` y **`+45,104 sats`, `PF = 1.41`** a `0.10% RT`).
+     - **`Total 18M` (`0.20% RT`):** **`-8,196 sats`** (`PF = 0.96`, `MaxDD = 4.66%`, `1/18` meses con `DD >= 4.5%`, `DDG = 0`; pasa a **`+14,938 sats`, `PF = 1.07`** a `0.15% RT` y **`+38,049 sats`, `PF = 1.19`** a `0.10% RT`).
+     - **Motores Tendenciales Intactos (`INV`):** **`M16 BULL = +31,746 sats`** (`100.0%` de captura, `52` trades, `75.0% WR`, `DD = 3.87%`), **`M02 BULL = +12,750 sats`**, **`M09 BEAR = +8,392 sats`** (`S_TREND = +9,508`).
+     - **Estrés de Microestructura (`+50%` slippage + `1-bar` latencia adversa en `12M OOS`):** **`+13,488 sats`** (`PF = 1.11`, `MaxDD = 4.63%`, `DDG = 0`).
+     - **Monte Carlo (`1,000` trayectorias block-bootstrap, `seed=20260331`, `12M OOS @ 0.20% RT`):** **`P(Net > 0) = 62.10%`**, **`Mediana (P50) = +9,790 sats`** (`PF P50 = 1.08`), **`P95 RealDD = 3.83%`**, **`P95 BarDD = 4.31%`**, **`P(DDG >= 5.2%) = 0.00%`**, **`P(HardFloor) = 0.00%`**.
+     - **WFO Rolling `2M` (`9` ventanas OOS de 2 meses):** **`+16,593 sats`** (`PF = 1.10`, `5/9` ventanas positivas, `MaxDD = 4.66%`, `DDG = 0`).
+  4. **Archivos Versionados Refactorizados en Fase 4 (4 Commits Atómicos en WSL):**
+     - Commit 1 (`refactor(core)`): [lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py) y [sniper_perception_sats_core.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sniper_perception_sats_core.py).
+     - Commit 2 (`feat(risk)`): [side_streak_brake.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/side_streak_brake.py) y conexión en [lnm_sniper_v6_advanced.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/lnm_sniper_v6_advanced.py).
+     - Commit 3 (`feat(sim-cli)`): [simulation/sim_training_environment.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/simulation/sim_training_environment.py), [sniper_cli.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sniper_cli.py) y [sniper_cli_catalog.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/sniper_cli_catalog.py).
+     - Commit 4 (`test(regression)`): [test_c1_streak3_24h_production.py](file:///c:/Users/mberm/OneDrive/Documentos/sniper/test_c1_streak3_24h_production.py) y actualización de [CONTEXT_LNM_SNIPER.md](file:///c:/Users/mberm/OneDrive/Documentos/sniper/CONTEXT_LNM_SNIPER.md).
 
 ---
 

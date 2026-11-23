@@ -1226,7 +1226,6 @@ class AutonomousGoalBrain:
                 for _k in list(self.q_table.keys()):
                     if int(raw_visits.get(_k, 0)) == 0:
                         self.q_table[_k] = self._init_q_vector(_k)
-                        self.state_visits[_k] = 0
             self.q_table_1h = data.get("q_table_1h", {})
             self.q_table_4h = data.get("q_table_4h", {})
 
@@ -2759,7 +2758,12 @@ def execute_strategy_guardian(
                         f"de degradación (Edge:{edge_score:+.3f} | +{pl_sats} sats)"
                     )
                     return True
-            elif not is_hedged and not in_grace_period and ((edge_score <= Config.EDGE_DEGRADATION_EXIT and pnl_atr <= -1.00) or (macro_counter and ovr_side is None and edge_score <= -0.48 and pnl_atr <= -0.80)):
+            elif (
+                not is_hedged
+                and not in_grace_period
+                and not (getattr(Config, "FE_OFF_TREND", True) and (action_id in (1, 5) or style == "TREND"))
+                and ((edge_score <= Config.EDGE_DEGRADATION_EXIT and pnl_atr <= -1.00) or (macro_counter and ovr_side is None and edge_score <= -0.48 and pnl_atr <= -0.80))
+            ):
                 if confirm_and_close_trade(client, brain, tid, trade_meta, "EDGE_DEGRADATION_DEFENSIVE_EXIT"):
                     print(
                         f"  🛑 [GUARDIÁN EDGE CUT] Cierre defensivo en {tid[:6]} (Streak:{deg_streak} | "
