@@ -64,6 +64,7 @@ from limit_execution_manager import (
     compute_limit_entry_plan,
     should_route_limit,
 )
+from side_streak_brake import SideStreakBrakeStore
 
 LIQUIDITY_RADAR = LiquidityRadar()
 
@@ -3450,6 +3451,7 @@ def process_settlement_queue(
     consecutive_losses,
     risk_multiplier,
     pause_until,
+    side_brake=None,
 ):
     """
     Maneja la cola de liquidación diferida y conciliación de órdenes cerradas (Fase F6).
@@ -3536,6 +3538,14 @@ def process_settlement_queue(
                 predicted_q_entry=pred_q,
                 freeze_q_table=bool(getattr(Config, "DETERMINISTIC_TREND_POLICY", True) and not Config.EXPLORER_MODE),
             )
+            if side_brake is not None:
+                sb_info = side_brake.record_trade_close(t_side, total_net_pnl_sats, close_ts=now)
+                if sb_info.get("triggered_pause"):
+                    print(
+                        f"  🛑 [FRENO C1_STREAK3_24H] Lado {str(t_side).upper()} pausado 24h tras "
+                        f"{side_brake.max_consecutive_losses} pérdidas consecutivas "
+                        f"(hasta ts={int(sb_info['pause_until_ts'])}). Lado opuesto activo a 1.00x."
+                    )
             if total_net_pnl_sats < 0:
                 consecutive_losses += 1
                 risk_multiplier = max(0.55, risk_multiplier * Config.ANTI_MARTINGALE_FACTOR)
@@ -3632,6 +3642,7 @@ def evaluate_and_dispatch_entries(
     ind_1m=None,
     ind_1d=None,
     limit_mgr=None,
+    side_brake=None,
 ):
     """
     Evalúa compuertas Bayesianas, calcula sizing 1/4 Kelly y despacha o simula en sombra (Fases F4, F5, F6, F7).
@@ -3700,6 +3711,17 @@ def evaluate_and_dispatch_entries(
         if action > 0:
             q_val = float(q_vec[action]) if action < len(q_vec) else 0.0
             strat = brain.strategies[action]
+
+            if side_brake is not None and getattr(Config, "STREAK3_24H_ENABLED", True):
+                paused_side, rem_side_sec = side_brake.is_side_paused(strat["side"], now=now)
+                if paused_side:
+                    if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                        brain.supervisor.discard_last_action_decision()
+                    print(
+                        f"  ⏸️ [FRENO C1_STREAK3_24H] Entrada {strat['name']} bloqueada "
+                        f"(BLOCKED_SIDE_STREAK3_24H | Restante:{int(rem_side_sec)}s)"
+                    )
+                    return 0, last_entry_time
 
             for t in (still_running or []):
                 if t.get("side") == strat["side"]:
@@ -4204,6 +4226,12 @@ def main():
         base_dir=os.path.dirname(os.path.abspath(__file__)),
         max_concurrent_trades=Config.MAX_CONCURRENT_TRADES,
     )
+    side_brake = SideStreakBrakeStore(
+        env_mode=Config.ENV_MODE,
+        max_consecutive_losses=getattr(Config, "STREAK3_MAX_LOSSES", 3),
+        pause_duration_sec=getattr(Config, "STREAK3_PAUSE_SEC", 86400.0),
+        enabled=getattr(Config, "STREAK3_24H_ENABLED", True),
+    )
 
     def _handle_shutdown_signal(signum, _frame):
         stop_state["requested"] = True
@@ -4222,6 +4250,10 @@ def main():
             hedge_store.save(force=True)
         except Exception as exc:
             print(f"[AVISO CIERRE HEDGE] {exc}")
+        try:
+            side_brake.save()
+        except Exception as exc:
+            print(f"[AVISO CIERRE SIDE-BRAKE] {exc}")
 
     for sig_name in ("SIGTERM", "SIGINT"):
         sig_obj = getattr(signal, sig_name, None)
@@ -4330,7 +4362,8 @@ def main():
             settled_in_cycle, consecutive_losses, risk_multiplier, pause_until = process_settlement_queue(
                 client, brain, closed_ids, state, now,
                 recovery_anchor_equity, current_mode,
-                consecutive_losses, risk_multiplier, pause_until
+                consecutive_losses, risk_multiplier, pause_until,
+                side_brake=side_brake,
             )
             if closed_ids:
                 last_known_balance = balance
@@ -4592,6 +4625,7 @@ def main():
                     ind_1m=ind_1m,
                     ind_1d=ind_1d,
                     limit_mgr=limit_mgr,
+                    side_brake=side_brake,
                 )
 
             _liq_sig_tel = perception.get("liquidity") if isinstance(perception, dict) else {}
@@ -4603,6 +4637,9 @@ def main():
                 active_trades=len(still_running) if still_running else 0,
                 supervisor=brain.supervisor,
                 extra_meta={
+                    "architecture_profile": "C1_STREAK3_24H_INV",
+                    "deterministic_policy_mode": bool(getattr(Config, "DETERMINISTIC_TREND_POLICY", True)),
+                    "side_streak_brake": side_brake.get_telemetry_snapshot(now=now),
                     "liquidity_radar": {
                         "enabled": bool(_liq_cfg_tel.enabled),
                         "shadow_only": bool(_liq_cfg_tel.shadow_only),
