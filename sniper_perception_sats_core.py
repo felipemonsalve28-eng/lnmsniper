@@ -378,11 +378,18 @@ class SatsExpectancyGate:
     @staticmethod
     def filter_and_rank_action(
         raw_action, state, q_values, strategies, perception,
-        recovery_mode=False, current_dd_pct=0.0, explorer_mode=False
+        recovery_mode=False, current_dd_pct=0.0, explorer_mode=False,
+        deterministic_trend_policy=True
     ):
         norm_s = str(state)
         override = perception.get("override_side") if isinstance(perception, dict) else None
         mkt_regime = perception.get("market_regime", "") if isinstance(perception, dict) else ""
+        det_mode = bool(deterministic_trend_policy and not explorer_mode)
+
+        def _finalize_det(act_out, reason_out):
+            if det_mode and int(act_out) not in (0, 1, 5):
+                return 0, ("RECOVERY_DETERMINISTIC_HOLD" if recovery_mode else "BLOCKED_NON_TREND_DETERMINISTIC_HOLD")
+            return int(act_out), str(reason_out)
 
         # =================================================================
         # PASO 1 (P0): PROTECCIONES CRÍTICAS DE CAPITAL, RÉGIMEN Y EXPOSICIÓN
@@ -448,10 +455,12 @@ class SatsExpectancyGate:
                     if score > best_score:
                         best_score = score
                         best_long = a
-                return best_long, f"OVR_BULL_REDIRECT({raw_action}->{best_long})"
+                return _finalize_det(best_long, f"OVR_BULL_REDIRECT({raw_action}->{best_long})")
             if recovery_mode and not explorer_mode and raw_action == 1:
+                if det_mode:
+                    return 0, "RECOVERY_DETERMINISTIC_HOLD"
                 return (3 if 3 in valid_longs else valid_longs[0]), "OVR_BULL_RECOVERY_CAP_RUNNER"
-            return raw_action, "OVR_BULL_ALIGNED"
+            return _finalize_det(raw_action, "OVR_BULL_ALIGNED")
 
         if override == "BEAR":
             valid_shorts = [a for a in short_actions if a < len(q_values) and float(q_values[a]) >= min_ovr_q]
@@ -467,15 +476,19 @@ class SatsExpectancyGate:
                     if score > best_score:
                         best_score = score
                         best_short = a
-                return best_short, f"OVR_BEAR_REDIRECT({raw_action}->{best_short})"
+                return _finalize_det(best_short, f"OVR_BEAR_REDIRECT({raw_action}->{best_short})")
             if recovery_mode and not explorer_mode and raw_action == 5:
+                if det_mode:
+                    return 0, "RECOVERY_DETERMINISTIC_HOLD"
                 return (7 if 7 in valid_shorts else valid_shorts[0]), "OVR_BEAR_RECOVERY_CAP_RUNNER"
-            return raw_action, "OVR_BEAR_ALIGNED"
+            return _finalize_det(raw_action, "OVR_BEAR_ALIGNED")
 
         # =================================================================
         # PASO 3: FILTROS SIN OVERRIDE ACTIVO
         # =================================================================
         if recovery_mode and not explorer_mode and "RANGE_SQUEEZE" in norm_s and "BEAR_RALLY" in norm_s and raw_action in (2, 6):
+            if det_mode:
+                return 0, "RECOVERY_DETERMINISTIC_HOLD"
             def_act = 4 if raw_action == 2 else 8
             q_def = float(q_values[def_act]) if def_act < len(q_values) else 0.0
             q_zero = float(q_values[0]) if len(q_values) > 0 else 0.0
@@ -501,7 +514,7 @@ class SatsExpectancyGate:
             if q_act <= min_req_q:
                 return 0, "BLOCKED_LOW_Q_VS_NO_TRADE"
 
-        return raw_action, ("EXPLORER_Q" if explorer_mode else "STANDARD_Q")
+        return _finalize_det(raw_action, ("EXPLORER_Q" if explorer_mode else "STANDARD_Q"))
 
     @classmethod
     def compute_trade_economic_breakdown(
