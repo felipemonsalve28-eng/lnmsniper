@@ -557,11 +557,11 @@ RUNTIME_PARAMETERS_SPEC: Dict[str, Dict[str, Any]] = {
         "impact_down": "FALSE: Operación autónoma completa.",
     },
     "ENABLE_HYBRID_HEDGE": {
-        "target": "Config", "type": "bool", "default": True, "unit": "bool",
-        "description": "Habilita o deshabilita el motor de coberturas híbridas (AdaptiveHedgeController de 7 acciones).",
-        "math_role": "Autoriza coberturas cuando C_hedge_net < 0 y el ahorro esperado supera >= 1.45x las comisiones round-trip.",
-        "impact_up": "TRUE: Neutraliza giros adversos evitando stop-outs directos en posiciones primarias.",
-        "impact_down": "FALSE: Las posiciones primarias operan únicamente con su Stop Loss y Guardián táctico.",
+        "target": "Config", "type": "bool", "default": False, "unit": "bool",
+        "description": "Habilita o deshabilita el motor de coberturas híbridas (desactivado por defecto en arquitectura C1_STREAK3_24H_INV).",
+        "math_role": "En C1_STREAK3_24H_INV se mantiene en False para preservar +15,250 sats de E2_FE_OFF y evitar fricción de patas opuestas.",
+        "impact_up": "TRUE: Activa el motor experimental de coberturas híbridas (no recomendado bajo C1_STREAK3_24H_INV).",
+        "impact_down": "FALSE: Las posiciones primarias TREND operan limpias con piso sl_floor=0.65% y freno por lado C1_STREAK3_24H.",
     },
     "MAX_CONCURRENT_TRADES": {
         "target": "Config", "type": "int", "min_limit": 1, "max_limit": 5, "default": 5, "unit": "positions",

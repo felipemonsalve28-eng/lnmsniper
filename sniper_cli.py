@@ -794,6 +794,43 @@ def print_status_dashboard(ctrl: SniperControlCenter, env_mode: str = "mainnet",
                 print(f"  Hedge Engine   : {hedge_file} [{'OK' if h_ok else 'WARN'}] | Pares: {len(h_data.get('pairs', {}))} | Estados Hedge Q: {len(h_data.get('hedge_q_table', {}))} | Ahorrado vs SL: {saved_sats:+,} sats")
 
     tel = ctrl._safe_read_json(tel_path)
+    sb_snap = None
+    if isinstance(tel, dict) and isinstance(tel.get("side_streak_brake"), dict):
+        sb_snap = tel.get("side_streak_brake")
+    else:
+        try:
+            from side_streak_brake import SideStreakBrakeStore
+            _sb_probe = SideStreakBrakeStore(env_mode=env, persist_to_disk=False)
+            if os.path.exists(_sb_probe.filepath):
+                _sb_disk = SideStreakBrakeStore(env_mode=env, filepath=_sb_probe.filepath, persist_to_disk=True)
+                sb_snap = _sb_disk.get_telemetry_snapshot()
+            else:
+                sb_snap = _sb_probe.get_telemetry_snapshot()
+        except Exception:
+            sb_snap = None
+
+    if isinstance(sb_snap, dict):
+        st_b = int((sb_snap.get("side_loss_streak") or {}).get("b", 0))
+        st_s = int((sb_snap.get("side_loss_streak") or {}).get("s", 0))
+        pa_b = bool((sb_snap.get("side_paused") or {}).get("b", False))
+        pa_s = bool((sb_snap.get("side_paused") or {}).get("s", False))
+        rm_b = float((sb_snap.get("side_remaining_sec") or {}).get("b", 0.0))
+        rm_s = float((sb_snap.get("side_remaining_sec") or {}).get("s", 0.0))
+        tp_b = int((sb_snap.get("total_pauses_triggered") or {}).get("b", 0))
+        tp_s = int((sb_snap.get("total_pauses_triggered") or {}).get("s", 0))
+        sb_sha = "SHA-256 OK" if sb_snap.get("sha256_valid", True) else "⚠️ ALERTA SHA"
+        b_status = f"PAUSADO 24H ({rm_b/3600.0:.1f}h rest)" if pa_b else "ACTIVO 1.00x"
+        s_status = f"PAUSADO 24H ({rm_s/3600.0:.1f}h rest)" if pa_s else "ACTIVO 1.00x (d_SL>0.65%)"
+        if narrow:
+            print(f"  Política: C1_STREAK3_24H_INV [DETERMINISTIC | E2_FE_OFF | {sb_sha}]")
+            print(f"  Freno L : Racha={st_b}/3 | {b_status} (Pausas:{tp_b})")
+            print(f"  Freno S : Racha={st_s}/3 | {s_status} (Pausas:{tp_s})")
+        else:
+            print(
+                f"  Freno C1_24H   : [C1_STREAK3_24H_INV | {sb_sha}] "
+                f"LONG: Racha {st_b}/3 ({b_status}, Tot:{tp_b}) | "
+                f"SHORT: Racha {st_s}/3 ({s_status}, Tot:{tp_s})"
+            )
     print(sep_ln)
     if not isinstance(tel, dict):
         print(f"  Telemetría Vivo: ℹ️ Sin {tel_file} aún (se genera automáticamente con el bot activo).")

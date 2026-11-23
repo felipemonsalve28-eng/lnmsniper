@@ -36,6 +36,7 @@ from limit_execution_manager import (
     should_route_limit,
     compute_limit_entry_plan,
 )
+from side_streak_brake import SideStreakBrakeStore
 
 
 class SimTrainingEnvironment:
@@ -51,16 +52,39 @@ class SimTrainingEnvironment:
         candidate_hedge_file: str = "hedge_state_simulated_candidate.json",
         initial_balance_sats: int = 100000,
         explorer_mode: bool = True,
-        learning_enabled: bool = True,
+        learning_enabled: Optional[bool] = None,
         taker_fee_rate: float = 0.0010,
         funding_rate_8h: float = 0.0001,
         default_slippage_bps: float = 1.5,
+        inverse_contract_math: bool = True,
+        fe_off_trend: Optional[bool] = None,
+        trend_sl_floor_pct: float = 0.0065,
+        short_exp_phys_hold: bool = True,
+        streak3_24h: bool = True,
+        deterministic_trend_policy: Optional[bool] = None,
+        base_risk_pct_std: float = 0.0075,
     ):
         self.candidate_brain_file = str(candidate_brain_file)
         self.candidate_hedge_file = str(candidate_hedge_file)
         self.initial_balance_sats = int(initial_balance_sats)
         self.explorer_mode = bool(explorer_mode)
-        self.learning_enabled = bool(learning_enabled)
+        self.learning_enabled = bool(self.explorer_mode) if learning_enabled is None else bool(learning_enabled)
+        self.inverse_contract_math = bool(inverse_contract_math)
+        self.deterministic_trend_policy = (
+            (not self.explorer_mode and not self.learning_enabled)
+            if deterministic_trend_policy is None
+            else bool(deterministic_trend_policy)
+        )
+        self.fe_off_trend = (not self.learning_enabled) if fe_off_trend is None else bool(fe_off_trend)
+        self.trend_sl_floor_pct = float(trend_sl_floor_pct)
+        self.short_exp_phys_hold = bool(short_exp_phys_hold)
+        self.streak3_24h = bool(streak3_24h)
+        self.base_risk_pct_std = float(base_risk_pct_std)
+        self.side_brake = SideStreakBrakeStore(
+            env_mode="sim",
+            persist_to_disk=False,
+            enabled=self.streak3_24h,
+        )
 
         self.clock = SimClock(start_timestamp=1700000000.0)
         self.feed = SimMarketFeed()
@@ -69,6 +93,7 @@ class SimTrainingEnvironment:
             taker_fee_rate=taker_fee_rate,
             funding_rate_8h=funding_rate_8h,
             default_slippage_bps=default_slippage_bps,
+            inverse_contract_math=self.inverse_contract_math,
         )
 
         # Cerebros estrictamente aislados (nunca tocan los archivos de producción)
@@ -167,8 +192,10 @@ class SimTrainingEnvironment:
             taker_fee_rate=self.exchange.taker_fee_rate,
             funding_rate_8h=self.exchange.funding_rate_8h,
             default_slippage_bps=self.exchange.default_slippage_bps,
+            inverse_contract_math=self.inverse_contract_math,
         )
         self.exchange.trade_counter = prev_counter
+        self.side_brake.reset(persist=False)
         self.feed.load_candles(candles_1m)
         self.feed.warmup(warmup_bars)
 
@@ -259,6 +286,13 @@ class SimTrainingEnvironment:
             self.winning_trades += 1
         else:
             self.losing_trades += 1
+
+        if self.streak3_24h and hasattr(self, "side_brake") and self.side_brake is not None:
+            self.side_brake.record_trade_close(
+                side=str(ev.get("side", "b")),
+                net_pnl_sats=net_pnl,
+                close_ts=float(ev.get("close_ts", now)),
+            )
 
         if self.learning_enabled:
             self.brain.remember_and_train(
@@ -432,8 +466,10 @@ class SimTrainingEnvironment:
                     min_physical_loss = max(30, int(round(0.04 * t_margin)))
 
                     allow_forced_edge_exit = True
+                    if self.fe_off_trend and (act_id in (1, 5) or strat_cfg.get("style") == "TREND"):
+                        allow_forced_edge_exit = False
                     # Regla 1: Prohibir FORCED EDGE EXIT en los primeros 90s salvo colapso físico severo
-                    if trade_age_sec < 90.0 and pnl_atr > -0.85:
+                    elif trade_age_sec < 90.0 and pnl_atr > -0.85:
                         allow_forced_edge_exit = False
                     # Regla 2: Zona muerta de comisiones (pnl_atr > -0.45)
                     elif pnl_atr > -0.45 and est_net_sats < min_net_harvest:
@@ -675,6 +711,16 @@ class SimTrainingEnvironment:
             if is_exploring:
                 cand_order = list(range(1, 9))
                 random.shuffle(cand_order)
+            elif self.deterministic_trend_policy:
+                max_q = max(float(q_vec[a]) for a in range(1, 9))
+                if max_q <= 0.0:
+                    cand_order = []
+                else:
+                    top_acts = [a for a in range(1, 9) if abs(float(q_vec[a]) - max_q) <= 1e-12]
+                    if any(1 <= a <= 4 for a in top_acts) and any(5 <= a <= 8 for a in top_acts):
+                        cand_order = []
+                    else:
+                        cand_order = [top_acts[0]]
             else:
                 ranked_by_q = sorted(range(1, 9), key=lambda a: float(q_vec[a]) if a < len(q_vec) else -1.0, reverse=True)
                 cand_order = []
@@ -704,9 +750,17 @@ class SimTrainingEnvironment:
                 fee_rt = THRESHOLDS_MANAGER.get_float("fees", "round_trip_fee_rate", 0.0020)
                 kelly_scale = THRESHOLDS_MANAGER.get_float("q_calibration", "fractional_kelly_scale", 0.25)
                 dd_dampener = max(0.25, 1.0 - (current_dd / 0.06) ** 2) if current_dd > 0 else 1.0
-                base_risk_pct = (0.015 if self.explorer_mode else 0.012) * dd_dampener
+                base_risk_pct = (
+                    0.015
+                    if self.explorer_mode
+                    else (self.base_risk_pct_std if self.deterministic_trend_policy else 0.012)
+                ) * dd_dampener
                 auto_adj = self.brain.supervisor.get_autonomous_adjustments() if hasattr(self.brain, "supervisor") and self.brain.supervisor else {"expectancy_boost_applied": 0.0}
                 vel_ema = float(perception.get("vel_ema_atr", 0.0)) if isinstance(perception, dict) else 0.0
+
+                parts_curr = str(curr_state_key).split("|")
+                seg1 = parts_curr[0] if len(parts_curr) > 0 else "RANGE_NORMAL"
+                seg5 = parts_curr[4] if len(parts_curr) > 4 else "EMA_TRANS"
 
                 evaluated_acts = set()
                 for cand_a in cand_order:
@@ -714,10 +768,21 @@ class SimTrainingEnvironment:
                         cand_a, curr_state_key, q_vec, self.brain.strategies, perception,
                         recovery_mode=(current_dd >= 0.035), current_dd_pct=current_dd,
                         explorer_mode=False,
+                        deterministic_trend_policy=self.deterministic_trend_policy,
                     )
                     if action <= 0 or action in evaluated_acts or action not in self.brain.strategies:
                         continue
                     evaluated_acts.add(action)
+
+                    if self.deterministic_trend_policy:
+                        if action not in (1, 5):
+                            continue
+                        if seg1 in ("RANGE_NORMAL", "RANGE_SQUEEZE", "CHOP_HIGHVOL", "EXTREME_VOLATILITY"):
+                            continue
+                        if action == 1 and (seg1 == "TREND_BEAR" or seg5 in ("FULL_BEAR", "BEAR_RALLY")):
+                            continue
+                        if action == 5 and (seg1 == "TREND_BULL" or seg5 in ("FULL_BULL", "BULL_DIP")):
+                            continue
 
                     if not self.explorer_mode:
                         q_val = float(q_vec[action]) if action < len(q_vec) else 0.0
@@ -726,6 +791,11 @@ class SimTrainingEnvironment:
 
                     strat = self.brain.strategies[action]
                     side = strat["side"]
+
+                    if self.deterministic_trend_policy and self.streak3_24h and hasattr(self, "side_brake") and self.side_brake is not None:
+                        paused_s, _ = self.side_brake.is_side_paused(side, now=now)
+                        if paused_s:
+                            continue
 
                     # Filtro de confluencia microestructural: exigir vela de confirmación y evitar centro de rango sin dirección
                     if side == "buy":
@@ -748,6 +818,23 @@ class SimTrainingEnvironment:
                     lev, sl, tp = calculate_strategy_order_params(
                         strat, price, atr, rr_mult=eff_rr_mult
                     )
+                    effective_rr = max(1.5, float(strat["rr"]) * eff_rr_mult)
+                    if self.deterministic_trend_policy and self.trend_sl_floor_pct > 0.0 and action in (1, 5):
+                        raw_sl_dist = max(atr * float(strat["sl_atr"]), price * 0.0024)
+                        floor_dist = price * self.trend_sl_floor_pct
+                        if floor_dist > raw_sl_dist:
+                            sl_distance = floor_dist
+                            lev = max(
+                                Config.MIN_LEVERAGE,
+                                min(Config.MAX_LEVERAGE, int((0.68 / (sl_distance / price)) * float(strat["lev_f"]))),
+                            )
+                            tp_distance = (sl_distance * effective_rr) + (price * (2.2 * Config.TAKER_FEE))
+                            sl = (price - sl_distance) if side == "buy" else (price + sl_distance)
+                            tp = (price + tp_distance) if side == "buy" else (price - tp_distance)
+
+                    sl_dist_pct = abs(price - sl) / max(price, 1.0)
+                    if self.deterministic_trend_policy and self.short_exp_phys_hold and action == 5 and sl_dist_pct <= 0.006505:
+                        continue
 
                     q_val_entry = float(q_vec[action]) if action < len(q_vec) else 0.0
                     st_visits_entry = int(self.brain.state_visits.get(curr_state_key, 0))
