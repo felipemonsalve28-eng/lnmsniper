@@ -1,24 +1,25 @@
-# LNM Sniper v7.3+ Dual
+# LNM Sniper v7.3+ — Edición `C1_STREAK3_24H_INV`
 
-**Sistema autónomo de trading cuantitativo para Bitcoin en LN Markets (API v3)** con arquitectura dual (`Mainnet` + `Testnet`), Reinforcement Learning tabular (Q-Learning), motor de cobertura híbrido (*Hybrid Edge Hedging*), supervisión matemática en tiempo real y protecciones de capital de grado producción.
+**Motor autónomo de trading cuantitativo para futuros inversos perpetuos de Bitcoin (`BTCUSD`) en LN Markets (API v3)** con arquitectura dual (`Mainnet` + `Testnet`), política determinista simétrica inmutable en RAM, freno discreto persistente por lado (`C1_STREAK3_24H`), radar de liquidez en **Modo B (`LIQ_BIAS_ONLY`)**, supervisión matemática en tiempo real y protecciones de capital P0.
 
-Optimizado para ejecutarse de forma ligera y determinista en **WSL (`Ubuntu`)**, **Linux** y **Termux (Android)** sin dependencias compiladas pesadas.
+Optimizado en Python puro (`requests` + `numpy`) con bloqueo POSIX (`fcntl`) y latencia de ciclo $O(1)$ para ejecutarse de forma ligera en **Linux**, **WSL (`Ubuntu`)** y **Android Termux (`aarch64`)** sin dependencias C/C++ pesadas.
 
 ---
 
 ## Tabla de Contenidos
 
 1. [Arquitectura General](#arquitectura-general)
-2. [Componentes Clave](#componentes-clave)
-3. [Requisitos e Instalación](#requisitos-e-instalación)
-4. [Configuración de Credenciales (.env)](#configuración-de-credenciales-env)
-5. [Uso Diario con el CLI (`sniper_cli.py`)](#uso-diario-con-el-cli-sniper_clipy)
-6. [Perfiles Cuantitativos y Hot-Reload](#perfiles-cuantitativos-y-hot-reload)
-7. [Script Legado (`setup_dual_sniper.sh`)](#script-legado-setup_dual_sniper_sh)
-8. [Simulación, Entrenamiento y Certificación Monte Carlo](#simulación-entrenamiento-y-certificación-monte-carlo)
-9. [Pruebas Automatizadas y Verificación](#pruebas-automatizadas-y-verificación)
-10. [Mapa Completo de Archivos](#mapa-completo-de-archivos)
-11. [Reglas de Seguridad P0 y Gobernanza](#reglas-de-seguridad-p0-y-gobernanza)
+2. [Arquitectura Cuantitativa Vigente (`C1_STREAK3_24H_INV`)](#arquitectura-cuantitativa-vigente-c1_streak3_24h_inv)
+3. [Parámetros Críticos Efectivos de Arranque](#parámetros-críticos-efectivos-de-arranque)
+4. [Métricas Certificadas OOS y Estrés (`inverse_contract_math=True`)](#métricas-certificadas-oos-y-estrés-inverse_contract_mathtrue)
+5. [Requisitos, Instalación y Despliegue en Termux](#requisitos-instalación-y-despliegue-en-termux)
+6. [Credenciales (`.env`) y Flags Directos del Bot](#credenciales-env-y-flags-directos-del-bot)
+7. [Operación Diaria con `sniper_cli.py`](#operación-diaria-con-sniper_clipy)
+8. [Perfiles Cuantitativos, Umbrales y Runtime](#perfiles-cuantitativos-umbrales-y-runtime)
+9. [Simulación, Entrenamiento Offline y Certificación](#simulación-entrenamiento-offline-y-certificación)
+10. [Pruebas Automatizadas y Verificación (`11` Suites)](#pruebas-automatizadas-y-verificación-11-suites)
+11. [Mapa Completo del Repositorio](#mapa-completo-del-repositorio)
+12. [Reglas P0, Gobernanza y Aviso de Riesgo](#reglas-p0-gobernanza-y-aviso-de-riesgo)
 
 ---
 
@@ -26,78 +27,120 @@ Optimizado para ejecutarse de forma ligera y determinista en **WSL (`Ubuntu`)**,
 
 ```mermaid
 flowchart TD
-    MKT["Feeds OHLCV (1m / 5m / 15m / 1h / 4h / 1d)<br/>+ LN Markets API v3 (/account, /ticker, /trades)"] --> MTF["MultiTimeframeCache (O(1) incremental)<br/>RSI · BB · ATR · EMA · MACD · ADX · VWAP"]
-    MTF --> PERC["ShortTermPerceptionEngine<br/>Regímenes (6) · Giros en V · Micro 1m"]
-    MTF --> BRAIN["AutonomousGoalBrain (Q-Table Schema v2)<br/>9 acciones (0: HOLD | 1..4 LONG | 5..8 SHORT)<br/>Estado: REGIME|OSC|CONC|MACRO|EMA"]
-    PERC --> GATE["SatsExpectancyGate (Bayesiano Beta-Binomial)<br/>Fee-Ratio · Net R:R · Anti-Stacking · ADX"]
-    BRAIN --> GATE
-    GATE --> GUARD["HardFloorGuardian (P0) + Guardian Táctico<br/>Piso 75%/88% · Trailing 1.55x · Harvest >= 2.15x Fees"]
-    GATE --> HEDGE["Hybrid Edge Hedging Engine (7 estados)<br/>Q-Table independiente + Anti-Whipsaw RANGE_SQUEEZE"]
-    GUARD --> LNM["LNMarketsClient (API v3 + Circuit Breaker)<br/>Ejecución Aislada + Conciliación Neta en Satoshis"]
-    HEDGE --> LNM
-    LNM --> SUP["LearningQualitySupervisor<br/>TD-Error · Q-Bias · FER · Entropía · MFE/MAE"]
-    SUP --> TEL["telemetry_live*.json + AtomicBrainStore (SHA-256)"]
+    MKT["Feeds OHLCV (1m a 1d) + LN Markets API v3"] --> CLIENT["ResilientLNMClient - TokenBucket 20/s burst 40, clientId y 401 sync"]
+    CLIENT --> MTF["MultiTimeframeCache O(1) + LiquidityRadar Modo B LIQ_BIAS_ONLY"]
+    MTF --> BRAIN["AutonomousGoalBrain - Semilla simétrica inmutable, 9 acciones, 5 segmentos"]
+    BRAIN --> GATE["SatsExpectancyGate + C1_SHORT_EXP_PHYS + SideStreakBrakeStore C1_STREAK3_24H"]
+    GATE --> GUARD["HardFloorGuardian P0 + Guardián Táctico - FE_OFF_TREND y SL floor 0.65%"]
+    GUARD --> CLIENT
+    CLIENT --> SUP["LearningQualitySupervisor - TD-Error, Q-Bias, FER, Entropía, MFE/MAE"]
+    SUP --> STORE["AtomicBrainStore strict_sha=True + telemetry_live*.json no versionada"]
 ```
 
 ---
 
-## Componentes Clave
+## Arquitectura Cuantitativa Vigente (`C1_STREAK3_24H_INV`)
 
-### 1. Cerebro Q-Learning (`AutonomousGoalBrain`)
-- **9 acciones discretas inviolables (`0..8`):**
-  - `0`: `HOLD / NO_TRADE`
-  - `1..4` (`LONG`) y `5..8` (`SHORT`): `TREND`, `REVERSION`, `SNIPER`, `DEF_SCALP`.
-- **Espacio de estados de 5 segmentos:** `REGIME|OSC|CONC|MACRO|EMA`.
-- **Contabilidad real en satoshis netos:** la recompensa consolida el PnL neto liquidado real de LN Markets (`pl - opening_fee - closing_fee - funding_fee`, sin doble descuento cuando `real_balance_delta_sats` o `pl_includes_fees=True` están presentes), penalizando excursiones adversas (`MAE`) y tiempo de inmovilización.
-- **Anti-monopolio sin aleatoriedad:** si el supervisor detecta colapso de entropía (`policy_collapse_detected`), aplica un desempate suave (`-0.06`) sobre la acción monopolista sin mutar la Q-table ni reintroducir exploración aleatoria en Mainnet.
+El sistema conserva intacto el contrato de 9 acciones discretas (`0`: `HOLD`, `1..4`: `LONG`, `5..8`: `SHORT`) y el esquema de estado de 5 segmentos (`REGIME|OSC|CONC|MACRO|EMA`), operando bajo las garantías auditadas de la edición `C1_STREAK3_24H_INV`:
 
-### 2. Percepción Multi-Timeframe y Filtros de Entrada
-- **`MultiTimeframeCache`:** mantiene en caché velas y volumen de `1m`, `5m`, `15m`, `1h`, `4h` y `1d` (retornando siempre la 3-tupla `(h, l, c)` en `get_candles()`), con actualización incremental $O(1)$ de `RSI`, `BB`, `ATR`, `EMA (9/21/50/200)`, `macd_norm`, `adx` (Wilder 14) y `vwap`.
-- **`SatsExpectancyGate`:**
-  - Estima probabilidad de éxito Bayesiana jerárquica (`p_hat`, `p_lcb`) por estilo/régimen.
-  - Bloquea entradas en `RANGE_SQUEEZE + HIGH_EXP`, caída libre (`MICRO_1M_FALLING_KNIFE`), picos alcistas (`MICRO_1M_BULL_SPIKE`), tendencia débil (`ADX < 16.0` para `TREND`) y apilamiento en el mismo lado sin SL asegurado (**Guardia Anti-Stacking**).
-  - Escala la concurrencia según capital real (`equity // 10000`, máximo 5 en Mainnet).
-
-### 3. Guardián Táctico y `HardFloorGuardian` (P0)
-- **Piso duro de capital:** protege el `75%` del pico inicial (`INITIAL_FLOOR_RATIO`) y el `88%` al conquistar metas (`MILESTONE_FLOOR_RATIO`).
-- **Límites P0:** Drawdown máximo (`16%` en Mainnet), pérdida diaria máxima (`11%`) y Kill-Switch automático (`22%`).
-- **Trailing Stop y Cosechas anti-Fee-Drag:** el bloqueo de trailing exige asegurar al menos `1.55x fee_offset` con piso de escala `0.65x`, y las cosechas (`HARVEST`) exigen $\ge 2.15\times$ `fee_offset` ($\text{FER} \ge 1.15$).
-
-### 4. Hybrid Edge Hedging Engine (7 Estados)
-- Módulos: `edge_monitor.py`, `predictive_hedge.py`, `portfolio_hedge.py`, `hedge_risk_manager.py`, `dynamic_hedge.py`, `adaptive_controller.py`, `hedge_state_store.py`.
-- Opera una máquina de 7 estados con histéresis (`NORMAL -> WARNING -> HEDGE_CANDIDATE -> HEDGE_ACTIVE -> HEDGE_ADJUST -> RECOVERY -> HEDGE_EXIT`) y una Q-table independiente de 7 acciones.
-- Incluye bloqueo específico contra whipsaw en compresión lateral (`BLOCKED_HEDGE_SQUEEZE_WHIPSAW_RISK` en `RANGE_SQUEEZE` / `CHOP_HIGHVOL` cuando `adverse_continuation_prob < 0.78`) y validación estricta de ahorro neto positivo superior a comisiones.
-
-### 5. Supervisión Matemática y Hot-Reload Atómico
-- **`LearningQualitySupervisor`:** monitorea en vivo los 5 signos vitales (`TD-Error`, `Q-Bias`, `FER`, `Entropía de Política` y `Captura MFE/MAE`) y activa respuestas automáticas (*Learning Guard*, boost de expectancy, ajuste de trailing).
-- **`LearningThresholdsManager`:** gestiona los **78 umbrales** en 10 categorías dentro de `config/learning_thresholds.json` con validación de rango, rechazo ante sintaxis corrupta, **candado estructural** cuando existen posiciones abiertas y recarga en caliente sin reiniciar el bot (`< 2s` o vía `SIGHUP`).
-
-### 6. Persistencia Atómica e Integridad Criptográfica
-- **`AtomicBrainStore`:** todas las lecturas/escrituras de `q_brain_advanced_lnm.json`, `q_brain_testnet_lnm.json`, `hedge_state_mainnet.json` y `hedge_state_testnet.json` operan bajo locks POSIX (`fcntl`), escritura temporal + `fsync` + respaldo `.bak` y verificación estricta `strict_sha=True` (`.sha256`).
+- **Aislamiento Determinista en Memoria (`DETERMINISTIC_TREND_POLICY = True`):**
+  - El motor de entrada, el ranking y `estimate_bayesian_win_rate` utilizan en RAM la semilla simétrica limpia e inmutable (sin sesgo direccional, sin cascada `TREND -> SNIPER` y con `lcb_penalty = 0.0`).
+  - Se omiten valores `Q`, `state_visits`, `style_metrics`, penalizaciones CQL, `expectancy_boost` y `runtime_shadow_cb` provenientes de archivos `q_brain_*.json` legados en disco, manteniendo intacta la validación criptográfica `strict_sha=True` (`AtomicBrainStore`).
+- **Asimetría Física en Cortos (`C1_SHORT_EXP_PHYS`) y `E2_FE_OFF`:**
+  - `L_TREND` opera con piso físico `TREND_SL_FLOOR_PCT = 0.0065` (`0.65%`).
+  - `S_TREND` requiere expansión orgánica de volatilidad **`SHORT_EXP_MIN_DSL = 0.006505`** (`0.6505%`): si la distancia al stop loss es $\le 0.6505\%$, bloquea la entrada hacia `HOLD` (`BLOCKED_SHORT_NO_EXPANSION`).
+  - `FE_OFF_TREND = True` desactiva salidas prematuras por `FORCED_EDGE_EXIT` en trades tendenciales.
+- **Freno Discreto por Lado Persistente (`C1_STREAK3_24H`, [`side_streak_brake.py`](side_streak_brake.py)):**
+  - Contadores independientes por lado (`buy` y `sell`) con lectura `is_side_paused` en $O(1)$ puramente en RAM sin I/O bloqueante en el bucle de `5s`.
+  - Al acumular **3 pérdidas consecutivas** (`net_pnl_sats <= 0`) en un lado, pausa únicamente ese lado durante **24 horas** (`86,400 s`), manteniendo libre el lado contrario.
+  - Persiste al cierre de operaciones con escritura atómica (`tmp + os.fsync + os.replace`), bloqueo POSIX `fcntl` y verificación `.sha256` en `$HOME/.sniper_state/`.
+- **Radar de Liquidez en Modo B (`LIQ_BIAS_ONLY`, [`liquidity_radar.py`](liquidity_radar.py)):**
+  - Validado por selección A/B sobre 18 meses reales (`liquidity_radar.enabled = 1`, `liquidity_radar.shadow_only = 0`, `liquidity_radar.opposite_wall_enabled = 0`). Aporta sesgo direccional sin activar vetos por muros opuestos en `TREND`.
+- **Resiliencia API v3, Concurrencia y Apagado Limpio:**
+  - `ResilientLNMClient` ([`guardian_execution_core.py`](guardian_execution_core.py)) incorpora `TokenBucket(rate=20.0/s, capacity=40.0)`, generación de `clientId` único e idempotente (`generate_client_id`) en `open_trade()`, firma HMAC-SHA256 y auto-sincronización de reloj ante `HTTP 401 outdated timestamp`.
+  - `_handle_shutdown_signal` ([`lnm_sniper_v6_advanced.py`](lnm_sniper_v6_advanced.py)) ejecuta parada lock-free segura ante `SIGTERM`/`SIGINT` con sueño interrumpible (`0.25s`) y limpieza `try/finally`.
+- **Módulos Explícitamente Desactivados en Producción:**
+  - **Hybrid Edge Hedging (`ENABLE_HYBRID_HEDGE = False`):** desactivado por defecto en runtime, catálogo y todos los presets.
+  - **Órdenes Límite en Retroceso (`limit_execution.enabled = 0`):** desactivadas en `TREND` por selección adversa.
+  - **Veto por Muro Opuesto (`liquidity_radar.opposite_wall_enabled = 0`) y `FORCED_EDGE_EXIT` en `TREND` (`FE_OFF_TREND = True`).**
 
 ---
 
-## Requisitos e Instalación
+## Parámetros Críticos Efectivos de Arranque
 
-- **Python:** 3.9 o superior.
-- **Sistema:** Linux, WSL (`Ubuntu`) o Android Termux (requiere soporte POSIX `fcntl`).
-- **Dependencias ligeras:** `requests` y `numpy`.
+Valores verificados en tiempo de arranque (`python3 -B lnm_sniper_v6_advanced.py --dry-check` y `Config`):
+
+| Parámetro / Bandera | Valor Vigente | Alcance / Protección |
+| :--- | :---: | :--- |
+| `ENABLE_HYBRID_HEDGE` | `False` | Cobertura híbrida deshabilitada |
+| `DETERMINISTIC_TREND_POLICY` | `True` | Política simétrica determinista inmutable en RAM |
+| `FE_OFF_TREND` | `True` | Sin cierres prematuros `FORCED_EDGE_EXIT` en `TREND` |
+| `limit_execution.enabled` | `0` (`False`) | Ejecución a mercado sin retrocesos `LIMIT` |
+| `liquidity_radar.enabled` | `1` (`True`) | Radar de liquidez activo |
+| `liquidity_radar.shadow_only` | `0` (`False`) | Modo B `LIQ_BIAS_ONLY` activo |
+| `liquidity_radar.opposite_wall_enabled` | `0` (`False`) | `BLOCKED_OPPOSITE_LIQ_WALL` desactivado |
+| `BASE_RISK_PCT_STD` | `0.0075` (`0.75%`) | Riesgo base por operación sobre equity disponible |
+| `RECOVERY_ENTER_DD` | `0.035` (`3.5%`) | Entrada a modo recuperación (`HOLD` limpio) |
+| `DD_THROTTLE_HALT_PCT` | `0.045` (`4.5%`) | Contención estricta de drawdown |
+| `MAX_DD_GUARD_PCT` | `0.052` (`5.2%`) | Guarda dura de drawdown máximo en vivo y simulador |
+| `TREND_SL_FLOOR_PCT` | `0.0065` (`0.65%`) | Piso mínimo físico de Stop Loss |
+| `SHORT_EXP_MIN_DSL` | `0.006505` (`0.6505%`) | Umbral mínimo de expansión física para `S_TREND` |
+| `MAX_CONCURRENT_TRADES` | `5` | Tope estricto compartido en `mainnet` y `testnet` |
+
+---
+
+## Métricas Certificadas OOS y Estrés (`inverse_contract_math=True`)
+
+Resultados reproducibles directamente con [`SimTrainingEnvironment`](simulation/sim_training_environment.py) usando la configuración vigente del repositorio (**Modo B `LIQ_BIAS_ONLY`**, comisión de referencia `0.20% RT`):
+
+| Ventana / Escenario | Trades | Neto (sats) | PF | MaxDD | Meses `DD >= 4.5%` | DDG / OTR / FE | Meses Tendenciales Clave |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **Fold 1 OOS (`M13..M18`) — Paridad Directa Repo** | `130` | **`+26,933`** | **`1.73`** (`1.729`) | `4.10%` | `0/6` | `0 / 0 / 0` | **`M16 BULL = +31,746 sats`** (`N=52`, `DD=3.87%`) |
+| **Fold 2 OOS (`M01..M06`)** | `247` | `-8,841` | `0.899` | `4.40%` | `0/6` | `0 / — / 0` | **`M02 BULL = +12,750 sats`** |
+| **Semestre 2 (`M07..M12`)** | `295` | `-26,288` | `0.745` | `4.66%` | `1/6` | `0 / — / 0` | **`M09 BEAR = +8,392 sats`** |
+| **`12M OOS` (`F1 + F2` @ `0.20% RT`)** | `377` | **`+18,092`** | `1.145` | `4.40%` | `0/12` | `0` DDG | Sube a `+31,603` (`0.15% RT`) y `+45,104` (`0.10% RT`) |
+| **`Total 18M` (`M01..M18` @ `0.20% RT`)** | `672` | `-8,196` | `0.964` | `4.66%` | `1/18` | `0` DDG | Sube a `+14,938` (`0.15% RT`) y `+38,049` (`0.10% RT`) |
+
+- **Estrés de Microestructura (`12M OOS`, `+50%` slippage + `1-bar` latencia):** `+13,488 sats`, `PF = 1.11`, `MaxDD = 4.63%`, `DDG = 0`.
+- **Monte Carlo (`1,000` trayectorias *block-bootstrap*, `12M OOS @ 0.20% RT`):** `P(Net > 0) = 62.10%`, mediana `P50 = +9,790 sats` (`PF P50 = 1.08`), `P95 RealDD = 3.83%`, `P(DDG >= 5.2%) = 0.00%`, `P(HardFloor) = 0.00%`.
+
+---
+
+## Requisitos, Instalación y Despliegue en Termux
+
+- **Python:** `3.9+` (probado en Python `3.12` WSL Ubuntu y compatible con Termux `aarch64`).
+- **Sistema:** Linux, WSL (`Ubuntu`) o Android Termux (con soporte POSIX `fcntl`).
+- **Dependencias:** `requests` y `numpy`.
 
 ```bash
 # En WSL (Ubuntu) o Linux
-cd /mnt/c/Users/mberm/OneDrive/Documentos/sniper
+git clone https://github.com/felipemonsalve28-eng/lnmsniper.git
+cd lnmsniper
 pip install requests numpy
+python3 -B lnm_sniper_v6_advanced.py --dry-check
 
 # En Android Termux
-pkg update && pkg install python
+pkg update && pkg install -y python git
 pip install --upgrade pip requests numpy
+git clone https://github.com/felipemonsalve28-eng/lnmsniper.git
+cd lnmsniper
+python3 -B lnm_sniper_v6_advanced.py --dry-check
 ```
+
+### Higiene de Actualización (`git pull --ff-only` en Termux)
+
+- Los archivos efímeros `telemetry_live*.json`, `side_brake_state_*.json*`, logs (`*.log`, `*.log.*`), `.env` y respaldos locales están excluidos en [`.gitignore`](.gitignore) para evitar conflictos durante `git pull --ff-only`.
+- El estado del freno por lado vive de forma aislada en `$HOME/.sniper_state/`.
+- Si un demonio en vivo actualiza alguno de los 4 archivos JSON semilla (`q_brain_*_lnm.json` o `hedge_state_*.json`) localmente en Termux, protege tu árbol antes de futuros `git pull --ff-only` marcándolos temporalmente con:
+  ```bash
+  git update-index --skip-worktree q_brain_advanced_lnm.json q_brain_testnet_lnm.json hedge_state_mainnet.json hedge_state_testnet.json
+  ```
 
 ---
 
-## Configuración de Credenciales (.env)
+## Credenciales (`.env`) y Flags Directos del Bot
 
-Crea o edita el archivo `.env` en la raíz del proyecto con llaves activas de **LN Markets API v3** (separadas por entorno):
+Crea `.env` en la raíz del proyecto (permisos `chmod 600 .env`) con credenciales **LN Markets API v3**:
 
 ```env
 # Producción (Mainnet)
@@ -105,145 +148,153 @@ LNM_API_KEY=tu_api_key_v3_mainnet
 LNM_API_SECRET=tu_api_secret_v3_mainnet
 LNM_PASSPHRASE=tu_passphrase_mainnet
 
-# Explorador (Signet Testnet)
+# Explorador (Testnet / Signet)
 LNM_TESTNET_API_KEY=tu_api_key_v3_testnet
 LNM_TESTNET_API_SECRET=tu_api_secret_v3_testnet
 LNM_TESTNET_PASSPHRASE=tu_passphrase_testnet
 ```
 
-> **Nota:** `load_saved_credentials()` busca en variables de entorno, `.env`, `~/.env` y `~/.bashrc`. Asegúrate de usar llaves **API v3** vigentes y sin comillas sueltas.
+> `load_saved_credentials()` busca variables de entorno, `.env`, `~/.env` y `~/.bashrc`.
+
+### Flags de [`lnm_sniper_v6_advanced.py`](lnm_sniper_v6_advanced.py)
+
+```bash
+python3 -B lnm_sniper_v6_advanced.py --help
+```
+
+| Flag | Descripción |
+| :--- | :--- |
+| `--env {mainnet\|testnet}` | Selecciona entorno de ejecución |
+| `--testnet` | Atajo equivalente a `--env testnet` |
+| `--safe-mode` | Gestiona posiciones abiertas sin abrir nuevas entradas |
+| `--once` | Ejecuta un ciclo único y termina |
+| `--dry-check` | Valida configuración efectiva sin credenciales ni red |
+| `-h, --help` | Muestra la ayuda y termina |
 
 ---
 
-## Uso Diario con el CLI (`sniper_cli.py`)
+## Operación Diaria con `sniper_cli.py`
 
-`sniper_cli.py` es el centro de mando principal del proyecto. Está optimizado para **Termux** (arranque ligero por *lazy-imports*, ajuste automático a pantallas estrechas de 42–65 columnas y cancelación limpia por paso con `Ctrl+C`).
+[`sniper_cli.py`](sniper_cli.py) es el centro de mando principal del bot con arranque ligero (*lazy imports*), adaptación a pantallas estrechas de Termux y recarga en caliente (`SIGHUP`):
 
-### Menú Interactivo Guiado
 ```bash
+# Menú interactivo guiado
 python3 sniper_cli.py
 ```
-Abre un menú numerado (`[0-8]`) para consultar estado, abrir monitor en vivo, explorar o modificar parámetros con su ficha matemática, cambiar presets, controlar demonios (`normal`, `shadow`, `safe-mode`) y administrar cerebros.
 
-### Comandos Directos Más Útiles
-
-| Objetivo | Comando |
+| Acción | Comando |
 | :--- | :--- |
-| **Ver estado en vivo (API v3 + cerebros + signos vitales RL)** | `python3 sniper_cli.py status --env mainnet` |
-| **Ver estado solo con archivos locales (sin red)** | `python3 sniper_cli.py status --env mainnet --offline` |
-| **Monitor en vivo con auto-refresco** | `python3 sniper_cli.py watch --env mainnet --interval 3` |
-| **Iniciar demonio en segundo plano** | `python3 sniper_cli.py daemon start --env mainnet` |
-| **Iniciar en modo Seguro / Sombra** | `python3 sniper_cli.py daemon start --env mainnet --safe-mode` (o `--shadow`) |
-| **Reiniciar / Detener / Recargar config (`SIGHUP`)** | `python3 sniper_cli.py daemon restart --env mainnet` / `stop` / `reload` |
-| **Ver últimas líneas del log** | `python3 sniper_cli.py daemon logs --env mainnet --lines 40` |
-| **Explorar catálogo de 99 parámetros** | `python3 sniper_cli.py catalog --search expectancy` |
-| **Ver ficha matemática de un parámetro** | `python3 sniper_cli.py explain min_expectancy_ratio` |
-| **Ajustar un umbral en caliente (nombre corto o completo)** | `python3 sniper_cli.py set trailing_tighten_factor 0.85` |
-| **Ver / Cambiar parámetros de arranque (`RUNTIME_BOOT`)** | `python3 sniper_cli.py runtime-list` / `runtime-set MAX_LEVERAGE 60` |
+| **Estado en vivo (API v3 + cerebros + RL)** | `python3 sniper_cli.py status --env mainnet` |
+| **Estado offline (archivos locales sin red)** | `python3 sniper_cli.py status --env mainnet --offline` |
+| **Monitor continuo con auto-refresco** | `python3 sniper_cli.py watch --env mainnet --interval 3` |
+| **Iniciar / Reiniciar / Detener demonio** | `python3 sniper_cli.py daemon start --env mainnet` (`stop` / `restart` / `reload`) |
+| **Iniciar demonio en `--safe-mode` o `--shadow`** | `python3 sniper_cli.py daemon start --env mainnet --safe-mode` |
+| **Inspeccionar logs del demonio** | `python3 sniper_cli.py daemon logs --env mainnet --lines 40` |
+| **Explorar catálogo de `100` parámetros (`12` categorías)** | `python3 sniper_cli.py catalog --search liquidity_radar` |
+| **Ver ficha técnica y rango de un umbral** | `python3 sniper_cli.py explain opposite_wall_enabled` |
+| **Modificar umbral con Hot-Reload atómico** | `python3 sniper_cli.py set trailing_tighten_factor 0.85` |
+| **Listar / Editar `28` parámetros de runtime** | `python3 sniper_cli.py runtime-list` / `runtime-set MAX_LEVERAGE 60` |
 | **Restaurar overrides de runtime a fábrica** | `python3 sniper_cli.py runtime-reset` |
-| **Administrar cerebros (`info`, meta en sats, sync, limpieza)** | `python3 sniper_cli.py brain set-target --sats 350k --env mainnet` |
-| **Sincronizar conocimiento Testnet -> Mainnet** | `python3 sniper_cli.py brain sync --dry-run` (quitar `--dry-run` para aplicar) |
+| **Administrar cerebros (`info`, `set-target`, `sync`, `init-clean`)** | `python3 sniper_cli.py brain sync --dry-run` |
+
+> **Nota sobre [`setup_dual_sniper.sh`](setup_dual_sniper.sh):** este script heredado sigue disponible para rotación manual de logs o utilidades puntuales, pero no debe mezclarse en paralelo con los demonios gestionados por `sniper_cli.py daemon`.
 
 ---
 
-## Perfiles Cuantitativos y Hot-Reload
+## Perfiles Cuantitativos, Umbrales y Runtime
 
-El sistema incluye 5 perfiles preconfigurados en `sniper_cli_catalog.py`:
+- **Umbrales (`100` parámetros en `12` categorías):** `expectancy`, `fees`, `td_error`, `q_calibration`, `policy_entropy`, `mfe_mae`, `reward`, `exploration`, `learning_guard`, `market_sensitivity`, `liquidity_radar` y `limit_execution` en [`config/learning_thresholds.json`](config/learning_thresholds.json) y [`config/learning_thresholds_testnet.json`](config/learning_thresholds_testnet.json).
+- **Runtime (`28` parámetros tácticos):** definidos en [`sniper_cli_catalog.py`](sniper_cli_catalog.py) (`26` atributos de `Config`, `SAFE_MODE` vía CLI/entorno y `MAX_HEDGE_LEVERAGE` en `HedgeRiskManager`).
+- **Perfiles (`5` presets):** todos mantienen `ENABLE_HYBRID_HEDGE = False` por defecto:
 
-| Preset | Enfoque Operativo | Apto Live Mainnet |
-| :--- | :--- | :--- |
-| `baseline_v73` | Calibración oficial equilibrada v7.3+ (Monte Carlo 18m) | Sí |
-| `capital_fortress` | Preservación estricta: `min_expectancy_ratio=4.60`, `MAX_LEVERAGE=50x`, `Kelly=0.15` | Sí |
-| `fee_sniper_anti_chop` | Combate al *fee drag*: `min_net_to_cost_ratio=3.60`, `fer_cooldown_mult=3.0` | Sí |
-| `trend_expansion_kelly` | Captura de tendencias y rupturas: `min_net_rr=1.30`, `Kelly=0.32` | Sí |
-| `testnet_curriculum_lab` | Exploración acelerada (`epsilon_explorer_initial=0.32`, exclusivo Testnet/Shadow) | **No** (bloqueado P0 en Mainnet) |
+| Preset | Enfoque |
+| :--- | :--- |
+| `baseline_v73` | Calibración oficial certificada LNM Sniper v7.3+ (Monte Carlo Baseline) |
+| `capital_fortress` | Escudo institucional defensivo de preservación de satoshis |
+| `fee_sniper_anti_chop` | Erradicador de *fee-drag* y filtro anti-chop lateral / squeeze |
+| `trend_expansion_kelly` | Captura de tendencia direccional y expansión de volatilidad |
+| `testnet_curriculum_lab` | Exploración curricular acelerada (exclusivo Testnet/Shadow; bloqueado P0 en Mainnet) |
 
 ```bash
 python3 sniper_cli.py presets list
-python3 sniper_cli.py presets show fee_sniper_anti_chop
-python3 sniper_cli.py presets apply fee_sniper_anti_chop --env mainnet
+python3 sniper_cli.py presets show baseline_v73
+python3 sniper_cli.py presets apply baseline_v73 --env mainnet
 ```
 
 ---
 
-## Script Legado (`setup_dual_sniper.sh`)
-
-`setup_dual_sniper.sh` sigue disponible para utilidades rápidas (`setup`, `sync`, `rotate-logs`), pero **no debe mezclarse con `sniper_cli.py daemon`**:
-- `setup_dual_sniper.sh` ejecuta directamente `lnm_sniper_v6_advanced.py` ignorando los overrides de `config/cli_runtime_overrides.json` y busca procesos con otro patrón (`lnm_sniper_v6_advanced.py` vs `sniper_cli.py _runner`).
-- Para operación diaria, usa **`sniper_cli.py`**.
-
----
-
-## Simulación, Entrenamiento y Certificación Monte Carlo
-
-El paquete `simulation/` permite descargar velas históricas reales de Binance, entrenar cerebros candidatos con `--reset` y certificarlos mediante pruebas de estrés Monte Carlo antes de promoverlos a Testnet o Mainnet:
+## Simulación, Entrenamiento Offline y Certificación
 
 ```bash
-# 1. Descargar histórico de velas 1m (guardado en simulation/data/, excluido de Git)
-python3 simulation/download_historical_data.py
+# 1. Descargar histórico de velas 1m (guardado en simulation/data/, ignorado en Git)
+python3 -B simulation/download_historical_data.py
 
-# 2. Entrenar cerebro candidato desde cero sobre ventanas históricas
-python3 simulation/train_candidate_brain.py --reset
+# 2. Entrenar cerebro candidato aislado con paridad inversa
+python3 -B simulation/train_candidate_brain.py --reset
 
-# 3. Certificar mediante 3 compuertas (Schema v2, P0, Monte Carlo 0 mutaciones)
-python3 simulation/certify_and_promote_candidate.py
-```
+# 3. Certificar compuertas Schema v2, P0 y Monte Carlo antes de promover
+python3 -B simulation/certify_and_promote_candidate.py
 
-También está disponible la recalibración offline orientada a satoshis netos:
-```bash
-python3 retrain_sats_offline.py          # genera copia .recalibrated.json
-python3 retrain_sats_offline.py --apply  # aplica solo sin posiciones abiertas
+# Utilidades complementarias de recalibración y Walk-Forward OOS
+python3 -B retrain_sats_offline.py
+python3 -B validate_walk_forward_oos.py
 ```
 
 ---
 
-## Pruebas Automatizadas y Verificación
+## Pruebas Automatizadas y Verificación (`11` Suites)
 
-Todas las pruebas deben ejecutarse en **Linux / WSL (`Ubuntu`)** de forma secuencial.
-
-> **Importante si los bots están corriendo en vivo:** algunas suites (`test_learning_quality_and_sats.py`, `test_protocolo_v_reversal.py`) escriben en `telemetry_live.json` o `walk_forward_oos_report.json`. Si tienes demonios activos en el directorio raíz, ejecuta la batería sobre una copia aislada en `/tmp` para evitar colisiones de locks.
+Ejecuta todas las suites **de forma secuencial** dentro de WSL (`Ubuntu`) o Linux usando `python3 -B`:
 
 ```bash
-# Batería principal (CLI + Calidad de Aprendizaje + Protocolo Cuantitativo 23 escenarios)
-python3 test_sniper_cli.py && \
-python3 test_learning_quality_and_sats.py && \
-python3 test_protocolo_v_reversal.py
-
-# Batería del simulador y certificación Monte Carlo
-python3 -m unittest \
-  test_simulation_engine.py \
-  test_terminal_bellman_fix.py \
+for s in \
+  test_anti_whipsaw_hedge.py \
+  test_c1_streak3_24h_production.py \
   test_candidate_certification.py \
-  test_simulation_training_loop.py
+  test_learning_quality_and_sats.py \
+  test_limit_execution_manager.py \
+  test_liquidity_radar.py \
+  test_protocolo_v_reversal.py \
+  test_simulation_engine.py \
+  test_simulation_training_loop.py \
+  test_sniper_cli.py \
+  test_terminal_bellman_fix.py; do
+  python3 -B "$s" || exit 1
+done
+
+# Compilación estática de los 41 archivos Python
+python3 -B -m py_compile *.py simulation/*.py
 ```
 
+- En auditoría certificada previa (`11/11 PASS`), todas las suites pasaron en secuencia sin ensuciar los archivos trackeados y con `strict_sha=True` verificado sobre [`q_brain_advanced_lnm.json`](q_brain_advanced_lnm.json), [`q_brain_testnet_lnm.json`](q_brain_testnet_lnm.json), [`hedge_state_mainnet.json`](hedge_state_mainnet.json) y [`hedge_state_testnet.json`](hedge_state_testnet.json).
+
 ---
 
-## Mapa Completo de Archivos
+## Mapa Completo del Repositorio
 
-| Archivo / Directorio | Responsabilidad |
+| Archivo / Directorio | Responsabilidad Principal |
 | :--- | :--- |
-| `lnm_sniper_v6_advanced.py` | Bucle principal, caché MTF (`1m`–`1d`), `AutonomousGoalBrain` y `execute_strategy_guardian` |
-| `guardian_execution_core.py` | `AtomicBrainStore` (SHA-256), `FileLockContext`, `HardFloorGuardian`, `InFlightOrderGuard` |
-| `sniper_perception_sats_core.py` | `MarketRegimeClassifier`, `ShortTermPerceptionEngine` y `SatsExpectancyGate` |
-| `learning_thresholds_manager.py` | Gestor con Hot-Reload atómico, validación de límites y candado estructural |
-| `learning_quality_supervisor.py` | Monitor de signos vitales (`TD-Error`, `Q-Bias`, `FER`, `Entropía`, `MFE/MAE`) y telemetría |
-| `config/learning_thresholds.json` | Fuente única de verdad de los 78 umbrales en 10 categorías |
-| `sniper_cli.py` / `sniper_cli_catalog.py` | Centro de mando CLI optimizado para Termux, consultas API v3 en vivo y catálogo de 99 parámetros |
-| `edge_monitor.py` / `predictive_hedge.py` | Detección de degradación de edge y pronóstico neto de cobertura vs SL |
-| `portfolio_hedge.py` / `hedge_risk_manager.py` | Contabilidad del par cubierto y autorización subordinada al piso duro P0 |
-| `dynamic_hedge.py` / `adaptive_controller.py` | Ejecución API v3 y máquina de 7 estados con Q-learning de coberturas |
-| `hedge_state_store.py` | Persistencia atómica SHA-256 de `hedge_state_*.json` |
-| `sync_brains_dual.py` / `init_clean_brains.py` | Nutrición segura Testnet $\rightarrow$ Mainnet y reseteo limpio de contadores conservando política Q |
-| `retrain_sats_offline.py` / `validate_walk_forward_oos.py` | Recalibración offline y validación Walk-Forward Out-of-Sample |
-| `simulation/` | Simulador de exchange (`sim_lnm_exchange.py`), feed, entrenamiento y certificación Monte Carlo |
-| `test_*.py` | Suites de pruebas unitarias, cuantitativas y de certificación |
-| `AGENTS.md`, `AGENT_MAINTENANCE_DIRECTIVE.md`, `CONTEXT_LNM_SNIPER.md` | Gobernanza por etapas, reglas P0, arquitectura de subagentes y memoria del proyecto |
+| [`lnm_sniper_v6_advanced.py`](lnm_sniper_v6_advanced.py) | Bucle principal `5s`, `MultiTimeframeCache`, `AutonomousGoalBrain`, `evaluate_and_dispatch_entries`, `--dry-check` y parada limpia `SIGTERM`/`SIGINT` |
+| [`guardian_execution_core.py`](guardian_execution_core.py) | `AtomicBrainStore` (`strict_sha=True`), `FileLockContext` POSIX, `HardFloorGuardian` (P0), `TokenBucket` (`20/s`, burst `40`) y `ResilientLNMClient` |
+| [`sniper_perception_sats_core.py`](sniper_perception_sats_core.py) | Clasificador de regímenes, `ShortTermPerceptionEngine`, `estimate_bayesian_win_rate`, `verify_net_sats_expectancy` y desglose neto inverso |
+| [`side_streak_brake.py`](side_streak_brake.py) | Freno persistente por lado `C1_STREAK3_24H` (`SideStreakBrakeStore`) con lectura $O(1)$ en RAM y firma `.sha256` en `$HOME/.sniper_state/` |
+| [`liquidity_radar.py`](liquidity_radar.py) | Pools `EQH/EQL`, *Sweep+Reclaim* sin *look-ahead*, y `LiquidityConfig` (**Modo B `LIQ_BIAS_ONLY`**, `opposite_wall_enabled = 0`) |
+| [`limit_execution_manager.py`](limit_execution_manager.py) | Gestor de órdenes límite pasivas con persistencia atómica (deshabilitado por defecto con `limit_execution.enabled = 0`) |
+| [`learning_thresholds_manager.py`](learning_thresholds_manager.py) | Hot-Reload atómico, validación estricta de esquema (`12` categorías / `100` parámetros) y candado estructural ante posiciones abiertas |
+| [`learning_quality_supervisor.py`](learning_quality_supervisor.py) | Supervisión $O(1)$ de `TD-Error`, `Q-Bias`, `FER`, `Entropía`, `MFE/MAE` y despachador atómico de `telemetry_live*.json` |
+| [`config/learning_thresholds.json`](config/learning_thresholds.json) | Umbrales vigentes de producción (`Mainnet`) y par [`config/learning_thresholds_testnet.json`](config/learning_thresholds_testnet.json) (`Testnet`) |
+| [`sniper_cli.py`](sniper_cli.py) / [`sniper_cli_catalog.py`](sniper_cli_catalog.py) | Centro de mando CLI optimizado para Termux, catálogo de `100` umbrales, `28` parámetros runtime y `5` presets |
+| [`edge_monitor.py`](edge_monitor.py), [`predictive_hedge.py`](predictive_hedge.py), [`portfolio_hedge.py`](portfolio_hedge.py), [`hedge_risk_manager.py`](hedge_risk_manager.py), [`dynamic_hedge.py`](dynamic_hedge.py), [`adaptive_controller.py`](adaptive_controller.py), [`hedge_state_store.py`](hedge_state_store.py) | Subsistema completo de cobertura híbrida con máquina de 7 estados y persistencia `.sha256` (apagado en producción mediante `ENABLE_HYBRID_HEDGE = False`) |
+| [`sync_brains_dual.py`](sync_brains_dual.py) / [`init_clean_brains.py`](init_clean_brains.py) | Sincronización dual atómica e inicialización limpia de cerebros manteniendo esquema v2 |
+| [`retrain_sats_offline.py`](retrain_sats_offline.py) / [`validate_walk_forward_oos.py`](validate_walk_forward_oos.py) / [`audit_shadow_convergence.py`](audit_shadow_convergence.py) | Recalibración offline orientada a satoshis, reporte Walk-Forward OOS y auditoría de convergencia shadow |
+| `simulation/` | Exchange simulado inverso (`sim_lnm_exchange.py`), `PrecomputedMarketFeed` (`sim_market_feed.py`), `SimTrainingEnvironment`, descarga de velas, entrenamiento y certificación Monte Carlo |
+| `test_*.py` | `11` suites automatizadas unitarias, cuantitativas, de paridad OOS y CLI |
+| [`AGENTS.md`](AGENTS.md), [`AGENT_MAINTENANCE_DIRECTIVE.md`](AGENT_MAINTENANCE_DIRECTIVE.md), [`CONTEXT_LNM_SNIPER.md`](CONTEXT_LNM_SNIPER.md) | Gobernanza por etapas, reglas P0, arquitectura de subagentes y memoria técnica del proyecto |
 
 ---
 
-## Reglas de Seguridad P0 y Gobernanza
+## Reglas P0, Gobernanza y Aviso de Riesgo
 
-1. **Invariantes P0:** Se mantienen estrictamente las 9 acciones (`0..8`), el formato de estado de 5 segmentos, la contabilidad sin doble descuento de comisiones, la subordinación a `HardFloorGuardian`, el tope de 5 posiciones en Mainnet y la integridad `strict_sha=True`.
-2. **Gobernanza por Etapas:** Cualquier modificación estructural sigue el protocolo de 5 etapas documentado en `AGENT_MAINTENANCE_DIRECTIVE.md` y la orquestación de subagentes definida en `AGENTS.md`.
-3. **Advertencia de Riesgo:** El trading algorítmico de derivados apalancados conlleva riesgo de pérdida de capital. Valida siempre tus cambios y parámetros en `Testnet` o con `--safe-mode` / `--shadow` antes de operar en `Mainnet`.
+1. **Invariantes P0 inviolables:** 9 acciones discretas (`0..8`), estado de 5 segmentos, contabilidad neta sin doble descuento de comisiones, subordinación estricta a `HardFloorGuardian`, máximo `5` posiciones concurrentes en `mainnet` y `testnet`, retorno 3-tupla `(h, l, c)` en `MultiTimeframeCache.get_candles()` y persistencia `AtomicBrainStore` con `strict_sha=True`.
+2. **Gobernanza:** Todo cambio estructural debe seguir las etapas definidas en [`AGENT_MAINTENANCE_DIRECTIVE.md`](AGENT_MAINTENANCE_DIRECTIVE.md) y la ejecución de `python3` / `git` en **WSL (`Ubuntu`)** descrita en [`AGENTS.md`](AGENTS.md).
+3. **Aviso de riesgo:** Operar derivados perpetuos apalancados conlleva riesgo real de pérdida de capital. Valida siempre credenciales, umbrales y arranque (`--dry-check`, `--testnet` o `--safe-mode`) antes de operar con capital real en `Mainnet`.
