@@ -26,6 +26,7 @@ import math
 class LiquidityConfig:
     enabled: bool = True
     shadow_only: bool = True
+    opposite_wall_enabled: bool = False
     swing_k_5m: int = 3
     swing_k_15m: int = 2
     lookback_5m: int = 96
@@ -58,6 +59,7 @@ class LiquidityConfig:
         return cls(
             enabled=bool(get_b(cat, "enabled", cls.enabled)),
             shadow_only=bool(get_b(cat, "shadow_only", cls.shadow_only)),
+            opposite_wall_enabled=bool(get_b(cat, "opposite_wall_enabled", cls.opposite_wall_enabled)),
             swing_k_5m=int(get_i(cat, "swing_k_5m", cls.swing_k_5m)),
             swing_k_15m=int(get_i(cat, "swing_k_15m", cls.swing_k_15m)),
             cluster_atr_mult=float(get_f(cat, "cluster_atr_mult", cls.cluster_atr_mult)),

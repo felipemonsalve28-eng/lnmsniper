@@ -660,6 +660,14 @@
       "max_limit": 1,
       "structural_lock_when_open": false
     },
+    "opposite_wall_enabled": {
+      "value": 0,
+      "unit": "flag",
+      "description": "Habilita el veto BLOCKED_OPPOSITE_LIQ_WALL ante muros EQH/EQL opuestos (0=desactivado; siempre inactivo en TREND).",
+      "min_limit": 0,
+      "max_limit": 1,
+      "structural_lock_when_open": false
+    },
     "swing_k_5m": {
       "value": 3,
       "unit": "bars",
@@ -751,7 +759,7 @@
   },
   "limit_execution": {
     "enabled": {
-      "value": 1,
+      "value": 0,
       "unit": "flag",
       "description": "Habilita el enrutamiento de ordenes limite pasivas con TTL para estilos SNIPER/REVERSION/SCALP (1=activo, 0=solo market).",
       "min_limit": 0,

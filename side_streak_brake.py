@@ -142,28 +142,43 @@ class SideStreakBrakeStore:
         payload = self._build_payload()
         raw_bytes = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
         digest = hashlib.sha256(raw_bytes).hexdigest()
-        tmp_path = f"{self.filepath}.tmp.{os.getpid()}"
-        sha_tmp_path = f"{self.filepath}.sha256.tmp.{os.getpid()}"
+        tmp_suffix = f"{os.getpid()}.{int(time.monotonic() * 1000000) % 1000000}"
+        tmp_path = f"{self.filepath}.tmp.{tmp_suffix}"
+        sha_tmp_path = f"{self.filepath}.sha256.tmp.{tmp_suffix}"
         sha_path = f"{self.filepath}.sha256"
         bak_path = f"{self.filepath}.bak"
 
         with FileLockContext(self.filepath, exclusive=True, timeout=5.0, raise_on_timeout=False):
-            if os.path.exists(self.filepath):
-                try:
-                    shutil.copy2(self.filepath, bak_path)
-                except OSError:
-                    pass
-            with open(tmp_path, "wb") as fh:
-                fh.write(raw_bytes)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp_path, self.filepath)
+            try:
+                if os.path.exists(self.filepath):
+                    try:
+                        shutil.copy2(self.filepath, bak_path)
+                    except OSError:
+                        pass
+                with open(tmp_path, "wb") as fh:
+                    fh.write(raw_bytes)
+                    fh.flush()
+                    try:
+                        os.fsync(fh.fileno())
+                    except OSError:
+                        pass
+                os.replace(tmp_path, self.filepath)
 
-            with open(sha_tmp_path, "w", encoding="utf-8") as sfh:
-                sfh.write(f"{digest}  {os.path.basename(self.filepath)}\n")
-                sfh.flush()
-                os.fsync(sfh.fileno())
-            os.replace(sha_tmp_path, sha_path)
+                with open(sha_tmp_path, "w", encoding="utf-8") as sfh:
+                    sfh.write(f"{digest}  {os.path.basename(self.filepath)}\n")
+                    sfh.flush()
+                    try:
+                        os.fsync(sfh.fileno())
+                    except OSError:
+                        pass
+                os.replace(sha_tmp_path, sha_path)
+            finally:
+                for leftover in (tmp_path, sha_tmp_path):
+                    if os.path.exists(leftover):
+                        try:
+                            os.remove(leftover)
+                        except OSError:
+                            pass
 
         self.last_sha256_digest = digest
         self.sha256_valid = True

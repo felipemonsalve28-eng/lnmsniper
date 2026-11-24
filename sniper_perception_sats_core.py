@@ -594,7 +594,14 @@ class SatsExpectancyGate:
         """
         tm = get_thresholds_manager()
         style_priors = {
-            "TREND": (tm.get_float("expectancy", "bayesian_prior_alpha", 7.0), tm.get_float("expectancy", "bayesian_prior_beta", 15.0)),
+            "TREND": (
+                (11.0, 11.0)
+                if q_val is not None
+                else (
+                    tm.get_float("expectancy", "bayesian_prior_alpha", 7.0),
+                    tm.get_float("expectancy", "bayesian_prior_beta", 15.0),
+                )
+            ),
             "REVERSION": (11.0, 11.0),
             "SNIPER": (9.0, 13.0),
             "DEF_SCALP": (12.0, 10.0),
@@ -611,7 +618,7 @@ class SatsExpectancyGate:
         if norm_regime in ("EXTREME_VOLATILITY", "CHOP_HIGHVOL"):
             beta_0 += 3.0
             z_lcb = 1.45
-        elif norm_regime == "RANGE_SQUEEZE" and norm_style == "TREND":
+        elif norm_regime == "RANGE_SQUEEZE" and norm_style == "TREND" and q_val is None:
             beta_0 += 2.5
 
         alpha_post = float(alpha_0)

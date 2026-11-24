@@ -7,9 +7,11 @@ rotación de logs, cliente HTTP resiliente y protección de piso duro
 para LNM Sniper v7.3+ (Mainnet & Testnet Dual - LN Markets API v3).
 """
 import os
+import re
 import json
 import time
 import math
+import uuid
 import shutil
 import random
 import hashlib
@@ -417,16 +419,48 @@ class HardFloorGuardian:
         }
 
 
+class TokenBucket:
+    """Token Bucket thread-safe para limitar ráfagas y tasa sostenida contra LN Markets API v3."""
+
+    def __init__(self, rate: float = 20.0, capacity: float = 40.0):
+        self.rate = max(0.1, float(rate))
+        self.capacity = max(1.0, float(capacity))
+        self.tokens = self.capacity
+        self.last_refill = time.monotonic()
+        self._lock = threading.Lock()
+
+    def consume(self, tokens: float = 1.0, timeout: float = 4.0) -> bool:
+        need = max(0.0, float(tokens))
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                elapsed = max(0.0, now - self.last_refill)
+                if elapsed > 0.0:
+                    self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
+                    self.last_refill = now
+                if self.tokens >= need:
+                    self.tokens -= need
+                    return True
+                wait_s = (need - self.tokens) / self.rate
+            rem = deadline - time.monotonic()
+            if rem <= 0.0:
+                return False
+            time.sleep(min(wait_s, rem, 0.05))
+
+
 class ResilientLNMClient:
     """
-    Pool de conexiones persistentes Keep-Alive, control de concurrencia HTTP y
-    timeouts independientes para solicitudes GET rápidas, GET autenticadas y POST/PUT críticas.
+    Pool de conexiones persistentes Keep-Alive, control de concurrencia HTTP,
+    Token Bucket (20/s, ráfaga 40) y timeouts independientes para solicitudes GET rápidas,
+    GET autenticadas y POST/PUT críticas.
     """
     TIMEOUT_GET_FAST = (2.0, 3.8)
     TIMEOUT_GET_AUTH = (2.8, 6.0)
     TIMEOUT_POST_CRITICAL = (3.5, 8.0)
     TIMEOUT_PUT_CRITICAL = (3.0, 6.5)
     _CONCURRENCY_SEM = threading.BoundedSemaphore(4)
+    _RATE_LIMITER = TokenBucket(rate=20.0, capacity=40.0)
     _server_time_offset_ms: int = 0
 
     def __init__(self, key="", secret="", passphrase="", base_url=None):
@@ -488,7 +522,15 @@ class ResilientLNMClient:
 
     @classmethod
     def acquire_slot(cls, timeout=4.0):
+        if not cls._RATE_LIMITER.consume(1.0, timeout=timeout):
+            return False
         return cls._CONCURRENCY_SEM.acquire(timeout=timeout)
+
+    @staticmethod
+    def generate_client_id(env_mode="mainnet", order_type="mkt"):
+        short_env = "main" if str(env_mode or "mainnet").strip().lower().startswith("main") else "test"
+        otype = re.sub(r"[^a-z0-9]", "", str(order_type or "mkt").lower())[:8] or "mkt"
+        return f"lnms_{short_env}_{otype}_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"[:64]
 
     @classmethod
     def release_slot(cls):

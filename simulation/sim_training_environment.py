@@ -39,11 +39,64 @@ from limit_execution_manager import (
 from side_streak_brake import SideStreakBrakeStore
 
 
+class PrecomputedMarketFeed:
+    """Alimentador O(1) sobre bloques precomputados (warmup_state + steps) para validación OOS."""
+
+    def __init__(self, block: Dict[str, Any], liquidity_config_override: Optional[LiquidityConfig] = None):
+        self._steps = block["steps"]
+        self._warmup_bars = int(block["warmup_bars"])
+        self._total_len = int(block["total_len_with_warmup"])
+        self.candles_1m = [None] * self._total_len
+        self.cursor = self._warmup_bars
+        self.last_candle = Candle(
+            timestamp=float(block["warmup_last_ts"]),
+            open=0.0,
+            high=0.0,
+            low=0.0,
+            close=0.0,
+            volume=0.0,
+        )
+        self.warmup_state = block["warmup_state"]
+        self._cur_state = self.warmup_state
+        self._idx = 0
+        self.liquidity_config_override = liquidity_config_override
+
+    def load_candles(self, candles: Any) -> None:
+        pass
+
+    def warmup(self, warmup_bars: int = 80) -> int:
+        return self._warmup_bars
+
+    def has_next(self) -> bool:
+        return self.cursor < self._total_len
+
+    def next_step(self) -> Optional[Candle]:
+        if self.cursor >= self._total_len or self._idx >= len(self._steps):
+            return None
+        c, ind_5m, ind_15m, ind_1h, ind_4h, perception = self._steps[self._idx]
+        self._idx += 1
+        self.cursor += 1
+        self.last_candle = c
+        self._cur_state = {
+            "price": float(ind_5m["price"]),
+            "ind_5m": ind_5m,
+            "ind_15m": ind_15m,
+            "ind_1h": ind_1h,
+            "ind_4h": ind_4h,
+            "perception": perception,
+            "timestamp": float(c.timestamp),
+        }
+        return c
+
+    def get_perception_state(self) -> dict:
+        return self._cur_state
+
+
 class SimTrainingEnvironment:
     """
-    Entorno coordinado de alta velocidad para entrenamiento RL offline.
+    Entorno coordinado de alta velocidad para entrenamiento RL offline y certificación OOS.
     Ejecuta el bucle completo de trading (percepción, dimensionamiento Kelly,
-    selección greedy/explorer, coberturas adaptativas y aprendizaje de Bellman).
+    política determinista C1_STREAK3_24H_INV o selección greedy/explorer, y aprendizaje de Bellman).
     """
 
     def __init__(
@@ -51,7 +104,7 @@ class SimTrainingEnvironment:
         candidate_brain_file: str = "q_brain_simulated_candidate.json",
         candidate_hedge_file: str = "hedge_state_simulated_candidate.json",
         initial_balance_sats: int = 100000,
-        explorer_mode: bool = True,
+        explorer_mode: bool = False,
         learning_enabled: Optional[bool] = None,
         taker_fee_rate: float = 0.0010,
         funding_rate_8h: float = 0.0001,
@@ -63,6 +116,7 @@ class SimTrainingEnvironment:
         streak3_24h: bool = True,
         deterministic_trend_policy: Optional[bool] = None,
         base_risk_pct_std: float = 0.0075,
+        be_stage1_r: float = 0.80,
     ):
         self.candidate_brain_file = str(candidate_brain_file)
         self.candidate_hedge_file = str(candidate_hedge_file)
@@ -80,6 +134,7 @@ class SimTrainingEnvironment:
         self.short_exp_phys_hold = bool(short_exp_phys_hold)
         self.streak3_24h = bool(streak3_24h)
         self.base_risk_pct_std = float(base_risk_pct_std)
+        self.be_stage1_r = float(be_stage1_r)
         self.side_brake = SideStreakBrakeStore(
             env_mode="sim",
             persist_to_disk=False,
@@ -87,7 +142,7 @@ class SimTrainingEnvironment:
         )
 
         self.clock = SimClock(start_timestamp=1700000000.0)
-        self.feed = SimMarketFeed()
+        self.feed: Any = SimMarketFeed()
         self.exchange = SimLNMExchange(
             initial_balance_sats=self.initial_balance_sats,
             taker_fee_rate=taker_fee_rate,
@@ -100,6 +155,7 @@ class SimTrainingEnvironment:
         self.brain = AutonomousGoalBrain(
             filename=self.candidate_brain_file,
             explorer_mode=self.explorer_mode,
+            learning_enabled=self.learning_enabled,
         )
         self._seed_canonical_states_if_needed()
         self.hedge_store = HedgeStateStore(
@@ -114,6 +170,8 @@ class SimTrainingEnvironment:
         )
 
         self.last_entry_ts: float = 0.0
+        self.last_side_entry_ts: Dict[str, float] = {"b": -1e18, "s": -1e18}
+        self.dd_guard_events: int = 0
         self.step_count: int = 0
         self.total_settled_trades: int = 0
         self.winning_trades: int = 0
@@ -131,10 +189,15 @@ class SimTrainingEnvironment:
         )
 
     def _seed_canonical_states_if_needed(self) -> None:
-        """Siembra los 175 estados canónicos si el cerebro candidato es nuevo."""
+        """Siembra los 175 estados canónicos si el cerebro candidato es nuevo y garantiza semilla limpia en modo determinista."""
         if len(self.brain.q_table) >= 100:
+            if self.deterministic_trend_policy:
+                for k in list(self.brain.q_table.keys()):
+                    self.brain.q_table[k] = self.brain._init_q_vector(k)
+                    self.brain.state_visits[k] = 1
             return
 
+        init_v = 1 if self.deterministic_trend_policy else 0
         # Cargar claves de estado canónicas de referencia sin modificar producción
         ref_file = "q_brain_advanced_lnm.json"
         if os.path.exists(ref_file):
@@ -146,7 +209,7 @@ class SimTrainingEnvironment:
                         norm_k = AutonomousGoalBrain._normalize_state_key(k)
                         if norm_k not in self.brain.q_table:
                             self.brain.q_table[norm_k] = self.brain._init_q_vector(norm_k)
-                            self.brain.state_visits[norm_k] = 0
+                            self.brain.state_visits[norm_k] = init_v
                     self.brain.dirty = True
                     return
             except Exception:
@@ -171,17 +234,60 @@ class SimTrainingEnvironment:
                             norm_s = AutonomousGoalBrain._normalize_state_key(f"{r}|{o}|{e}|{m}|{em}")
                             if norm_s not in self.brain.q_table:
                                 self.brain.q_table[norm_s] = self.brain._init_q_vector(norm_s)
-                                self.brain.state_visits[norm_s] = 0
+                                self.brain.state_visits[norm_s] = init_v
         self.brain.dirty = True
+
+    @staticmethod
+    def _norm_side(side: str) -> str:
+        return "b" if str(side).lower().strip() in ("b", "buy", "long") else "s"
+
+    def _check_anti_stacking_s2(self, side: str, price: float, atr: float, now: float) -> Tuple[bool, str]:
+        cand_side = self._norm_side(side)
+        atr_safe = max(1.0, float(atr))
+        same_all = []
+
+        for tid_k, tr_v in self.exchange.running_trades.items():
+            if tr_v.get("_is_hedge", False) or self.hedge_store.is_hedge_trade(tid_k):
+                continue
+            if self._norm_side(tr_v.get("side", "")) != cand_side:
+                continue
+            meta = self.brain.active_trades.get(str(tid_k), {})
+            same_all.append({
+                "sl_locked": bool(meta.get("sl_locked", False)),
+                "entry_price": float(tr_v.get("entry_price") or tr_v.get("price") or price),
+                "open_ts": float(meta.get("entry_time") or tr_v.get("open_ts") or 0.0),
+            })
+
+        for rec in self.limit_manager.pending.values():
+            if rec.get("status") not in ("PENDING_SUBMIT", "OPEN_WAITING"):
+                continue
+            if self._norm_side(rec.get("side", "")) != cand_side:
+                continue
+            same_all.append({
+                "sl_locked": False,
+                "entry_price": float(rec.get("limit_price") or price),
+                "open_ts": float(rec.get("created_at") or 0.0),
+            })
+
+        at_risk = sum(1 for x in same_all if not x["sl_locked"])
+        if at_risk >= 2:
+            return False, "atrisk>=2"
+        if same_all:
+            min_dist = min(abs(float(price) - x["entry_price"]) for x in same_all)
+            last_ts = max([self.last_side_entry_ts.get(cand_side, -1e18)] + [x["open_ts"] for x in same_all])
+            elapsed = float(now) - float(last_ts)
+            if (min_dist < (0.75 * atr_safe)) and (elapsed < 900.0):
+                return False, "dist<0.75ATR_and_cd<900s"
+        return True, "OK"
 
     def reset(
         self,
-        candles_1m: List[Candle],
+        candles_1m: Any,
         initial_balance_sats: Optional[int] = None,
         warmup_bars: int = 80,
     ) -> dict:
         """
-        Reinicia el entorno con un nuevo lote de velas y balance inicial.
+        Reinicia el entorno con un nuevo lote de velas (o bloque precomputado) y balance inicial.
         """
         if initial_balance_sats is not None:
             self.initial_balance_sats = int(initial_balance_sats)
@@ -196,13 +302,26 @@ class SimTrainingEnvironment:
         )
         self.exchange.trade_counter = prev_counter
         self.side_brake.reset(persist=False)
-        self.feed.load_candles(candles_1m)
-        self.feed.warmup(warmup_bars)
 
-        start_ts = float(self.feed.last_candle.timestamp if self.feed.last_candle else 1700000000.0)
-        self.clock.set_time(start_ts)
+        liq_ov = getattr(self.feed, "liquidity_config_override", None)
+        if isinstance(candles_1m, dict) and candles_1m.get("_precomputed"):
+            self.feed = PrecomputedMarketFeed(candles_1m, liquidity_config_override=liq_ov)
+            start_ts = float(candles_1m["warmup_last_ts"])
+            self.clock.set_time(start_ts)
+            init_state = self.feed.warmup_state
+        else:
+            if not isinstance(self.feed, SimMarketFeed):
+                self.feed = SimMarketFeed()
+                self.feed.liquidity_config_override = liq_ov
+            self.feed.load_candles(candles_1m)
+            self.feed.warmup(warmup_bars)
+            start_ts = float(self.feed.last_candle.timestamp if self.feed.last_candle else 1700000000.0)
+            self.clock.set_time(start_ts)
+            init_state = self.feed.get_perception_state()
 
         self.last_entry_ts = 0.0
+        self.last_side_entry_ts = {"b": -1e18, "s": -1e18}
+        self.dd_guard_events = 0
         self.step_count = 0
         self.total_settled_trades = 0
         self.winning_trades = 0
@@ -226,7 +345,7 @@ class SimTrainingEnvironment:
             persist_to_disk=False,
         )
 
-        return self.feed.get_perception_state()
+        return init_state
 
     def _consolidate_orphan_hedge(
         self, orig_id: str, orig_info: Optional[dict], close_price: float, now: float
@@ -492,56 +611,177 @@ class SimTrainingEnvironment:
 
                 harvest_atr = float(strat_cfg.get("harvest_atr", 1.15))
                 trig_atr = float(strat_cfg.get("trail_trig_atr", 0.75))
-
                 atr_pct = cur_atr / entry_p
-                harvest_rate = max(rt_fee_rate * 2.40, atr_pct * harvest_atr)
-                trig_rate = max(rt_fee_rate * 1.80, atr_pct * trig_atr * 0.75)
-                lock_net_rate = rt_fee_rate * 1.62
 
-                fav_p = float(c.high) if is_long else float(c.low)
-                fav_pct = ((fav_p - entry_p) / entry_p) if is_long else ((entry_p - fav_p) / entry_p)
-
-                # A. Cosecha neta de beneficio (Guardian Harvest) cuando la excursión favorable supera objetivo táctico y costos
-                if fav_pct >= harvest_rate:
-                    harvest_exec_p = (
-                        min(float(c.high), round(entry_p * (1.0 + harvest_rate), 1))
-                        if is_long
-                        else max(float(c.low), round(entry_p * (1.0 - harvest_rate), 1))
+                if self.deterministic_trend_policy:
+                    if "initial_sl_dist_pct" not in live_meta:
+                        _sl_def = float(live_t.get("stoploss", 0.0))
+                        live_meta["initial_sl_dist_pct"] = (
+                            max(0.0020, abs(entry_p - _sl_def) / entry_p) if _sl_def > 0.0 else 0.0040
+                        )
+                        live_meta.setdefault("sl_locked", False)
+                        live_meta.setdefault("sl_is_trailing_lock", False)
+                        live_meta.setdefault("trail_stage2", False)
+                    init_sl_pct = float(live_meta["initial_sl_dist_pct"])
+                    close_pct = ((float(c.close) - entry_p) / entry_p) if is_long else ((entry_p - float(c.close)) / entry_p)
+                    pnl_atr_close = (
+                        ((float(c.close) - entry_p) if is_long else (entry_p - float(c.close)))
+                        / max(1.0, cur_atr)
                     )
-                    ok_h, rec_h = self.exchange.close_trade(
-                        live_tid, price=harvest_exec_p, reason="TAKE_PROFIT", now=now
-                    )
-                    if ok_h and rec_h:
-                        events.append(rec_h)
-                    continue
+                    prev_pnl_atr = float(live_meta.get("prev_loop_pnl_atr", pnl_atr_close))
+                    delta_atr = pnl_atr_close - prev_pnl_atr
+                    live_meta["prev_loop_pnl_atr"] = round(pnl_atr_close, 4)
+                    eval_count = int(live_meta.get("eval_count", 0)) + 1
+                    live_meta["eval_count"] = eval_count
 
-                # B. Bloqueo de Stop Loss en ganancia neta (Breakeven + Trailing Lock)
-                if fav_pct >= trig_rate:
-                    cur_sl = float(live_t.get("stoploss", 0.0))
-                    if is_long:
-                        trig_p = entry_p * (1.0 + trig_rate)
-                        lock_sl = float(math.ceil(entry_p * (1.0 + lock_net_rate) + max(0.0, (fav_p - trig_p) * 0.65)))
-                        if float(c.close) <= lock_sl:
-                            ok_l, rec_l = self.exchange.close_trade(
-                                live_tid, price=lock_sl, reason="TAKE_PROFIT", now=now
-                            )
-                            if ok_l and rec_l:
-                                events.append(rec_l)
-                            continue
-                        if lock_sl > cur_sl:
-                            live_t["stoploss"] = lock_sl
+                    fee_offset_px = entry_p * ((2.4 * self.exchange.taker_fee_rate) + (carry_f / max(1.0, notional_f)))
+                    cur_sl_now = float(live_t.get("stoploss", 0.0))
+                    sl_locked_server = (
+                        (is_long and cur_sl_now > (entry_p + fee_offset_px * 0.8))
+                        or ((not is_long) and cur_sl_now > 0.0 and cur_sl_now < (entry_p - fee_offset_px * 0.8))
+                    )
+                    live_meta["sl_locked"] = bool(sl_locked_server)
+
+                    exit_mode = str(strat_cfg.get("exit_mode", "HYBRID"))
+                    can_check_harvest = not (exit_mode == "RUNNER" and sl_locked_server)
+                    harvest_rate_l1 = max((1.60 * init_sl_pct) + (2.60 * rt_fee_rate), rt_fee_rate * 3.50, atr_pct * harvest_atr)
+
+                    exhaust_sens = str(strat_cfg.get("exhaust_sens", "MED"))
+                    rsi = float(ind_5m.get("rsi", 50.0))
+                    bb_pos = float(ind_5m.get("bb_pos", 0.5))
+                    regime = str(ind_5m.get("regime", "RANGE_NORMAL"))
+                    ema9_15 = float(ind_15m.get("ema9", c.close))
+                    ema21_15 = float(ind_15m.get("ema21", c.close))
+
+                    if exhaust_sens == "MAX":
+                        is_exhausted = (
+                            (is_long and (rsi > 60 or bb_pos > 0.74 or delta_atr < -0.06))
+                            or ((not is_long) and (rsi < 40 or bb_pos < 0.26 or delta_atr < -0.06))
+                            or (regime in ("RANGE_SQUEEZE", "CHOP_HIGHVOL") and eval_count >= 2)
+                        )
+                    elif exhaust_sens == "HIGH":
+                        is_exhausted = (
+                            (is_long and (rsi > 64 or bb_pos > 0.80 or delta_atr < -0.10))
+                            or ((not is_long) and (rsi < 36 or bb_pos < 0.20 or delta_atr < -0.10))
+                            or (regime in ("RANGE_SQUEEZE", "CHOP_HIGHVOL") and eval_count >= 3)
+                        )
+                    elif exhaust_sens == "MED":
+                        ema_flip = (is_long and ema9_15 < ema21_15) or ((not is_long) and ema9_15 > ema21_15)
+                        is_exhausted = (
+                            ((is_long and rsi > 69) or ((not is_long) and rsi < 31)) and delta_atr < -0.08
+                        ) or (ema_flip and delta_atr < -0.10)
                     else:
-                        trig_p = entry_p * (1.0 - trig_rate)
-                        lock_sl = float(math.floor(entry_p * (1.0 - lock_net_rate) - max(0.0, (trig_p - fav_p) * 0.65)))
-                        if float(c.close) >= lock_sl:
-                            ok_l, rec_l = self.exchange.close_trade(
-                                live_tid, price=lock_sl, reason="TAKE_PROFIT", now=now
-                            )
-                            if ok_l and rec_l:
-                                events.append(rec_l)
-                            continue
-                        if cur_sl <= 0.0 or lock_sl < cur_sl:
-                            live_t["stoploss"] = lock_sl
+                        is_exhausted = (
+                            ((is_long and rsi > 75) or ((not is_long) and rsi < 25)) and delta_atr < -0.15
+                        )
+
+                    if can_check_harvest and close_pct >= harvest_rate_l1 and is_exhausted:
+                        ok_h, rec_h = self.exchange.close_trade(
+                            live_tid, price=float(c.close), reason="GUARDIAN_HARVEST", now=now
+                        )
+                        if ok_h and rec_h:
+                            events.append(rec_h)
+                        continue
+
+                    step_min = max(12.0, 0.15 * cur_atr)
+                    spot_buf = max(22.0, 0.25 * cur_atr)
+                    liq_p = float(live_t.get("liquidation", 0.0))
+                    cur_sl = float(live_t.get("stoploss", 0.0))
+                    profit_lock_rate = rt_fee_rate * 1.65
+
+                    s1_fee_mult = 2.50 if self.be_stage1_r >= 1.0 else 2.20
+                    trig_stage1 = max(
+                        (self.be_stage1_r * init_sl_pct) + ((1.0 + self.be_stage1_r) * rt_fee_rate),
+                        rt_fee_rate * s1_fee_mult,
+                    )
+                    trig_stage2 = max((1.35 * init_sl_pct) + (2.35 * rt_fee_rate), atr_pct * trig_atr * 1.25, rt_fee_rate * 3.00)
+                    stage2_floor_rate = (0.55 * init_sl_pct) + (1.55 * rt_fee_rate)
+                    slack_px = 1.35 * max(cur_atr * 0.45, float(strat_cfg.get("trail_slack_atr", 0.68)) * cur_atr)
+
+                    if close_pct >= trig_stage2:
+                        live_meta["trail_stage2"] = True
+
+                    if bool(live_meta.get("trail_stage2", False)):
+                        if is_long:
+                            floor_s2 = float(math.ceil(entry_p * (1.0 + stage2_floor_rate)))
+                            raw_sl = max(floor_s2, float(c.close) - slack_px)
+                            target_sl = float(round(min(raw_sl, float(c.close) - spot_buf), 2))
+                            if target_sl >= floor_s2 and target_sl > (liq_p + 15.0) and target_sl > (cur_sl + step_min):
+                                live_t["stoploss"] = target_sl
+                                live_meta["sl_is_trailing_lock"] = True
+                                live_meta["sl_locked"] = True
+                        else:
+                            ceil_s2 = float(math.floor(entry_p * (1.0 - stage2_floor_rate)))
+                            raw_sl = min(ceil_s2, float(c.close) + slack_px)
+                            target_sl = float(round(max(raw_sl, float(c.close) + spot_buf), 2))
+                            liq_ok = (liq_p <= 0.0) or (target_sl < (liq_p - 15.0))
+                            if target_sl <= ceil_s2 and liq_ok and (cur_sl <= 0.0 or target_sl < (cur_sl - step_min)):
+                                live_t["stoploss"] = target_sl
+                                live_meta["sl_is_trailing_lock"] = True
+                                live_meta["sl_locked"] = True
+                    elif close_pct >= trig_stage1 and not bool(live_meta.get("sl_is_trailing_lock", False)):
+                        if is_long:
+                            be_floor = float(math.ceil(entry_p * (1.0 + profit_lock_rate)))
+                            if be_floor <= (float(c.close) - spot_buf) and be_floor > (liq_p + 15.0) and be_floor > (cur_sl + step_min):
+                                live_t["stoploss"] = be_floor
+                                live_meta["sl_is_trailing_lock"] = True
+                                live_meta["sl_locked"] = True
+                        else:
+                            be_ceil = float(math.floor(entry_p * (1.0 - profit_lock_rate)))
+                            liq_ok = (liq_p <= 0.0) or (be_ceil < (liq_p - 15.0))
+                            if be_ceil >= (float(c.close) + spot_buf) and liq_ok and (cur_sl <= 0.0 or be_ceil < (cur_sl - step_min)):
+                                live_t["stoploss"] = be_ceil
+                                live_meta["sl_is_trailing_lock"] = True
+                                live_meta["sl_locked"] = True
+                else:
+                    harvest_rate = max(rt_fee_rate * 2.40, atr_pct * harvest_atr)
+                    trig_rate = max(rt_fee_rate * 1.80, atr_pct * trig_atr * 0.75)
+                    lock_net_rate = rt_fee_rate * 1.62
+
+                    fav_p = float(c.high) if is_long else float(c.low)
+                    fav_pct = ((fav_p - entry_p) / entry_p) if is_long else ((entry_p - fav_p) / entry_p)
+
+                    # A. Cosecha neta de beneficio (Guardian Harvest) cuando la excursión favorable supera objetivo táctico y costos
+                    if fav_pct >= harvest_rate:
+                        harvest_exec_p = (
+                            min(float(c.high), round(entry_p * (1.0 + harvest_rate), 1))
+                            if is_long
+                            else max(float(c.low), round(entry_p * (1.0 - harvest_rate), 1))
+                        )
+                        ok_h, rec_h = self.exchange.close_trade(
+                            live_tid, price=harvest_exec_p, reason="TAKE_PROFIT", now=now
+                        )
+                        if ok_h and rec_h:
+                            events.append(rec_h)
+                        continue
+
+                    # B. Bloqueo de Stop Loss en ganancia neta (Breakeven + Trailing Lock)
+                    if fav_pct >= trig_rate:
+                        cur_sl = float(live_t.get("stoploss", 0.0))
+                        if is_long:
+                            trig_p = entry_p * (1.0 + trig_rate)
+                            lock_sl = float(math.ceil(entry_p * (1.0 + lock_net_rate) + max(0.0, (fav_p - trig_p) * 0.65)))
+                            if float(c.close) <= lock_sl:
+                                ok_l, rec_l = self.exchange.close_trade(
+                                    live_tid, price=lock_sl, reason="TAKE_PROFIT", now=now
+                                )
+                                if ok_l and rec_l:
+                                    events.append(rec_l)
+                                continue
+                            if lock_sl > cur_sl:
+                                live_t["stoploss"] = lock_sl
+                        else:
+                            trig_p = entry_p * (1.0 - trig_rate)
+                            lock_sl = float(math.floor(entry_p * (1.0 - lock_net_rate) - max(0.0, (trig_p - fav_p) * 0.65)))
+                            if float(c.close) >= lock_sl:
+                                ok_l, rec_l = self.exchange.close_trade(
+                                    live_tid, price=lock_sl, reason="TAKE_PROFIT", now=now
+                                )
+                                if ok_l and rec_l:
+                                    events.append(rec_l)
+                                continue
+                            if cur_sl <= 0.0 or lock_sl < cur_sl:
+                                live_t["stoploss"] = lock_sl
 
         # Cierre defensivo de emergencia si el drawdown flotante supera 5.2% en evaluación
         if not self.explorer_mode and self.exchange.running_trades:
@@ -551,6 +791,7 @@ class SimTrainingEnvironment:
                 if self.peak_equity_sats > 0 else 0.0
             )
             if cur_dd_floating >= 0.052:
+                self.dd_guard_events += 1
                 for tid in list(self.exchange.running_trades.keys()):
                     ok, rec = self.exchange.close_trade(
                         tid, price=c.close, reason="MAX_DD_GUARD", now=now
@@ -598,77 +839,78 @@ class SimTrainingEnvironment:
             if tid not in hedge_to_orig:
                 step_net_sats += self._settle_primary_event(ev, curr_state_key, now, float(c.close))
 
-        # 3. Supervisar coberturas mediante PortfolioHedgeCoordinator + AdaptiveHedgeController + HedgeRiskManager
-        pf_snap = PortfolioHedgeCoordinator.reconcile_portfolio(
-            list(self.exchange.running_trades.values()),
-            self.hedge_store,
-            self.exchange.equity_sats,
-            float(c.close),
-            now=now,
-        )
-        for t in pf_snap["primary_trades"]:
-            if t.get("_is_hedge", False):
-                continue
-            tid = str(t["id"])
-            live_meta = self.brain.active_trades.get(tid, {})
-            act_idx = int(live_meta.get("action", 2 if str(t.get("side", "b")).lower() in ("b", "buy", "long") else 6))
-            q_val_act = float(q_vec_curr[act_idx]) if act_idx < len(q_vec_curr) else float(live_meta.get("entry_q", 0.0))
-            prev_pair = self.hedge_store.pairs.get(tid)
-            h_tid = str(prev_pair.get("hedge_trade_id")) if (isinstance(prev_pair, dict) and prev_pair.get("hedge_trade_id")) else None
-            hedge_trade_obj = pf_snap["hedge_trades_map"].get(h_tid) if h_tid else None
-
-            hedge_dec = AdaptiveHedgeController.evaluate_and_manage_pair(
-                client=self.exchange,
-                orig_trade=t,
-                hedge_trade=hedge_trade_obj,
-                orig_meta=live_meta,
-                portfolio_snap=pf_snap,
-                hedge_store=self.hedge_store,
-                ind_5m=ind_5m,
-                ind_15m=ind_15m,
-                ind_1h=ind_1h,
-                perception=perception,
-                q_val_main=q_val_act,
-                account_equity_sats=self.exchange.equity_sats,
-                available_balance_sats=self.exchange.available_balance_sats,
-                locked_floor_sats=getattr(self.brain, "locked_floor", 0),
-                latency_degraded=False,
-                explorer_mode=self.explorer_mode,
-                safe_mode=False,
-                learning_enabled=self.learning_enabled,
+        # 3. Supervisar coberturas mediante PortfolioHedgeCoordinator + AdaptiveHedgeController + HedgeRiskManager (solo si no está desactivado en modo determinista)
+        if not self.deterministic_trend_policy:
+            pf_snap = PortfolioHedgeCoordinator.reconcile_portfolio(
+                list(self.exchange.running_trades.values()),
+                self.hedge_store,
+                self.exchange.equity_sats,
+                float(c.close),
                 now=now,
             )
-            exec_info = hedge_dec.get("execution", {})
-            sel_act_name = hedge_dec.get("selected_action_name", "NO_HEDGE")
-            if exec_info.get("executed"):
-                opened_hid = exec_info.get("hedge_trade_id")
-                if opened_hid and str(opened_hid) in self.exchange.running_trades:
-                    self.exchange.running_trades[str(opened_hid)]["_is_hedge"] = True
-                if exec_info.get("action") == "CLOSE_HEDGE" and h_tid:
-                    closed_h_rec = next(
-                        (r for r in reversed(self.exchange.closed_trades) if str(r.get("id")) == str(h_tid)),
-                        None,
-                    )
-                    if closed_h_rec is not None and isinstance(live_meta, dict):
-                        live_meta["realized_hedge_net_sats"] = (
-                            int(live_meta.get("realized_hedge_net_sats", 0))
-                            + int(closed_h_rec.get("net_pnl_sats", 0))
+            for t in pf_snap["primary_trades"]:
+                if t.get("_is_hedge", False):
+                    continue
+                tid = str(t["id"])
+                live_meta = self.brain.active_trades.get(tid, {})
+                act_idx = int(live_meta.get("action", 2 if str(t.get("side", "b")).lower() in ("b", "buy", "long") else 6))
+                q_val_act = float(q_vec_curr[act_idx]) if act_idx < len(q_vec_curr) else float(live_meta.get("entry_q", 0.0))
+                prev_pair = self.hedge_store.pairs.get(tid)
+                h_tid = str(prev_pair.get("hedge_trade_id")) if (isinstance(prev_pair, dict) and prev_pair.get("hedge_trade_id")) else None
+                hedge_trade_obj = pf_snap["hedge_trades_map"].get(h_tid) if h_tid else None
+
+                hedge_dec = AdaptiveHedgeController.evaluate_and_manage_pair(
+                    client=self.exchange,
+                    orig_trade=t,
+                    hedge_trade=hedge_trade_obj,
+                    orig_meta=live_meta,
+                    portfolio_snap=pf_snap,
+                    hedge_store=self.hedge_store,
+                    ind_5m=ind_5m,
+                    ind_15m=ind_15m,
+                    ind_1h=ind_1h,
+                    perception=perception,
+                    q_val_main=q_val_act,
+                    account_equity_sats=self.exchange.equity_sats,
+                    available_balance_sats=self.exchange.available_balance_sats,
+                    locked_floor_sats=getattr(self.brain, "locked_floor", 0),
+                    latency_degraded=False,
+                    explorer_mode=self.explorer_mode,
+                    safe_mode=False,
+                    learning_enabled=self.learning_enabled,
+                    now=now,
+                )
+                exec_info = hedge_dec.get("execution", {})
+                sel_act_name = hedge_dec.get("selected_action_name", "NO_HEDGE")
+                if exec_info.get("executed"):
+                    opened_hid = exec_info.get("hedge_trade_id")
+                    if opened_hid and str(opened_hid) in self.exchange.running_trades:
+                        self.exchange.running_trades[str(opened_hid)]["_is_hedge"] = True
+                    if exec_info.get("action") == "CLOSE_HEDGE" and h_tid:
+                        closed_h_rec = next(
+                            (r for r in reversed(self.exchange.closed_trades) if str(r.get("id")) == str(h_tid)),
+                            None,
                         )
-                        live_meta["realized_hedge_fee_sats"] = (
-                            int(live_meta.get("realized_hedge_fee_sats", 0))
-                            + int(closed_h_rec.get("entry_fee_sats", 0))
-                            + int(closed_h_rec.get("exit_fee_sats", 0))
-                            + int(closed_h_rec.get("carry_fees_sats", 0))
+                        if closed_h_rec is not None and isinstance(live_meta, dict):
+                            live_meta["realized_hedge_net_sats"] = (
+                                int(live_meta.get("realized_hedge_net_sats", 0))
+                                + int(closed_h_rec.get("net_pnl_sats", 0))
+                            )
+                            live_meta["realized_hedge_fee_sats"] = (
+                                int(live_meta.get("realized_hedge_fee_sats", 0))
+                                + int(closed_h_rec.get("entry_fee_sats", 0))
+                                + int(closed_h_rec.get("exit_fee_sats", 0))
+                                + int(closed_h_rec.get("carry_fees_sats", 0))
+                            )
+                    if sel_act_name == "CLOSE_ORIGINAL_POSITION":
+                        closed_orig_rec = next(
+                            (r for r in reversed(self.exchange.closed_trades) if str(r.get("id")) == tid),
+                            None,
                         )
-                if sel_act_name == "CLOSE_ORIGINAL_POSITION":
-                    closed_orig_rec = next(
-                        (r for r in reversed(self.exchange.closed_trades) if str(r.get("id")) == tid),
-                        None,
-                    )
-                    if closed_orig_rec is not None:
-                        step_net_sats += self._settle_primary_event(
-                            closed_orig_rec, curr_state_key, now, float(c.close)
-                        )
+                        if closed_orig_rec is not None:
+                            step_net_sats += self._settle_primary_event(
+                                closed_orig_rec, curr_state_key, now, float(c.close)
+                            )
 
         # 4. Actualizar métrica de Drawdown continuo pico-valle
         cur_eq = self.exchange.equity_sats
@@ -837,13 +1079,14 @@ class SimTrainingEnvironment:
                         continue
 
                     q_val_entry = float(q_vec[action]) if action < len(q_vec) else 0.0
-                    st_visits_entry = int(self.brain.state_visits.get(curr_state_key, 0))
+                    st_visits_entry = 1 if self.deterministic_trend_policy else int(self.brain.state_visits.get(curr_state_key, 0))
+                    eff_style_metrics = None if self.deterministic_trend_policy else self.brain.style_metrics
                     p_hat, p_lcb, _ = SatsExpectancyGate.estimate_bayesian_win_rate(
                         curr_state_key,
                         action,
                         strat_style,
                         mkt_reg_tag,
-                        self.brain.style_metrics,
+                        eff_style_metrics,
                         q_val=q_val_entry,
                         state_visits=st_visits_entry,
                     )
@@ -864,6 +1107,10 @@ class SimTrainingEnvironment:
 
                     max_single_margin = int(round(self.exchange.equity_sats * Config.MAX_SINGLE_TRADE_MARGIN_PCT))
                     margin_sats = max(Config.MIN_MARGIN_SATS, min(max_single_margin, derived_margin))
+                    if margin_sats > derived_margin and derived_margin > 0:
+                        adjusted_lev = max(1, int(round((float(derived_margin) * float(lev)) / float(margin_sats))))
+                        if adjusted_lev < lev:
+                            lev = adjusted_lev
 
                     viable, _ = SatsExpectancyGate.verify_net_sats_expectancy(
                         price=price,
@@ -878,7 +1125,7 @@ class SimTrainingEnvironment:
                         action=action,
                         style=strat_style,
                         regime=mkt_reg_tag,
-                        style_metrics=self.brain.style_metrics,
+                        style_metrics=eff_style_metrics,
                         q_val=q_val_entry,
                         state_visits=st_visits_entry,
                     )
@@ -886,7 +1133,15 @@ class SimTrainingEnvironment:
                     _tm_sim = getattr(self, "thresholds", None) or getattr(self.brain, "thresholds", None) or get_thresholds_manager()
                     liq_cfg = getattr(self.feed, "liquidity_config_override", None) or LiquidityConfig.from_thresholds(_tm_sim)
                     liq_sig = perception.get("liquidity") if isinstance(perception, dict) else None
-                    if viable and liq_cfg.enabled and (not liq_cfg.shadow_only) and (not self.explorer_mode):
+                    if (
+                        viable
+                        and liq_cfg.enabled
+                        and (not liq_cfg.shadow_only)
+                        and liq_cfg.opposite_wall_enabled
+                        and (not self.explorer_mode)
+                        and (strat_style != "TREND")
+                        and (action not in (1, 5))
+                    ):
                         liq_room = compute_opposite_pool_room(
                             side_is_long=(1 <= (int(action) % 9) <= 4),
                             entry_price=float(price),
@@ -929,6 +1184,12 @@ class SimTrainingEnvironment:
                             viable = False
 
                     if viable and margin_sats <= self.exchange.available_balance_sats:
+                        norm_side = self._norm_side(side)
+                        if self.deterministic_trend_policy:
+                            ok_stk, _ = self._check_anti_stacking_s2(side, price, atr, now)
+                            if not ok_stk:
+                                continue
+
                         lim_cfg = self.limit_config_override or LimitExecutionConfig.from_thresholds(_tm_sim)
                         use_limit = False
                         if lim_cfg.enabled and (not self.explorer_mode):
@@ -978,6 +1239,7 @@ class SimTrainingEnvironment:
                             )
                             if ok_lim:
                                 self.last_entry_ts = now
+                                self.last_side_entry_ts[norm_side] = now
                                 entry_dispatched = True
                                 break
                             continue
@@ -993,6 +1255,13 @@ class SimTrainingEnvironment:
                                 now=now,
                             )
                             tid = trade["id"]
+                            _entry_px_m = max(1.0, float(trade.get("entry_price") or trade.get("price") or price))
+                            _sl_init_m = float(trade.get("stoploss", sl) or sl)
+                            _init_sl_pct_m = (
+                                max(0.0020, abs(_entry_px_m - _sl_init_m) / _entry_px_m)
+                                if _sl_init_m > 0.0
+                                else 0.0040
+                            )
                             self.brain.active_trades[tid] = {
                                 "action": action,
                                 "style": strat["style"],
@@ -1003,8 +1272,14 @@ class SimTrainingEnvironment:
                                 "entry_q": float(q_vec[action]) if action < len(q_vec) else 0.0,
                                 "is_exploratory": bool(is_exploring or getattr(self.brain, "_last_decision_exploratory", False)),
                                 "edge_deg_streak": 0,
+                                "entry_type": "market",
+                                "initial_sl_dist_pct": _init_sl_pct_m,
+                                "sl_locked": False,
+                                "sl_is_trailing_lock": False,
+                                "trail_stage2": False,
                             }
                             self.last_entry_ts = now
+                            self.last_side_entry_ts[norm_side] = now
                             entry_dispatched = True
                             break
                         except Exception:

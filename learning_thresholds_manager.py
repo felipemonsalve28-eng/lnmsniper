@@ -748,9 +748,17 @@ FALLBACK_THRESHOLDS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "structural_lock_when_open": False,
         },
         "shadow_only": {
-            "value": 1,
+            "value": 0,
             "unit": "flag",
             "description": "Modo observacion del radar de liquidez: registra telemetria con liq_bias=0 y sin bloqueos (1=sombra, 0=activo).",
+            "min_limit": 0,
+            "max_limit": 1,
+            "structural_lock_when_open": False,
+        },
+        "opposite_wall_enabled": {
+            "value": 0,
+            "unit": "flag",
+            "description": "Habilita el veto BLOCKED_OPPOSITE_LIQ_WALL ante muros EQH/EQL opuestos (0=desactivado; siempre inactivo en TREND).",
             "min_limit": 0,
             "max_limit": 1,
             "structural_lock_when_open": False,
