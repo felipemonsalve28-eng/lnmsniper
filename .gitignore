@@ -7,12 +7,14 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Logs del sistema
+# Logs y telemetría de runtime del sistema
 *.log
 *.log.*
 logs/
 logs/transitions_audit_*.jsonl
-telemetry_live_*.json
+telemetry_live*.json
+side_brake_state_*.json
+side_brake_state_*.json.*
 
 # Capturas y temporales
 *.png

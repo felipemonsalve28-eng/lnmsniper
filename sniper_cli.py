@@ -1292,7 +1292,7 @@ def run_interactive_menu(ctrl: SniperControlCenter) -> None:
             if not rk:
                 continue
             if rk.strip().lower() == "reset":
-                conf = _safe_input("  ¿Restaurar los 21 parámetros de runtime a fábrica? (s/n) [n]: ", "n")
+                conf = _safe_input("  ¿Restaurar los 28 parámetros de runtime a fábrica? (s/n) [n]: ", "n")
                 if conf and conf.lower() in ("s", "si", "sí", "y", "yes"):
                     _, msg = ctrl.reset_runtime_overrides()
                     print("  " + msg)
@@ -1392,7 +1392,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_wt.add_argument("--interval", type=float, default=3.0)
     p_wt.add_argument("--offline", action="store_true", help="Omitir consulta en vivo a LN Markets API")
 
-    p_cat = sub.add_parser("catalog", help="Explora o busca en el catálogo de 99 parámetros")
+    p_cat = sub.add_parser("catalog", help="Explora o busca en el catálogo de 100 parámetros")
     p_cat.add_argument("--category", "-c", default=None)
     p_cat.add_argument("--search", "-s", default=None)
     p_cat.add_argument("--compact", action="store_true")
@@ -1405,7 +1405,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_set.add_argument("value")
     p_set.add_argument("--env", default=None, choices=["mainnet", "testnet"])
 
-    sub.add_parser("runtime-list", help="Lista los 21 parámetros tácticos de runtime")
+    sub.add_parser("runtime-list", help="Lista los 28 parámetros tácticos de runtime")
     p_rset = sub.add_parser("runtime-set", help="Modifica un parámetro táctico de runtime")
     p_rset.add_argument("param")
     p_rset.add_argument("value")

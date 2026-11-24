@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 sniper_cli_catalog.py
-Catálogo matemático, explicaciones operativas (subir vs bajar) para los 78 umbrales
-de config/learning_thresholds.json + 21 parámetros de runtime y 5 Presets Cuantitativos.
+Catálogo matemático, explicaciones operativas (subir vs bajar) para los 100 umbrales
+de config/learning_thresholds.json + 28 parámetros de runtime y 5 Presets Cuantitativos.
 """
 from typing import Any, Dict, Tuple
 
@@ -428,9 +428,14 @@ _RAW_GUIDE: Dict[str, Tuple[str, str, str]] = {
         "BAJAR (0): Desactiva completamente el radar devolviendo señal neutra.",
     ),
     "liquidity_radar.shadow_only": (
-        "Mantiene el radar en modo observador puro: registra telemetría sin modificar Pre-Flight ni bloquear muros.",
+        "Mantiene el radar en modo observador puro: registra telemetría con liq_bias=0 sin modificar Pre-Flight.",
         "SUBIR (1): Modo sombra seguro (liq_bias=0.0, cero impacto en ejecución).",
-        "BAJAR (0): Activa el sesgo acotado liq_bias en Pre-Flight y bloqueo ante muro EQH/EQL.",
+        "BAJAR (0): Activa liq_bias en Modo B (LIQ_BIAS_ONLY) manteniendo BLOCKED_OPPOSITE_LIQ_WALL controlado por opposite_wall_enabled.",
+    ),
+    "liquidity_radar.opposite_wall_enabled": (
+        "Activa el veto BLOCKED_OPPOSITE_LIQ_WALL frente a muros EQH/EQL opuestos (0 en C1_STREAK3_24H_INV; siempre inactivo en TREND).",
+        "SUBIR (1): Reactiva bloqueo de muro opuesto solo en estilos no-TREND (REVERSION/SNIPER/SCALP).",
+        "BAJAR (0): Mantiene desactivado BLOCKED_OPPOSITE_LIQ_WALL (paridad Modo B LIQ_BIAS_ONLY).",
     ),
     "liquidity_radar.swing_k_5m": (
         "Orden causal k de pivotes Swing en velas de 5m (bloqueado con posiciones abiertas).",
@@ -682,6 +687,55 @@ RUNTIME_PARAMETERS_SPEC: Dict[str, Dict[str, Any]] = {
         "impact_up": "SUBIR (↑): Requiere menos margen libre para abrir una cobertura.",
         "impact_down": "BAJAR (↓): Fuerza coberturas más conservadoras con liquidación más alejada.",
     },
+    "DETERMINISTIC_TREND_POLICY": {
+        "target": "Config", "type": "bool", "default": True, "unit": "bool",
+        "description": "Activa la política determinista congelada C1_STREAK3_24H_INV (L_TREND/S_TREND a MARKET con semilla simétrica limpia).",
+        "math_role": "Congela Q-learning online, fija action in {0, 1, 5} (OTR=0) y sanitiza en memoria q_table a _init_q_vector.",
+        "impact_up": "TRUE: Opera exclusivamente la física certificada C1_STREAK3_24H_INV (+18,092 sats 12M OOS, PF 1.15).",
+        "impact_down": "FALSE: Reactiva la selección Q-learning tabular heredada (descartada por colapso de estados).",
+    },
+    "FE_OFF_TREND": {
+        "target": "Config", "type": "bool", "default": True, "unit": "bool",
+        "description": "Desactiva FORCED_EDGE_EXIT y EDGE_DEGRADATION_DEFENSIVE_EXIT en posiciones TREND (E2_FE_OFF).",
+        "math_role": "Impide cierres prematuros por degradación de edge en L_TREND (1) y S_TREND (5), delegando salida a SL/TP y trailing.",
+        "impact_up": "TRUE: Preserva +15,250 sats en 18M y captura completa de rallies tendenciales (FE=0).",
+        "impact_down": "FALSE: Permite que EdgeMonitor corte posiciones TREND antes de tocar su Stop Loss físico.",
+    },
+    "SHORT_EXP_PHYS_HOLD": {
+        "target": "Config", "type": "bool", "default": True, "unit": "bool",
+        "description": "Compuerta física C1_SHORT_EXP_PHYS: exige expansión orgánica 2*ATR > 0.65% para autorizar S_TREND (acción 5).",
+        "math_role": "Si action == 5 y sl_dist_pct <= SHORT_EXP_MIN_DSL (0.6505%), bloquea la entrada a HOLD (0).",
+        "impact_up": "TRUE: Filtra cortos en mercado calmo sin expansión, sumando +10,601 sats en 12M OOS.",
+        "impact_down": "FALSE: Permite abrir cortos incluso cuando 2*ATR está comprimido bajo el piso de 0.65%.",
+    },
+    "SHORT_EXP_MIN_DSL": {
+        "target": "Config", "type": "float", "min_limit": 0.0050, "max_limit": 0.0150, "default": 0.006505, "unit": "ratio",
+        "description": "Distancia mínima relativa de Stop Loss (d_SL) requerida para autorizar entradas S_TREND bajo C1_SHORT_EXP_PHYS.",
+        "math_role": "Exige abs(price - sl) / price > SHORT_EXP_MIN_DSL para demostrar que 2*ATR supera el piso de 0.65%.",
+        "impact_up": "SUBIR (↑): Exige mayor expansión de volatilidad ATR antes de abrir posiciones cortas.",
+        "impact_down": "BAJAR (↓): Relaja el filtro físico permitiendo cortos en mercados más calmos.",
+    },
+    "STREAK3_24H_ENABLED": {
+        "target": "Config", "type": "bool", "default": True, "unit": "bool",
+        "description": "Habilita el freno persistente por lado C1_STREAK3_24H (3 pérdidas seguidas pausan 24h ese lado).",
+        "math_role": "Al acumular 3 cierres net_pnl_sats <= 0 en el lado s, activa side_pause_until_ts[s] = close_ts + 86400s.",
+        "impact_up": "TRUE: Aísla rachas adversas por lado y reduce MaxDD a 4.40% (12M OOS) y 4.66% (18M) manteniendo 1.00x.",
+        "impact_down": "FALSE: Desactiva la pausa de 24h tras 3 pérdidas consecutivas en un mismo lado.",
+    },
+    "TREND_SL_FLOOR_PCT": {
+        "target": "Config", "type": "float", "min_limit": 0.0030, "max_limit": 0.0150, "default": 0.0065, "unit": "ratio",
+        "description": "Piso estructural de distancia de Stop Loss (0.65%) para entradas TREND (acciones 1 y 5).",
+        "math_role": "Garantiza sl_distance >= price * TREND_SL_FLOOR_PCT y recalcula lev y tp_distance proporcionalmente.",
+        "impact_up": "SUBIR (↑): Amplía el respiro mínimo del Stop Loss y reduce el apalancamiento efectivo.",
+        "impact_down": "BAJAR (↓): Permite stops más ajustados en baja volatilidad con mayor riesgo de barrido por ruido.",
+    },
+    "BASE_RISK_PCT_STD": {
+        "target": "Config", "type": "float", "min_limit": 0.0025, "max_limit": 0.0200, "default": 0.0075, "unit": "ratio",
+        "description": "Presupuesto de riesgo base por operación (0.75% del Equity) en la arquitectura C1_STREAK3_24H_INV.",
+        "math_role": "Define base_risk_pct = BASE_RISK_PCT_STD * dd_dampener antes del multiplicador fraccional de Kelly.",
+        "impact_up": "SUBIR (↑): Incrementa el riesgo en satoshis por operación y la amplitud de drawdown esperado.",
+        "impact_down": "BAJAR (↓): Reduce el riesgo por trade mejorando aún más el colchón frente a los frenos de 3.5%/4.5%.",
+    },
 }
 
 QUANTITATIVE_PRESETS: Dict[str, Dict[str, Any]] = {
@@ -711,7 +765,7 @@ QUANTITATIVE_PRESETS: Dict[str, Dict[str, Any]] = {
         },
         "runtime": {
             "SOFT_EXPOSURE_LIMIT": 0.38, "MAX_SINGLE_TRADE_MARGIN_PCT": 0.20, "MAX_LEVERAGE": 85,
-            "RISK_NORMAL": 0.06, "ENTRY_COOLDOWN_SEC": 35.0, "CONSECUTIVE_LOSS_LIMIT": 4, "ENABLE_HYBRID_HEDGE": True,
+            "RISK_NORMAL": 0.06, "ENTRY_COOLDOWN_SEC": 35.0, "CONSECUTIVE_LOSS_LIMIT": 4, "ENABLE_HYBRID_HEDGE": False,
         },
     },
     "capital_fortress": {
@@ -734,7 +788,7 @@ QUANTITATIVE_PRESETS: Dict[str, Dict[str, Any]] = {
         },
         "runtime": {
             "SOFT_EXPOSURE_LIMIT": 0.25, "MAX_SINGLE_TRADE_MARGIN_PCT": 0.12, "MAX_LEVERAGE": 50,
-            "RISK_NORMAL": 0.045, "ENTRY_COOLDOWN_SEC": 55.0, "CONSECUTIVE_LOSS_LIMIT": 3, "ENABLE_HYBRID_HEDGE": True,
+            "RISK_NORMAL": 0.045, "ENTRY_COOLDOWN_SEC": 55.0, "CONSECUTIVE_LOSS_LIMIT": 3, "ENABLE_HYBRID_HEDGE": False,
         },
     },
     "fee_sniper_anti_chop": {
@@ -755,7 +809,7 @@ QUANTITATIVE_PRESETS: Dict[str, Dict[str, Any]] = {
         },
         "runtime": {
             "SOFT_EXPOSURE_LIMIT": 0.30, "MAX_SINGLE_TRADE_MARGIN_PCT": 0.15, "MAX_LEVERAGE": 60,
-            "RISK_NORMAL": 0.05, "ENTRY_COOLDOWN_SEC": 48.0, "CONSECUTIVE_LOSS_LIMIT": 3, "ENABLE_HYBRID_HEDGE": True,
+            "RISK_NORMAL": 0.05, "ENTRY_COOLDOWN_SEC": 48.0, "CONSECUTIVE_LOSS_LIMIT": 3, "ENABLE_HYBRID_HEDGE": False,
         },
     },
     "trend_expansion_kelly": {
@@ -776,7 +830,7 @@ QUANTITATIVE_PRESETS: Dict[str, Dict[str, Any]] = {
         },
         "runtime": {
             "SOFT_EXPOSURE_LIMIT": 0.38, "MAX_SINGLE_TRADE_MARGIN_PCT": 0.20, "MAX_LEVERAGE": 80,
-            "RISK_NORMAL": 0.065, "ENTRY_COOLDOWN_SEC": 28.0, "CONSECUTIVE_LOSS_LIMIT": 4, "ENABLE_HYBRID_HEDGE": True,
+            "RISK_NORMAL": 0.065, "ENTRY_COOLDOWN_SEC": 28.0, "CONSECUTIVE_LOSS_LIMIT": 4, "ENABLE_HYBRID_HEDGE": False,
         },
     },
     "testnet_curriculum_lab": {
@@ -791,7 +845,7 @@ QUANTITATIVE_PRESETS: Dict[str, Dict[str, Any]] = {
             "exploration.alpha_learning_rate": 0.22, "exploration.alpha_recovery_rate": 0.30,
         },
         "runtime": {
-            "SOFT_EXPOSURE_LIMIT": 0.45, "ENTRY_COOLDOWN_SEC": 18.0, "RISK_NORMAL": 0.08, "ENABLE_HYBRID_HEDGE": True,
+            "SOFT_EXPOSURE_LIMIT": 0.45, "ENTRY_COOLDOWN_SEC": 18.0, "RISK_NORMAL": 0.08, "ENABLE_HYBRID_HEDGE": False,
         },
     },
 }
