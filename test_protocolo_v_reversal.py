@@ -576,7 +576,7 @@ def run_audit_protocol():
     # ESCENARIO 23: VALIDACIÓN WALK-FORWARD OUT-OF-SAMPLE (FASE 5.7 / ETAPA G)
     # =========================================================================
     from validate_walk_forward_oos import run_walk_forward_validation, VARIANTS_ORDER, REGIMES_ORDER
-    wf_report = run_walk_forward_validation(save_report=True, verbose=False)
+    wf_report = run_walk_forward_validation(save_report=False, verbose=False)
     v_legacy = wf_report["variants"]["1_SISTEMA_ACTUAL_SIN_MEJORAS"]
     v_opt_no_h = wf_report["variants"]["2_SISTEMA_OPTIMIZADO_SIN_HEDGE"]
     v_static = wf_report["variants"]["3_HEDGE_ESTATICO_TRADICIONAL"]

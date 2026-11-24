@@ -10,15 +10,19 @@ import io
 import os
 import pickle
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
 from contextlib import redirect_stdout
+from unittest.mock import patch
 
-from guardian_execution_core import AtomicBrainStore
+from guardian_execution_core import AtomicBrainStore, ResilientLNMClient, TokenBucket
 from lnm_sniper_v6_advanced import (
     AutonomousGoalBrain,
     Config,
+    LNMarketsClient,
     evaluate_and_dispatch_entries,
     execute_strategy_guardian,
     process_settlement_queue,
@@ -467,50 +471,297 @@ class TestC1Streak324HProduction(unittest.TestCase):
         env.reset(c_list, warmup_bars=80)
         self.assertTrue(env.exchange.inverse_contract_math)
 
-        # Si el caché durable v1 está disponible en WSL, certificar paridad exacta de M16 BULL (oos_m15.pkl = +31,746 sats)
+        # Si el caché durable v1 está disponible en WSL, certificar paridad exacta directa de SimTrainingEnvironment en M16 BULL (oos_m15.pkl = +31,746 sats)
         cache_dir = "/home/akapana/.cache/sniper_wf_s2_cache"
         m16_pkl = os.path.join(cache_dir, "oos_m15.pkl")
         seed_brain = os.path.join(cache_dir, "q_brain_s2_clean_seed.json")
-        scratch_dir = "/mnt/c/Users/mberm/.gemini/antigravity/brain/70db3e2b-886d-4e76-8424-78984ef03027/scratch"
-        if os.path.exists(m16_pkl) and os.path.exists(seed_brain) and os.path.isdir(scratch_dir):
-            import sys
-            if scratch_dir not in sys.path:
-                sys.path.insert(1, scratch_dir)
-            import ablation_fase3_certification_v1 as f3
-            from lnm_sniper_v6_advanced import THRESHOLDS_MANAGER
-            from liquidity_radar import LiquidityConfig
-            from limit_execution_manager import LimitExecutionConfig
+        if os.path.exists(m16_pkl) and os.path.exists(seed_brain):
+            b_dst = os.path.join(self.tmp_dir, "m16_direct_brain.json")
+            h_dst = os.path.join(self.tmp_dir, "m16_direct_hedge.json")
+            shutil.copy2(seed_brain, b_dst)
+            if os.path.exists(seed_brain + ".sha256"):
+                shutil.copy2(seed_brain + ".sha256", b_dst + ".sha256")
+            with open(m16_pkl, "rb") as fh:
+                m16_block = pickle.load(fh)
 
-            if f3.aod.BASE_LIQ is None:
-                f3.aod.BASE_LIQ = LiquidityConfig.from_thresholds(THRESHOLDS_MANAGER)
-            if f3.aod.BASE_LIM is None:
-                f3.aod.BASE_LIM = LimitExecutionConfig.from_thresholds(THRESHOLDS_MANAGER)
-
-            blk_meta = {
-                "split": "OOS",
-                "key": "oos_m15",
-                "parent_month": "M16",
-                "label": "M16",
-                "regime": "BULL",
-                "ret_pct": 20.20,
-                "ts0": 0.0,
-                "ts1": 0.0,
-                "seed_off": 15,
-                "pkl_path": m16_pkl,
-                "purge_min_first_ts": None,
-            }
-            res_m16 = f3._run_block_fase3(
-                blk_meta=blk_meta,
-                brain_src=seed_brain,
-                inverse_contract_math=True,
-                side_brake_mode="streak3_24h",
+            env_m16 = SimTrainingEnvironment(
+                candidate_brain_file=b_dst,
+                candidate_hedge_file=h_dst,
+                initial_balance_sats=100000,
             )
-            self.assertTrue(res_m16.get("ok"), f"Fallo en _run_block_fase3: {res_m16.get('error')}")
-            self.assertEqual(res_m16["net_pnl"], 31746, f"Paridad M16 BULL INV esperada +31,746, obtuvo {res_m16['net_pnl']}")
-            self.assertEqual(res_m16["trades"], 52)
-            self.assertTrue(all(int(d["action"]) in (1, 5) for d in res_m16["details"]))
-            self.assertEqual(res_m16["fe_n"], 0)
-            self.assertEqual(res_m16["ddg_n"], 0)
+            res_m16 = env_m16.run_episode(m16_block, initial_balance=100000)
+            self.assertEqual(
+                res_m16["net_profit_sats"],
+                31746,
+                f"Paridad directa SimTrainingEnvironment M16 BULL INV esperada +31,746, obtuvo {res_m16['net_profit_sats']}",
+            )
+            self.assertEqual(res_m16["total_settled_trades"], 52)
+            self.assertEqual(env_m16.dd_guard_events, 0)
+            self.assertTrue(
+                all(r.get("close_reason") != "FORCED_EDGE_EXIT" for r in res_m16["closed_trades"])
+            )
+
+    def test_07_legacy_contaminated_brain_json_immunity(self) -> None:
+        """Verifica inmunidad 100% en memoria ante q_brain_*.json legados con Q=-0.50, visits=500 y style_metrics."""
+        st_bull = "TREND_BULL|MID|LOW_EXP|BULL|FULL_BULL"
+        st_bear = "TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR"
+        contaminated_path = os.path.join(self.tmp_dir, "q_brain_contaminated.json")
+        clean_seed_path = os.path.join(self.tmp_dir, "q_brain_clean_seed_ref.json")
+
+        # 1. Crear payload legado contaminado (Q=-0.50 en TREND, Q>0 en REVERSION, visits=500) con SHA-256 válido
+        store_dirty = AtomicBrainStore(contaminated_path)
+        contaminated_payload = {
+            "env": "mainnet",
+            "reward_schema_version": 2,
+            "epsilon": 0.25,
+            "total_trained": 480,
+            "total_intermediate_updates": 1200,
+            "current_target": 300000,
+            "milestone_level": 2,
+            "locked_floor": 75000,
+            "peak_equity": 105000,
+            "realized_net_profit_sats": -18500,
+            "total_fees_paid_sats": 14200,
+            "style_metrics": {
+                "TREND": {"trades": 300, "wins": 20, "net_sats": -35000, "fees_sats": 9000},
+                "REVERSION": {"trades": 120, "wins": 95, "net_sats": 18000, "fees_sats": 3200},
+                "SNIPER": {"trades": 40, "wins": 5, "net_sats": -1000, "fees_sats": 1000},
+                "DEF_SCALP": {"trades": 20, "wins": 2, "net_sats": -500, "fees_sats": 1000},
+            },
+            "q_table": {
+                st_bull: [0.0, -0.50, 0.35, -0.40, 0.25, -0.50, -0.30, -0.45, -0.20],
+                st_bear: [0.0, -0.50, -0.30, -0.45, -0.20, -0.50, 0.40, -0.55, 0.30],
+            },
+            "q_table_1h": {"TREND_BEAR|LOW|BEAR_STRONG|LOSS": [0.0, 0.0, 0.85, 0.95]},
+            "q_table_4h": {"TREND_BEAR|LOW|BEAR_STRONG|LOSS": [0.0, 0.0, 0.80, 0.90]},
+            "cycle_state": {
+                "1h": {"bucket": 400000, "start_eq": 100000, "start_price": 70000.0, "trades": 10, "wins": 1, "pnl": -5000, "state": "S1", "action": 3},
+                "4h": {"bucket": 100000, "start_eq": 100000, "start_price": 70000.0, "trades": 10, "wins": 1, "pnl": -5000, "state": "S4", "action": 2},
+            },
+            "state_visits": {st_bull: 500, st_bear: 500},
+            "active_trades": {},
+            "processed_closed_trade_ids": ["closed-legacy-1"],
+            "memory": [[1.0, st_bull, 1, -0.85, st_bear]],
+        }
+        store_dirty.save(contaminated_payload)
+
+        # 2. Crear semilla simétrica limpia de referencia con SHA-256 válido
+        store_clean = AtomicBrainStore(clean_seed_path)
+        clean_payload = {
+            "env": "mainnet",
+            "reward_schema_version": 2,
+            "epsilon": 0.0,
+            "total_trained": 0,
+            "total_intermediate_updates": 0,
+            "current_target": 300000,
+            "milestone_level": 1,
+            "locked_floor": 0,
+            "peak_equity": 0,
+            "realized_net_profit_sats": 0,
+            "total_fees_paid_sats": 0,
+            "style_metrics": {
+                k: {"trades": 0, "wins": 0, "net_pnl_sats": 0, "fees_sats": 0}
+                for k in ("TREND", "REVERSION", "SNIPER", "DEF_SCALP")
+            },
+            "q_table": {
+                st_bull: AutonomousGoalBrain._init_q_vector(st_bull),
+                st_bear: AutonomousGoalBrain._init_q_vector(st_bear),
+            },
+            "q_table_1h": {},
+            "q_table_4h": {},
+            "cycle_state": {
+                "1h": {"bucket": 0, "start_eq": 0, "start_price": 0.0, "trades": 0, "wins": 0, "pnl": 0, "state": None, "action": 0},
+                "4h": {"bucket": 0, "start_eq": 0, "start_price": 0.0, "trades": 0, "wins": 0, "pnl": 0, "state": None, "action": 0},
+            },
+            "state_visits": {st_bull: 0, st_bear: 0},
+            "active_trades": {},
+            "processed_closed_trade_ids": [],
+            "memory": [],
+        }
+        store_clean.save(clean_payload)
+
+        # Verificar strict_sha=True en ambos archivos en disco
+        ok_dirty_sha, _ = store_dirty.verify_file(contaminated_path, strict_sha=True)
+        ok_clean_sha, _ = store_clean.verify_file(clean_seed_path, strict_sha=True)
+        self.assertTrue(ok_dirty_sha)
+        self.assertTrue(ok_clean_sha)
+
+        ind_bull = {
+            "price": 70000.0,
+            "atr": 260.0,
+            "atr_pct": 0.00371,
+            "rsi": 55.0,
+            "bb_pos": 0.65,
+            "ema9": 70200.0,
+            "ema21": 69900.0,
+            "ema_score": 0.8,
+            "regime": "TREND_BULL",
+            "market_regime": "TREND_BULL",
+        }
+        ind_bear = {
+            "price": 70000.0,
+            "atr": 260.0,
+            "atr_pct": 0.00371,
+            "rsi": 42.0,
+            "bb_pos": 0.35,
+            "ema9": 69800.0,
+            "ema21": 70100.0,
+            "ema_score": -0.8,
+            "regime": "TREND_BEAR",
+            "market_regime": "TREND_BEAR",
+        }
+        perc_bull = {"override_side": None, "market_regime": "TREND_BULL", "vel_ema_atr": 0.25, "rsi_5m": 55.0}
+        perc_bear = {"override_side": None, "market_regime": "TREND_BEAR", "vel_ema_atr": -0.25, "rsi_5m": 42.0}
+
+        for env_name in ("mainnet", "testnet"):
+            Config.configure_environment(env_name)
+            self.assertFalse(Config.EXPLORER_MODE)
+            brain_dirty = AutonomousGoalBrain(
+                filename=contaminated_path, explorer_mode=Config.EXPLORER_MODE, learning_enabled=False
+            )
+            brain_clean = AutonomousGoalBrain(
+                filename=clean_seed_path, explorer_mode=Config.EXPLORER_MODE, learning_enabled=False
+            )
+
+            # Inmunidad exacta en q_table, state_visits, style_metrics y memory
+            self.assertEqual(brain_dirty.get_state_q_values(st_bull), brain_clean.get_state_q_values(st_bull))
+            self.assertEqual(brain_dirty.get_state_q_values(st_bear), brain_clean.get_state_q_values(st_bear))
+            self.assertEqual(brain_dirty.get_state_q_values(st_bull), AutonomousGoalBrain._init_q_vector(st_bull))
+            self.assertEqual(brain_dirty.state_visits[st_bull], 1)
+            self.assertEqual(brain_dirty.state_visits[st_bear], 1)
+            self.assertEqual(brain_dirty.style_metrics, brain_clean.style_metrics)
+            self.assertEqual(len(brain_dirty.memory), 0)
+
+            for st_k, ind_ctx, perc_ctx, exp_act in (
+                (st_bull, ind_bull, perc_bull, 1),
+                (st_bear, ind_bear, perc_bear, 5),
+            ):
+                act_dirty = brain_dirty.choose_action(st_k, ind_ctx, ind_ctx, ind_ctx, ind_ctx)
+                act_clean = brain_clean.choose_action(st_k, ind_ctx, ind_ctx, ind_ctx, ind_ctx)
+                self.assertEqual(act_dirty, exp_act)
+                self.assertEqual(act_dirty, act_clean)
+
+                q_d = brain_dirty.get_state_q_values(st_k)
+                q_c = brain_clean.get_state_q_values(st_k)
+                f_dirty = SatsExpectancyGate.filter_and_rank_action(
+                    act_dirty, st_k, q_d, brain_dirty.strategies, perc_ctx,
+                    recovery_mode=False, current_dd_pct=0.0, explorer_mode=False, deterministic_trend_policy=True,
+                )
+                f_clean = SatsExpectancyGate.filter_and_rank_action(
+                    act_clean, st_k, q_c, brain_clean.strategies, perc_ctx,
+                    recovery_mode=False, current_dd_pct=0.0, explorer_mode=False, deterministic_trend_policy=True,
+                )
+                self.assertEqual(f_dirty, f_clean)
+
+                # Comparar estimate_bayesian_win_rate y verify_net_sats_expectancy con semilla limpia
+                b_dirty = SatsExpectancyGate.estimate_bayesian_win_rate(
+                    st_k, exp_act, "TREND", ind_ctx["market_regime"], brain_dirty.style_metrics, q_val=q_d[exp_act], state_visits=1
+                )
+                b_clean = SatsExpectancyGate.estimate_bayesian_win_rate(
+                    st_k, exp_act, "TREND", ind_ctx["market_regime"], brain_clean.style_metrics, q_val=q_c[exp_act], state_visits=1
+                )
+                self.assertEqual(b_dirty, b_clean)
+
+                v_dirty = SatsExpectancyGate.verify_net_sats_expectancy(
+                    price=70000.0, margin_sats=2500, lev=50, sl_price=69480.0 if exp_act == 1 else 70520.0,
+                    tp_price=72400.0 if exp_act == 1 else 67600.0, explorer_mode=False,
+                    state=st_k, action=exp_act, style="TREND", regime=ind_ctx["market_regime"],
+                    style_metrics=brain_dirty.style_metrics, q_val=q_d[exp_act], state_visits=1,
+                )
+                v_clean = SatsExpectancyGate.verify_net_sats_expectancy(
+                    price=70000.0, margin_sats=2500, lev=50, sl_price=69480.0 if exp_act == 1 else 70520.0,
+                    tp_price=72400.0 if exp_act == 1 else 67600.0, explorer_mode=False,
+                    state=st_k, action=exp_act, style="TREND", regime=ind_ctx["market_regime"],
+                    style_metrics=brain_clean.style_metrics, q_val=q_c[exp_act], state_visits=1,
+                )
+                self.assertEqual(v_dirty, v_clean)
+
+                # Comparar despacho extremo a extremo en evaluate_and_dispatch_entries (misma orden exacta)
+                cli_dirty = _MockProdClient(balance=200000)
+                cli_clean = _MockProdClient(balance=200000)
+                mods_dirty = brain_dirty.get_parallel_modifiers(ind_ctx, ind_ctx, ind_ctx, ind_ctx)
+                mods_clean = brain_clean.get_parallel_modifiers(ind_ctx, ind_ctx, ind_ctx, ind_ctx)
+                self.assertEqual(mods_dirty, mods_clean)
+                with redirect_stdout(io.StringIO()):
+                    d_act, _ = evaluate_and_dispatch_entries(
+                        client=cli_dirty, brain=brain_dirty, state=st_k,
+                        ind_5m=ind_ctx, ind_15m=ind_ctx, ind_1h=ind_ctx, ind_4h=ind_ctx,
+                        mods=mods_dirty, recovery_mode=False, current_dd_pct=0.0, dynamic_max_pos=5,
+                        active_count=0, locked_margin=0, equity=200000, balance=200000,
+                        last_entry_time=0.0, now=1720000000.0, consecutive_losses=0, warmup=False,
+                        risk_multiplier=1.0, sprint_mode=False, mkt_reg_tag=ind_ctx["market_regime"],
+                        still_running=[], safe_mode=False, hedge_store=None, perception=perc_ctx,
+                    )
+                    c_act, _ = evaluate_and_dispatch_entries(
+                        client=cli_clean, brain=brain_clean, state=st_k,
+                        ind_5m=ind_ctx, ind_15m=ind_ctx, ind_1h=ind_ctx, ind_4h=ind_ctx,
+                        mods=mods_clean, recovery_mode=False, current_dd_pct=0.0, dynamic_max_pos=5,
+                        active_count=0, locked_margin=0, equity=200000, balance=200000,
+                        last_entry_time=0.0, now=1720000000.0, consecutive_losses=0, warmup=False,
+                        risk_multiplier=1.0, sprint_mode=False, mkt_reg_tag=ind_ctx["market_regime"],
+                        still_running=[], safe_mode=False, hedge_store=None, perception=perc_ctx,
+                    )
+                self.assertEqual(d_act, exp_act)
+                self.assertEqual(d_act, c_act)
+                self.assertEqual(len(cli_dirty.opened_orders), 1)
+                self.assertEqual(len(cli_clean.opened_orders), 1)
+                ord_d = {k: v for k, v in cli_dirty.opened_orders[0].items() if k != "id"}
+                ord_c = {k: v for k, v in cli_clean.opened_orders[0].items() if k != "id"}
+                self.assertEqual(ord_d, ord_c)
+
+            # Preserva metadatos críticos de seguridad de cuenta (locked_floor, peak_equity, processed_closed_trade_ids)
+            self.assertEqual(brain_dirty.locked_floor, 75000)
+            self.assertEqual(brain_dirty.peak_equity, 105000)
+            self.assertIn("closed-legacy-1", brain_dirty.processed_closed_trade_ids)
+
+    def test_08_resilient_client_token_bucket_client_id_and_cli_help(self) -> None:
+        """Verifica Token Bucket 20/s (burst 40), clientId único en open_trade, cero I/O RAM y --help/--dry-check."""
+        self.assertIsInstance(ResilientLNMClient._RATE_LIMITER, TokenBucket)
+        self.assertEqual(ResilientLNMClient._RATE_LIMITER.rate, 20.0)
+        self.assertEqual(ResilientLNMClient._RATE_LIMITER.capacity, 40.0)
+
+        bucket = TokenBucket(rate=20.0, capacity=40.0)
+        for _ in range(40):
+            self.assertTrue(bucket.consume(1.0, timeout=0.0))
+        self.assertFalse(bucket.consume(1.0, timeout=0.0))
+
+        cid_1 = ResilientLNMClient.generate_client_id("mainnet", "mkt")
+        cid_2 = ResilientLNMClient.generate_client_id("testnet", "mkt")
+        self.assertTrue(cid_1.startswith("lnms_main_mkt_"))
+        self.assertTrue(cid_2.startswith("lnms_test_mkt_"))
+        self.assertNotEqual(cid_1, cid_2)
+        self.assertLessEqual(len(cid_1), 64)
+        self.assertLessEqual(len(cid_2), 64)
+
+        cli_api = LNMarketsClient("k", "s", "p")
+        with patch.object(cli_api, "_request", return_value={"id": "ord-1"}) as mock_req:
+            cli_api.open_trade("buy", 1000, 20, 69000, 72000)
+            cli_api.open_trade("sell", 1000, 20, 71000, 68000)
+        self.assertEqual(mock_req.call_count, 2)
+        p1 = mock_req.call_args_list[0].args[2]
+        p2 = mock_req.call_args_list[1].args[2]
+        self.assertIn("clientId", p1)
+        self.assertIn("clientId", p2)
+        self.assertNotEqual(p1["clientId"], p2["clientId"])
+        self.assertLessEqual(len(p1["clientId"]), 64)
+
+        # is_side_paused debe operar 100% en RAM (cero I/O en disco)
+        sb = SideStreakBrakeStore(env_mode="mainnet", filepath=os.path.join(self.tmp_dir, "sb_ram.json"), persist_to_disk=True)
+        with patch("builtins.open", side_effect=AssertionError("I/O forbidden")), \
+             patch("os.stat", side_effect=AssertionError("stat forbidden")), \
+             patch("os.path.exists", side_effect=AssertionError("exists forbidden")):
+            self.assertEqual(sb.is_side_paused("buy", now=1720000000.0), (False, 0.0))
+            self.assertEqual(sb.is_side_paused("sell", now=1720000000.0), (False, 0.0))
+
+        # Arranque limpio de --help y --dry-check sin credenciales ni red
+        bot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lnm_sniper_v6_advanced.py")
+        p_help = subprocess.run([sys.executable, "-B", bot_script, "--help"], capture_output=True, text=True, timeout=10)
+        self.assertEqual(p_help.returncode, 0, p_help.stderr)
+        self.assertIn("--dry-check", p_help.stdout)
+
+        p_dry = subprocess.run([sys.executable, "-B", bot_script, "--dry-check"], capture_output=True, text=True, timeout=10)
+        self.assertEqual(p_dry.returncode, 0, p_dry.stderr)
+        self.assertIn("[DRY-CHECK OK]", p_dry.stdout)
 
 
 if __name__ == "__main__":

@@ -695,11 +695,11 @@ def run_all_tests() -> None:
     from sync_brains_dual import sync_dual_brains
     from guardian_execution_core import AtomicBrainStore
 
-    # 10.1: 78 claves exactas en FALLBACK_THRESHOLDS vs PARAM_OPERATIONAL_GUIDE
+    # 10.1: 100 claves exactas en FALLBACK_THRESHOLDS vs PARAM_OPERATIONAL_GUIDE
     fb_keys = {f"{c}.{p}" for c, d in FALLBACK_THRESHOLDS.items() for p in d}
     cat_keys = set(PARAM_OPERATIONAL_GUIDE.keys())
     assert fb_keys == cat_keys, f"Discrepancia en FALLBACK_THRESHOLDS: {fb_keys ^ cat_keys}"
-    assert len(fb_keys) == 99, f"Se esperaban 99 claves, encontradas {len(fb_keys)}"
+    assert len(fb_keys) == 100, f"Se esperaban 100 claves, encontradas {len(fb_keys)}"
 
     # 10.2: Invarianza al Basis (BTCUSDT vs BTCUSD) en compute_indicators
     base_c = [70000.0 + i * 5.0 for i in range(60)]
@@ -752,7 +752,7 @@ def run_all_tests() -> None:
         assert chosen == 1
         assert int(b_inst.state_visits[st_key]) == 10, "choose_action inflo state_visits sin despachar ni cerrar orden"
 
-    print("✅ TEST 10 (Invariantes Etapa 22+F1+F2: 99 Umbrales, Basis BTCUSD/BTCUSDT, Sync Idempotente y No-Inflación state_visits): PASÓ.")
+    print("✅ TEST 10 (Invariantes Etapa 22+F1+F2: 100 Umbrales, Basis BTCUSD/BTCUSDT, Sync Idempotente y No-Inflación state_visits): PASÓ.")
 
     # -------------------------------------------------------------------------
     # ESCENARIO 11: Normalización Canónica 1k-sat, Aislamiento de Umbrales por Entorno y Shadow Trailing Lock
