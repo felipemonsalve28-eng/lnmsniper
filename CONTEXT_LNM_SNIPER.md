@@ -2,18 +2,18 @@
 ## LNM SNIPER v7.3+ (`C1_STREAK3_24H_INV` + Modo B `LIQ_BIAS_ONLY`)
 
 > **Memoria Técnica Estructural para Agentes en Antigravity**  
-> **Última Actualización:** `2026-11-24`  
-> **HEAD Auditado Base:** `c6d5690` (`master` sincronizada con `origin/master`)  
+> **Última Actualización:** `2026-11-25`  
+> **HEAD Auditado Base:** `2e67c38` (`master` + Fase 1B Multi-TF/Super-Pools/TD9/VWAP)  
 > **Gobernanza y Reglas:** [`AGENTS.md`](AGENTS.md) · [`simulation/AGENTS.md`](simulation/AGENTS.md) · [`AGENT_MAINTENANCE_DIRECTIVE.md`](AGENT_MAINTENANCE_DIRECTIVE.md)
 
 ---
 
 ## 1. ESTADO ACTUAL DEL SISTEMA (EXECUTIVE SNAPSHOT)
 
-| Componente | Estado Vigente (`2026-11-24`) | Referencia / Evidencia |
+| Componente | Estado Vigente (`2026-11-25`) | Referencia / Evidencia |
 | :--- | :--- | :--- |
-| **Rama y Remoto** | `master` en `c6d5690` (`docs(readme)`) tras auditoría integral `20b205d` + `6578e6d` + `876c3c6` sobre `c2bdb19` | `https://github.com/felipemonsalve28-eng/lnmsniper.git` |
-| **Edición / Política** | **`C1_STREAK3_24H_INV` + Modo B `LIQ_BIAS_ONLY`**: política determinista simétrica inmutable en RAM, `E2_FE_OFF`, `C1_SHORT_EXP_PHYS`, freno `C1_STREAK3_24H` | [`lnm_sniper_v6_advanced.py`](lnm_sniper_v6_advanced.py), [`sniper_perception_sats_core.py`](sniper_perception_sats_core.py) |
+| **Rama y Remoto** | `master` tras `2e67c38` + **Fase 1B** (infraestructura pura Multi-TF + Super-Pools + TD9 + VWAP O(1), `P95 = 0.0233 ms`) | [`liquidity_radar.py`](liquidity_radar.py), [`lnm_sniper_v6_advanced.py`](lnm_sniper_v6_advanced.py) |
+| **Edición / Política** | **`C1_STREAK3_24H_INV` + Modo B `LIQ_BIAS_ONLY`**: política determinista simétrica inmutable en RAM, `E2_FE_OFF`, `C1_SHORT_EXP_PHYS`, freno `C1_STREAK3_24H`, `STRUCTURAL_TD9_TRAILING_ENABLED=False` | [`lnm_sniper_v6_advanced.py`](lnm_sniper_v6_advanced.py), [`sniper_perception_sats_core.py`](sniper_perception_sats_core.py) |
 | **Límite de Posiciones** | Máximo **`5`** posiciones concurrentes tanto en `mainnet` como en `testnet` (`Config.MAX_CONCURRENT_TRADES = 5`) | [`lnm_sniper_v6_advanced.py`](lnm_sniper_v6_advanced.py) |
 | **Guardián P0 & Riesgo** | `HardFloorGuardian` (`75%` -> `88%`), `BASE_RISK_PCT_STD=0.0075`, `RECOVERY_ENTER_DD=0.035`, `DD_THROTTLE_HALT_PCT=0.045`, `MAX_DD_GUARD_PCT=0.052`, `TREND_SL_FLOOR_PCT=0.0065`, `SHORT_EXP_MIN_DSL=0.006505` | [`guardian_execution_core.py`](guardian_execution_core.py), [`lnm_sniper_v6_advanced.py`](lnm_sniper_v6_advanced.py) |
 | **Módulos Apagados / Modo B** | `ENABLE_HYBRID_HEDGE=False`, `FE_OFF_TREND=True`, `limit_execution.enabled=0`, `liquidity_radar.enabled=1`, `liquidity_radar.shadow_only=0`, `liquidity_radar.opposite_wall_enabled=0` | [`config/learning_thresholds.json`](config/learning_thresholds.json), [`liquidity_radar.py`](liquidity_radar.py) |
@@ -61,15 +61,16 @@
 
 Consulta este índice verificado por AST antes de abrir cualquier módulo con `read_file`:
 
-- **[`lnm_sniper_v6_advanced.py`](lnm_sniper_v6_advanced.py) (`4806L`):** `_evaluate_liquidity_from_mtf:L72-105`, `Config:L111-293`, `load_saved_credentials:L306-355`, `APIHealthMonitor:L361-403`, `MultiTimeframeCache:L409-591`, `calc_ema:L597-607`, `_normalize_ohlc_basis:L610-624`, `compute_indicators:L627-733`, `_build_indicator_prefix_state:L736-845`, `compute_indicators_from_prefix:L848-957`, `AutonomousGoalBrain:L963-2067`, `_clean_numbers:L2073-2080`, `LNMarketsClient:L2083-2381`, `compute_account_equity:L2387-2399`, `compute_effective_risk:L2402-2414`, `infer_adopted_trade:L2417-2466`, `calculate_strategy_order_params:L2469-2480`, `confirm_and_close_trade:L2483-2503`, `confirm_and_update_stoploss:L2506-2520`, `enforce_concurrency_cap:L2523-2540`, `compute_live_edge:L2543-2655`, `execute_strategy_guardian:L2658-2899`, `evaluate_open_trades_online:L2902-2970`, `compute_situational_order_params:L2973-3078`, `evaluate_system_mode:L3081-3132`, `_is_hybrid_hedge_active:L3135-3141`, `reconcile_portfolio_with_hedges:L3144-3209`, `run_integrated_guardian_and_hedge_cycle:L3212-3318`, `record_shadow_order:L3321-3330`, `update_shadow_trades:L3333-3475`, `process_settlement_queue:L3478-3601`, `manage_open_positions_and_hedges:L3604-3646`, `evaluate_and_dispatch_entries:L3649-4200`, `_parse_cli_env:L4203-4212`, `_print_cli_usage:L4215-4224`, `main:L4227-4802`.
+- **[`lnm_sniper_v6_advanced.py`](lnm_sniper_v6_advanced.py) (`4939L`):** `_evaluate_liquidity_from_mtf:L75-108`, `Config:L114-299`, `load_saved_credentials:L312-361`, `APIHealthMonitor:L367-409`, `MultiTimeframeCache:L415-702`, `calc_ema:L708-718`, `_normalize_ohlc_basis:L721-735`, `compute_indicators:L738-844`, `_build_indicator_prefix_state:L847-956`, `compute_indicators_from_prefix:L959-1068`, `AutonomousGoalBrain:L1074-2178`, `_clean_numbers:L2184-2191`, `LNMarketsClient:L2194-2492`, `compute_account_equity:L2498-2510`, `compute_effective_risk:L2513-2525`, `infer_adopted_trade:L2528-2577`, `calculate_strategy_order_params:L2580-2591`, `confirm_and_close_trade:L2594-2614`, `confirm_and_update_stoploss:L2617-2631`, `enforce_concurrency_cap:L2634-2651`, `compute_live_edge:L2654-2766`, `execute_strategy_guardian:L2769-3032`, `evaluate_open_trades_online:L3035-3103`, `compute_situational_order_params:L3106-3211`, `evaluate_system_mode:L3214-3265`, `_is_hybrid_hedge_active:L3268-3274`, `reconcile_portfolio_with_hedges:L3277-3342`, `run_integrated_guardian_and_hedge_cycle:L3345-3451`, `record_shadow_order:L3454-3463`, `update_shadow_trades:L3466-3608`, `process_settlement_queue:L3611-3734`, `manage_open_positions_and_hedges:L3737-3779`, `evaluate_and_dispatch_entries:L3782-4333`, `_parse_cli_env:L4336-4345`, `_print_cli_usage:L4348-4357`, `main:L4360-4935`.
 - **[`guardian_execution_core.py`](guardian_execution_core.py) (`733L`):** `FileLockContext:L39-107`, `AtomicBrainStore:L110-217`, `LatencyTelemetry:L220-295`, `InFlightOrderGuard:L298-380`, `HardFloorGuardian:L383-419`, `TokenBucket:L422-449`, `ResilientLNMClient:L452-544`, `rotate_log_file_if_needed:L547-564`, `_CompatNumpy:L673-729`.
 - **[`sniper_perception_sats_core.py`](sniper_perception_sats_core.py) (`823L`):** `MarketRegimeClassifier:L16-138`, `ShortTermPerceptionEngine:L141-324`, `SatsExpectancyGate:L327-795`, `sync_brain_floor_with_reality:L798-814`.
 - **[`side_streak_brake.py`](side_streak_brake.py) (`345L`):** `SideStreakBrakeStore:L29-345`.
-- **[`liquidity_radar.py`](liquidity_radar.py) (`706L`):** `LiquidityConfig:L26-76`, `LiquidityPool:L80-93`, `detect_causal_swings:L156-210`, `cluster_swings_to_pools:L213-248`, `filter_unmitigated_pools:L251-289`, `compute_opposite_pool_room:L292-348`, `compute_liquidity_bias:L351-379`, `LiquidityRadar:L382-706`.
+- **[`liquidity_radar.py`](liquidity_radar.py) (`1472L`):** `LiquidityConfig:L41-95`, `LiquidityPool:L99-120`, `SuperPool:L124-134`, `fuse_super_pools:L145-274`, `TD9PerfectionTracker:L277-391`, `SessionVWAPAccumulator:L394-456`, `DeterministicMTFAggregator:L459-707`, `detect_causal_swings:L770-824`, `cluster_swings_to_pools:L827-862`, `filter_unmitigated_pools:L865-903`, `compute_opposite_pool_room:L906-962`, `compute_liquidity_bias:L965-993`, `LiquidityRadar:L996-1418`, `compute_structural_td9_trailing_stop:L1421-1472`.
 - **[`limit_execution_manager.py`](limit_execution_manager.py) (`623L`):** `LimitExecutionConfig:L32-66`, `round_to_tick:L69-83`, `should_route_limit:L86-139`, `compute_limit_entry_plan:L142-262`, `LimitExecutionManager:L265-623`.
 - **[`learning_thresholds_manager.py`](learning_thresholds_manager.py) (`1227L`):** `resolve_thresholds_path_for_env:L42-54`, `LearningThresholdsManager:L933-1204`, `get_thresholds_manager:L1212-1227`.
 - **[`learning_quality_supervisor.py`](learning_quality_supervisor.py) (`1137L`):** `LearningQualitySupervisor:L104-1051`, `AtomicTelemetryDispatcher:L1054-1137`.
-- **[`simulation/sim_training_environment.py`](simulation/sim_training_environment.py) (`1398L`):** `PrecomputedMarketFeed:L42-92`, `SimTrainingEnvironment:L95-1398`.
+- **[`simulation/sim_training_environment.py`](simulation/sim_training_environment.py) (`1468L`):** `PrecomputedMarketFeed:L49-140`, `SimTrainingEnvironment:L143-1468`.
+- **[`simulation/sim_market_feed.py`](simulation/sim_market_feed.py) (`401L`):** `Candle:L26-55`, `MTFAggregator:L58-189`, `SimMarketFeed:L192-401`.
 - **[`simulation/sim_lnm_exchange.py`](simulation/sim_lnm_exchange.py) (`501L`):** `SimLNMExchange:L19-501`.
 
 ---
@@ -102,7 +103,12 @@ Consulta este índice verificado por AST antes de abrir cualquier módulo con `r
 
 - **Etapa 29 — Actualización Completa de `README.md`, Contexto y Sistema de Agentes Antigravity:**
   - Commit `c6d5690` (`docs(readme)`): Reemplazo integral de [`README.md`](README.md) acorde a `C1_STREAK3_24H_INV` y publicado en `origin/master`.
-  - Optimización completa de [`AGENTS.md`](AGENTS.md), [`simulation/AGENTS.md`](simulation/AGENTS.md), [`AGENT_MAINTENANCE_DIRECTIVE.md`](AGENT_MAINTENANCE_DIRECTIVE.md), [`CONTEXT_LNM_SNIPER.md`](CONTEXT_LNM_SNIPER.md), los `4` skills modulares en `.agents/skills/` (`wsl-verify`, `sniper-subagents`, `quant-math-audit`, `surgical-python-edit`) y el script ejecutable [`.agents/skills/wsl-verify/scripts/verify_repo.py`](.agents/skills/wsl-verify/scripts/verify_repo.py).
+  - Optimización completa de [`AGENTS.md`](AGENTS.md), [`simulation/AGENTS.md`](simulation/AGENTS.md), [`AGENT_MAINTENANCE_DIRECTIVE.md`](AGENT_MAINTENANCE_DIRECTIVE.md), [`CONTEXT_LNM_SNIPER.md`](CONTEXT_LNM_SNIPER.md), los `4` skills modulares en `.agents/skills/` (`wsl-verify`, `sniper-subagents`, `quant-math-audit`, `surgical-python-edit`) y el script ejecutable [`.agents/skills/wsl-verify/scripts/verify_repo.py`](.agents/skills/wsl-verify/scripts/verify_repo.py) (`d0d86ee`, `2e67c38`).
+
+- **Etapa 30 — Fase 1B (`feat(core)`): Capa Pura Multi-TF + Super-Pools + TD9 Perfection + Session VWAP O(1):**
+  - [`DeterministicMTFAggregator`](liquidity_radar.py) en [`MultiTimeframeCache`](lnm_sniper_v6_advanced.py), [`MTFAggregator`](simulation/sim_market_feed.py) y [`PrecomputedMarketFeed`](simulation/sim_training_environment.py): fuente única `1m` construyendo `15m`, `30m`, `45m`, `1h` y `4h` en RAM mediante cubetas UTC fijas `ts // (tf_min * 60)` sin llamadas extra a la API.
+  - Jerarquía de pools (`15m: 1.00`, `30m: 1.20`, `45m: 1.35`, `1h: 1.60`, `4h: 2.00`), fusión `fuse_super_pools` (`15m`/`30m` dentro de `0.25*ATR` de `1h`/`4h`), `TD9PerfectionTracker` causal O(1) en `1m`/`5m`/`15m`, `SessionVWAPAccumulator` O(1) reiniciado a las `00:00 UTC` (`±1σ`, `±2σ`), y hook de trailing estructural `compute_structural_td9_trailing_stop` detrás del flag `structural_td9_trailing_enabled=False`.
+  - **Certificación observada:** `11/11` suites PASS (`test_liquidity_radar.py` `13/13` con `P95 = 0.0233 ms < 0.300 ms`), `verify_repo.py --mode oos-fold1` (`N=130`, `Net=+26,933`, `PF=1.73`, `MaxDD=4.10%`, `M16=+31,746 (52)`), y paridad exacta en `M02`/`M12`/`M16`.
 
 ---
 

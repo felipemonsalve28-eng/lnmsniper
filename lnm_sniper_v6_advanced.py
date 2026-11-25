@@ -49,10 +49,13 @@ from adaptive_controller import AdaptiveHedgeController
 from learning_thresholds_manager import get_thresholds_manager
 from learning_quality_supervisor import LearningQualitySupervisor, AtomicTelemetryDispatcher
 from liquidity_radar import (
+    DeterministicMTFAggregator,
     LiquidityConfig,
     LiquidityRadar,
+    TF_POOL_WEIGHTS,
     compute_liquidity_bias,
     compute_opposite_pool_room,
+    compute_structural_td9_trailing_stop,
 )
 
 PERCEPTION_ENGINE = ShortTermPerceptionEngine()
@@ -121,6 +124,7 @@ class Config:
     TREND_SL_FLOOR_PCT = 0.0065
     SHORT_EXP_PHYS_HOLD = True
     SHORT_EXP_MIN_DSL = 0.006505
+    STRUCTURAL_TD9_TRAILING_ENABLED = False
     STREAK3_24H_ENABLED = True
     STREAK3_MAX_LOSSES = 3
     STREAK3_PAUSE_SEC = 86400.0
@@ -248,6 +252,7 @@ class Config:
             cls.TREND_SL_FLOOR_PCT = 0.0065
             cls.SHORT_EXP_PHYS_HOLD = True
             cls.SHORT_EXP_MIN_DSL = 0.006505
+            cls.STRUCTURAL_TD9_TRAILING_ENABLED = False
             cls.BASE_RISK_PCT_STD = 0.0075
             cls.RECOVERY_ENTER_DD = 0.035
             cls.RECOVERY_EXIT_DD = 0.025
@@ -277,6 +282,7 @@ class Config:
             cls.TREND_SL_FLOOR_PCT = 0.0065
             cls.SHORT_EXP_PHYS_HOLD = True
             cls.SHORT_EXP_MIN_DSL = 0.006505
+            cls.STRUCTURAL_TD9_TRAILING_ENABLED = False
             cls.BASE_RISK_PCT_STD = 0.0075
             cls.RECOVERY_ENTER_DD = 0.035
             cls.RECOVERY_EXIT_DD = 0.025
@@ -410,15 +416,58 @@ class MultiTimeframeCache:
     def __init__(self):
         self.session = ResilientLNMClient.build_session("LNMSniper/7.3-MTFCache")
         self.disk_path = Config.SHARED_MTF_DISK_CACHE
+        self.ram_aggregator = DeterministicMTFAggregator(max_history=max(256, int(Config.CANDLE_LIMIT)))
         self.cache = {
-            "1m":  {"last": 0.0, "ttl": Config.TTL_1M,  "period": 60,    "data": None, "vol": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
-            "5m":  {"last": 0.0, "ttl": Config.TTL_5M,  "period": 300,   "data": None, "vol": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
-            "15m": {"last": 0.0, "ttl": Config.TTL_15M, "period": 900,   "data": None, "vol": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
-            "1h":  {"last": 0.0, "ttl": Config.TTL_1H,  "period": 3600,  "data": None, "vol": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
-            "4h":  {"last": 0.0, "ttl": Config.TTL_4H,  "period": 14400, "data": None, "vol": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
-            "1d":  {"last": 0.0, "ttl": Config.TTL_1D,  "period": 86400, "data": None, "vol": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
+            "1m":  {"last": 0.0, "ttl": Config.TTL_1M,  "period": 60,    "data": None, "vol": None, "ts": None, "open": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
+            "5m":  {"last": 0.0, "ttl": Config.TTL_5M,  "period": 300,   "data": None, "vol": None, "ts": None, "open": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
+            "15m": {"last": 0.0, "ttl": Config.TTL_15M, "period": 900,   "data": None, "vol": None, "ts": None, "open": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
+            "30m": {"last": 0.0, "ttl": Config.TTL_15M * 2.0, "period": 1800, "data": None, "vol": None, "ts": None, "open": None, "prefix": None, "ind_cache": None, "ind_price": 0.0, "ram_derived": True},
+            "45m": {"last": 0.0, "ttl": Config.TTL_15M * 3.0, "period": 2700, "data": None, "vol": None, "ts": None, "open": None, "prefix": None, "ind_cache": None, "ind_price": 0.0, "ram_derived": True},
+            "1h":  {"last": 0.0, "ttl": Config.TTL_1H,  "period": 3600,  "data": None, "vol": None, "ts": None, "open": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
+            "4h":  {"last": 0.0, "ttl": Config.TTL_4H,  "period": 14400, "data": None, "vol": None, "ts": None, "open": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
+            "1d":  {"last": 0.0, "ttl": Config.TTL_1D,  "period": 86400, "data": None, "vol": None, "ts": None, "open": None, "prefix": None, "ind_cache": None, "ind_price": 0.0},
         }
         self._load_shared_disk_cache()
+
+    def push_1m_candle(self, ts, o, h, l, c, v=0.0, is_closed=True):
+        self.ram_aggregator.push_1m(ts, o, h, l, c, v=v, is_closed=is_closed)
+
+    def ingest_1m_ohlcv(self, ts_arr, o_arr, h_arr, l_arr, c_arr, v_arr=None, last_is_live=True):
+        self.ram_aggregator.ingest_1m_series(
+            ts_arr, o_arr, h_arr, l_arr, c_arr, v_seq=v_arr, last_is_live=last_is_live
+        )
+
+    def get_ram_candles(self, tf, include_forming=True):
+        return self.ram_aggregator.get_hlc_arrays(tf, include_forming=include_forming)
+
+    def get_ram_ohlcv(self, tf, include_forming=True):
+        return self.ram_aggregator.get_ohlcv(tf, include_forming=include_forming)
+
+    def get_session_vwap(self):
+        return self.ram_aggregator.get_session_vwap()
+
+    def get_td9_state(self):
+        return self.ram_aggregator.get_td9_state()
+
+    def get_structural_context(self, atr_ref, spot_price, radar=None, cfg=None):
+        rad = radar or LIQUIDITY_RADAR
+        conf = cfg or LiquidityConfig.from_thresholds(THRESHOLDS_MANAGER)
+        tf_ohlcv = {}
+        for _tf in ("15m", "30m", "45m", "1h", "4h"):
+            _o, _h, _l, _c, _v, _ts = self.ram_aggregator.get_ohlcv(_tf, include_forming=True)
+            if len(_c) > 0:
+                tf_ohlcv[_tf] = (_h, _l, _c, _ts)
+        hierarchy = rad.evaluate_multi_tf_hierarchy(
+            tf_ohlcv=tf_ohlcv,
+            atr_ref=atr_ref,
+            spot_price=spot_price,
+            config_override=conf,
+        )
+        return {
+            "hierarchy": hierarchy,
+            "td9": self.ram_aggregator.get_td9_state(),
+            "session_vwap": self.ram_aggregator.get_session_vwap(),
+        }
 
     def _load_shared_disk_cache(self):
         if not os.path.exists(self.disk_path):
@@ -432,16 +481,35 @@ class MultiTimeframeCache:
                 if tf in self.cache and isinstance(entry, dict):
                     ts = float(entry.get("last", 0.0))
                     if (now - ts) <= 900.0 and "h" in entry and "l" in entry and "c" in entry:
-                        self.cache[tf]["data"] = (
-                            np.array(entry["h"], dtype=np.float64),
-                            np.array(entry["l"], dtype=np.float64),
-                            np.array(entry["c"], dtype=np.float64),
-                        )
+                        h_arr = np.array(entry["h"], dtype=np.float64)
+                        l_arr = np.array(entry["l"], dtype=np.float64)
+                        c_arr = np.array(entry["c"], dtype=np.float64)
+                        self.cache[tf]["data"] = (h_arr, l_arr, c_arr)
+                        v_arr = None
                         if "v" in entry and entry["v"] is not None:
-                            self.cache[tf]["vol"] = np.array(entry["v"], dtype=np.float64)
+                            v_arr = np.array(entry["v"], dtype=np.float64)
+                            self.cache[tf]["vol"] = v_arr
+                        if "ts" in entry and entry["ts"] is not None:
+                            self.cache[tf]["ts"] = np.array(entry["ts"], dtype=np.float64)
+                        if "o" in entry and entry["o"] is not None:
+                            self.cache[tf]["open"] = np.array(entry["o"], dtype=np.float64)
                         self.cache[tf]["last"] = ts
                         self.cache[tf]["prefix"] = None
                         self.cache[tf]["ind_cache"] = None
+                        if (
+                            tf == "1m"
+                            and self.cache[tf]["ts"] is not None
+                            and self.cache[tf]["open"] is not None
+                        ):
+                            self.ingest_1m_ohlcv(
+                                self.cache[tf]["ts"],
+                                self.cache[tf]["open"],
+                                h_arr,
+                                l_arr,
+                                c_arr,
+                                v_arr=v_arr,
+                                last_is_live=True,
+                            )
         except Exception:
             pass
 
@@ -449,6 +517,8 @@ class MultiTimeframeCache:
         try:
             payload = {}
             for tf, item in self.cache.items():
+                if item.get("ram_derived"):
+                    continue
                 if item["data"] is not None:
                     h, l, c = item["data"]
                     entry_payload = {
@@ -459,6 +529,9 @@ class MultiTimeframeCache:
                     }
                     if item.get("vol") is not None:
                         entry_payload["v"] = item["vol"].tolist()
+                    if tf == "1m" and item.get("ts") is not None and item.get("open") is not None:
+                        entry_payload["ts"] = item["ts"].tolist()
+                        entry_payload["o"] = item["open"].tolist()
                     payload[tf] = entry_payload
             with FileLockContext(self.disk_path, exclusive=True, timeout=1.5):
                 tmp_p = f"{self.disk_path}.tmp.{os.getpid()}"
@@ -477,6 +550,32 @@ class MultiTimeframeCache:
     def _ensure_raw_candles(self, tf, current_lnm_price=0.0):
         now = time.time()
         item = self.cache[tf]
+        if tf in ("30m", "45m"):
+            if self.ram_aggregator.closed_count("1m") == 0 and self.cache["1m"]["data"] is None:
+                self._ensure_raw_candles("1m", current_lnm_price)
+            h_ram, l_ram, c_ram = self.get_ram_candles(tf, include_forming=True)
+            if len(c_ram) > 0:
+                item["data"] = (h_ram, l_ram, c_ram)
+                _, _, _, _, v_ram, _ = self.ram_aggregator.get_ohlcv(tf, include_forming=True)
+                item["vol"] = v_ram
+                item["last"] = now
+                return item["data"]
+            if self.cache["1m"]["data"] is not None:
+                return self.cache["1m"]["data"]
+            if current_lnm_price > 0:
+                p = float(current_lnm_price)
+                synth_c = np.full(Config.CANDLE_LIMIT, p, dtype=np.float64)
+                return synth_c * 1.0012, synth_c * 0.9988, synth_c
+            raise RuntimeError(f"Fallo crítico obteniendo velas TF {tf}: sin fuente 1m")
+
+        if tf in ("15m", "1h", "4h") and self.ram_aggregator.has_enough_bars(tf, min_bars=Config.CANDLE_LIMIT):
+            h_ram, l_ram, c_ram = self.get_ram_candles(tf, include_forming=True)
+            item["data"] = (h_ram, l_ram, c_ram)
+            _, _, _, _, v_ram, _ = self.ram_aggregator.get_ohlcv(tf, include_forming=True)
+            item["vol"] = v_ram
+            item["last"] = now
+            return item["data"]
+
         crossed_boundary = (int(now) // item["period"]) != (int(item["last"]) // item["period"])
 
         if item["data"] is None or (now - item["last"]) >= item["ttl"] or crossed_boundary:
@@ -562,12 +661,18 @@ class MultiTimeframeCache:
             data = r.json()
             if len(data) < 50:
                 raise RuntimeError("Respuesta incompleta de Binance")
+            ts_arr = np.array([float(c[0]) / 1000.0 for c in data], dtype=np.float64)
+            o_arr = np.array([float(c[1]) for c in data], dtype=np.float64)
             h = np.array([float(c[2]) for c in data], dtype=np.float64)
             l = np.array([float(c[3]) for c in data], dtype=np.float64)
             c = np.array([float(c[4]) for c in data], dtype=np.float64)
             v = np.array([float(c[5]) for c in data], dtype=np.float64)
             if tf in self.cache:
                 self.cache[tf]["vol"] = v
+                self.cache[tf]["ts"] = ts_arr
+                self.cache[tf]["open"] = o_arr
+            if tf == "1m":
+                self.ingest_1m_ohlcv(ts_arr, o_arr, h, l, c, v, last_is_live=True)
             return h, l, c, v
         except Exception:
             map_bybit = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}
@@ -578,12 +683,18 @@ class MultiTimeframeCache:
             rows = list(reversed(r.json()["result"]["list"]))
             if len(rows) < 50:
                 raise RuntimeError("Respuesta incompleta de Bybit")
+            ts_arr = np.array([float(c[0]) / 1000.0 for c in rows], dtype=np.float64)
+            o_arr = np.array([float(c[1]) for c in rows], dtype=np.float64)
             h = np.array([float(c[2]) for c in rows], dtype=np.float64)
             l = np.array([float(c[3]) for c in rows], dtype=np.float64)
             c = np.array([float(c[4]) for c in rows], dtype=np.float64)
             v = np.array([float(c[5]) for c in rows], dtype=np.float64)
             if tf in self.cache:
                 self.cache[tf]["vol"] = v
+                self.cache[tf]["ts"] = ts_arr
+                self.cache[tf]["open"] = o_arr
+            if tf == "1m":
+                self.ingest_1m_ohlcv(ts_arr, o_arr, h, l, c, v, last_is_live=True)
             return h, l, c, v
 
     def _fetch_remote(self, tf):
@@ -2657,7 +2768,8 @@ def compute_live_edge(
 
 def execute_strategy_guardian(
     client, brain, trade, ind_5m, ind_15m, trade_meta, system_mode,
-    edge_score=0.0, perception=None, current_dd_pct=0.0, is_hedged=False
+    edge_score=0.0, perception=None, current_dd_pct=0.0, is_hedged=False,
+    structural_td9_trailing_enabled=None
 ):
     try:
         tid = str(trade["id"])
@@ -2879,11 +2991,30 @@ def execute_strategy_guardian(
                 pass
 
         step_min = max(12.0, 0.15 * atr)
+        use_struct_td9 = (
+            bool(getattr(Config, "STRUCTURAL_TD9_TRAILING_ENABLED", False))
+            if structural_td9_trailing_enabled is None
+            else bool(structural_td9_trailing_enabled)
+        )
+        struct_sl = None
+        if use_struct_td9 and isinstance(perception, dict):
+            struct_sl = compute_structural_td9_trailing_stop(
+                side_is_long=(side == "buy"),
+                spot_price=lnm_price,
+                current_sl=current_sl,
+                entry_price=entry,
+                atr=atr,
+                td9_state=perception.get("td9"),
+                hierarchy_pools=perception.get("structural_pools"),
+                enabled=True,
+            )
         if side == "buy":
             be_floor = entry + profit_lock_offset
             be_floor_int = int(math.ceil(be_floor))
             raw_sl = max(float(be_floor_int), lnm_price - slack)
             target_sl = int(round(min(raw_sl, lnm_price - max(22.0, 0.25 * atr))))
+            if struct_sl is not None:
+                target_sl = max(target_sl, int(round(min(struct_sl, lnm_price - max(22.0, 0.25 * atr)))))
             if target_sl >= be_floor_int and target_sl > (liq + 15.0) and target_sl > int(round(current_sl + step_min)):
                 confirm_and_update_stoploss(client, brain, tid, target_sl, side, entry, fee_offset, trade_meta)
         elif side == "sell":
@@ -2891,6 +3022,8 @@ def execute_strategy_guardian(
             be_ceil_int = int(math.floor(be_ceil))
             raw_sl = min(float(be_ceil_int), lnm_price + slack)
             target_sl = int(round(max(raw_sl, lnm_price + max(22.0, 0.25 * atr))))
+            if struct_sl is not None:
+                target_sl = min(target_sl, int(round(max(struct_sl, lnm_price + max(22.0, 0.25 * atr)))))
             liq_ok = (liq <= 0.0) or (target_sl < (liq - 15.0))
             if target_sl <= be_ceil_int and liq_ok and (current_sl == 0.0 or target_sl < int(round(current_sl - step_min))):
                 confirm_and_update_stoploss(client, brain, tid, target_sl, side, entry, fee_offset, trade_meta)

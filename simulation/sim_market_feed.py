@@ -19,7 +19,7 @@ from guardian_execution_core import compat_np as np
 from lnm_sniper_v6_advanced import compute_indicators
 from sniper_perception_sats_core import MarketRegimeClassifier, ShortTermPerceptionEngine
 from learning_thresholds_manager import get_thresholds_manager
-from liquidity_radar import LiquidityConfig, LiquidityRadar
+from liquidity_radar import DeterministicMTFAggregator, LiquidityConfig, LiquidityRadar
 
 
 @dataclass
@@ -64,6 +64,8 @@ class MTFAggregator:
     TIMEFRAMES = {
         "5m": 5 * 60,
         "15m": 15 * 60,
+        "30m": 30 * 60,
+        "45m": 45 * 60,
         "1h": 60 * 60,
         "4h": 4 * 60 * 60,
     }
@@ -73,8 +75,11 @@ class MTFAggregator:
         self.history_1m: collections.deque = collections.deque(maxlen=self.MAX_HISTORY)
         self.history_5m: collections.deque = collections.deque(maxlen=self.MAX_HISTORY)
         self.history_15m: collections.deque = collections.deque(maxlen=self.MAX_HISTORY)
+        self.history_30m: collections.deque = collections.deque(maxlen=self.MAX_HISTORY)
+        self.history_45m: collections.deque = collections.deque(maxlen=self.MAX_HISTORY)
         self.history_1h: collections.deque = collections.deque(maxlen=self.MAX_HISTORY)
         self.history_4h: collections.deque = collections.deque(maxlen=self.MAX_HISTORY)
+        self.ram_aggregator = DeterministicMTFAggregator(max_history=self.MAX_HISTORY)
 
         # Velas en construcción
         self.current_bar: Dict[str, Optional[Candle]] = {tf: None for tf in self.TIMEFRAMES}
@@ -83,6 +88,9 @@ class MTFAggregator:
     def push_1m_candle(self, c: Candle) -> None:
         """Incorpora una nueva vela de 1m y actualiza los agregados superiores."""
         self.history_1m.append(c)
+        self.ram_aggregator.push_1m(
+            c.timestamp, c.open, c.high, c.low, c.close, c.volume, is_closed=True
+        )
 
         for tf, duration in self.TIMEFRAMES.items():
             bucket_start = (c.timestamp // duration) * duration
@@ -114,11 +122,27 @@ class MTFAggregator:
             return self.history_5m
         elif tf == "15m":
             return self.history_15m
+        elif tf == "30m":
+            return self.history_30m
+        elif tf == "45m":
+            return self.history_45m
         elif tf == "1h":
             return self.history_1h
         elif tf == "4h":
             return self.history_4h
         return self.history_1m
+
+    def get_session_vwap(self) -> Dict[str, Any]:
+        return self.ram_aggregator.get_session_vwap()
+
+    def get_td9_state(self) -> Dict[str, Dict[str, Any]]:
+        return self.ram_aggregator.get_td9_state()
+
+    def get_ram_candles(self, tf: str, include_forming: bool = True) -> Tuple[Any, Any, Any]:
+        return self.ram_aggregator.get_hlc_arrays(tf, include_forming=include_forming)
+
+    def get_ram_ohlcv(self, tf: str, include_forming: bool = True) -> Tuple[Any, Any, Any, Any, Any, float]:
+        return self.ram_aggregator.get_ohlcv(tf, include_forming=include_forming)
 
     def get_arrays(self, tf: str) -> Tuple[Any, Any, Any]:
         """Extrae arrays NumPy (highs, lows, closes) incluyendo la vela en curso."""
@@ -270,6 +294,38 @@ class SimMarketFeed:
             "regime_info": reg_info,
             "perception": perception,
             "timestamp": now_ts,
+        }
+
+    def get_session_vwap(self) -> Dict[str, Any]:
+        return self.aggregator.get_session_vwap()
+
+    def get_td9_state(self) -> Dict[str, Dict[str, Any]]:
+        return self.aggregator.get_td9_state()
+
+    def get_ram_candles(self, tf: str, include_forming: bool = True) -> Tuple[Any, Any, Any]:
+        return self.aggregator.get_ram_candles(tf, include_forming=include_forming)
+
+    def get_structural_context(
+        self, atr_ref: Optional[float] = None, spot_price: Optional[float] = None
+    ) -> Dict[str, Any]:
+        liq_cfg = self.liquidity_config_override or LiquidityConfig.from_thresholds(get_thresholds_manager())
+        spot = float(spot_price if spot_price is not None else (self.last_candle.close if self.last_candle else 0.0))
+        atr_val = float(atr_ref) if atr_ref is not None else max(1.0, float(self.get_indicators("15m").get("atr") or 1.0))
+        tf_ohlcv = {}
+        for _tf in ("15m", "30m", "45m", "1h", "4h"):
+            _o, _h, _l, _c, _v, _ts = self.aggregator.get_ram_ohlcv(_tf, include_forming=True)
+            if len(_c) > 0:
+                tf_ohlcv[_tf] = (_h, _l, _c, _ts)
+        hierarchy = self.liquidity_radar.evaluate_multi_tf_hierarchy(
+            tf_ohlcv=tf_ohlcv,
+            atr_ref=atr_val,
+            spot_price=spot,
+            config_override=liq_cfg,
+        )
+        return {
+            "hierarchy": hierarchy,
+            "td9": self.aggregator.get_td9_state(),
+            "session_vwap": self.aggregator.get_session_vwap(),
         }
 
     @staticmethod

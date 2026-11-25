@@ -29,7 +29,14 @@ from portfolio_hedge import PortfolioHedgeCoordinator
 from predictive_hedge import PredictiveHedgeEngine
 from guardian_execution_core import HardFloorGuardian, compat_np as np
 from sniper_perception_sats_core import SatsExpectancyGate, MarketRegimeClassifier
-from liquidity_radar import LiquidityConfig, compute_liquidity_bias, compute_opposite_pool_room
+from liquidity_radar import (
+    DeterministicMTFAggregator,
+    LiquidityConfig,
+    LiquidityRadar,
+    compute_liquidity_bias,
+    compute_opposite_pool_room,
+    compute_structural_td9_trailing_stop,
+)
 from limit_execution_manager import (
     LimitExecutionConfig,
     LimitExecutionManager,
@@ -60,6 +67,8 @@ class PrecomputedMarketFeed:
         self._cur_state = self.warmup_state
         self._idx = 0
         self.liquidity_config_override = liquidity_config_override
+        self.ram_aggregator = DeterministicMTFAggregator(max_history=300)
+        self.liquidity_radar = LiquidityRadar(liquidity_config_override)
 
     def load_candles(self, candles: Any) -> None:
         pass
@@ -77,6 +86,9 @@ class PrecomputedMarketFeed:
         self._idx += 1
         self.cursor += 1
         self.last_candle = c
+        self.ram_aggregator.push_1m(
+            c.timestamp, c.open, c.high, c.low, c.close, getattr(c, "volume", 0.0), is_closed=True
+        )
         self._cur_state = {
             "price": float(ind_5m["price"]),
             "ind_5m": ind_5m,
@@ -90,6 +102,42 @@ class PrecomputedMarketFeed:
 
     def get_perception_state(self) -> dict:
         return self._cur_state
+
+    def get_ram_candles(self, tf: str, include_forming: bool = True) -> Tuple[Any, Any, Any]:
+        return self.ram_aggregator.get_hlc_arrays(tf, include_forming=include_forming)
+
+    def get_ram_ohlcv(self, tf: str, include_forming: bool = True) -> Tuple[Any, Any, Any, Any, Any, float]:
+        return self.ram_aggregator.get_ohlcv(tf, include_forming=include_forming)
+
+    def get_session_vwap(self) -> Dict[str, Any]:
+        return self.ram_aggregator.get_session_vwap()
+
+    def get_td9_state(self) -> Dict[str, Dict[str, Any]]:
+        return self.ram_aggregator.get_td9_state()
+
+    def get_structural_context(
+        self, atr_ref: Optional[float] = None, spot_price: Optional[float] = None
+    ) -> Dict[str, Any]:
+        liq_cfg = self.liquidity_config_override or LiquidityConfig.from_thresholds(get_thresholds_manager())
+        spot = float(spot_price if spot_price is not None else self._cur_state.get("price", 0.0))
+        ind_15 = self._cur_state.get("ind_15m") or self._cur_state.get("ind_5m") or {}
+        atr_val = float(atr_ref) if atr_ref is not None else max(1.0, float(ind_15.get("atr") or 1.0))
+        tf_ohlcv = {}
+        for _tf in ("15m", "30m", "45m", "1h", "4h"):
+            _o, _h, _l, _c, _v, _ts = self.ram_aggregator.get_ohlcv(_tf, include_forming=True)
+            if len(_c) > 0:
+                tf_ohlcv[_tf] = (_h, _l, _c, _ts)
+        hierarchy = self.liquidity_radar.evaluate_multi_tf_hierarchy(
+            tf_ohlcv=tf_ohlcv,
+            atr_ref=atr_val,
+            spot_price=spot,
+            config_override=liq_cfg,
+        )
+        return {
+            "hierarchy": hierarchy,
+            "td9": self.ram_aggregator.get_td9_state(),
+            "session_vwap": self.ram_aggregator.get_session_vwap(),
+        }
 
 
 class SimTrainingEnvironment:
@@ -117,6 +165,7 @@ class SimTrainingEnvironment:
         deterministic_trend_policy: Optional[bool] = None,
         base_risk_pct_std: float = 0.0075,
         be_stage1_r: float = 0.80,
+        structural_td9_trailing_enabled: bool = False,
     ):
         self.candidate_brain_file = str(candidate_brain_file)
         self.candidate_hedge_file = str(candidate_hedge_file)
@@ -135,6 +184,7 @@ class SimTrainingEnvironment:
         self.streak3_24h = bool(streak3_24h)
         self.base_risk_pct_std = float(base_risk_pct_std)
         self.be_stage1_r = float(be_stage1_r)
+        self.structural_td9_trailing_enabled = bool(structural_td9_trailing_enabled)
         self.side_brake = SideStreakBrakeStore(
             env_mode="sim",
             persist_to_disk=False,
@@ -701,11 +751,27 @@ class SimTrainingEnvironment:
                     if close_pct >= trig_stage2:
                         live_meta["trail_stage2"] = True
 
+                    struct_sl = None
+                    if self.structural_td9_trailing_enabled and hasattr(self.feed, "get_structural_context"):
+                        _s_ctx = self.feed.get_structural_context(atr_ref=cur_atr, spot_price=float(c.close))
+                        struct_sl = compute_structural_td9_trailing_stop(
+                            side_is_long=is_long,
+                            spot_price=float(c.close),
+                            current_sl=cur_sl,
+                            entry_price=entry_p,
+                            atr=cur_atr,
+                            td9_state=_s_ctx.get("td9"),
+                            hierarchy_pools=_s_ctx.get("hierarchy"),
+                            enabled=True,
+                        )
+
                     if bool(live_meta.get("trail_stage2", False)):
                         if is_long:
                             floor_s2 = float(math.ceil(entry_p * (1.0 + stage2_floor_rate)))
                             raw_sl = max(floor_s2, float(c.close) - slack_px)
                             target_sl = float(round(min(raw_sl, float(c.close) - spot_buf), 2))
+                            if struct_sl is not None:
+                                target_sl = max(target_sl, float(round(min(struct_sl, float(c.close) - spot_buf), 2)))
                             if target_sl >= floor_s2 and target_sl > (liq_p + 15.0) and target_sl > (cur_sl + step_min):
                                 live_t["stoploss"] = target_sl
                                 live_meta["sl_is_trailing_lock"] = True
@@ -714,6 +780,8 @@ class SimTrainingEnvironment:
                             ceil_s2 = float(math.floor(entry_p * (1.0 - stage2_floor_rate)))
                             raw_sl = min(ceil_s2, float(c.close) + slack_px)
                             target_sl = float(round(max(raw_sl, float(c.close) + spot_buf), 2))
+                            if struct_sl is not None:
+                                target_sl = min(target_sl, float(round(max(struct_sl, float(c.close) + spot_buf), 2)))
                             liq_ok = (liq_p <= 0.0) or (target_sl < (liq_p - 15.0))
                             if target_sl <= ceil_s2 and liq_ok and (cur_sl <= 0.0 or target_sl < (cur_sl - step_min)):
                                 live_t["stoploss"] = target_sl
@@ -722,15 +790,17 @@ class SimTrainingEnvironment:
                     elif close_pct >= trig_stage1 and not bool(live_meta.get("sl_is_trailing_lock", False)):
                         if is_long:
                             be_floor = float(math.ceil(entry_p * (1.0 + profit_lock_rate)))
-                            if be_floor <= (float(c.close) - spot_buf) and be_floor > (liq_p + 15.0) and be_floor > (cur_sl + step_min):
-                                live_t["stoploss"] = be_floor
+                            cand_sl = max(be_floor, float(round(min(struct_sl, float(c.close) - spot_buf), 2))) if struct_sl is not None else be_floor
+                            if cand_sl <= (float(c.close) - spot_buf) and cand_sl > (liq_p + 15.0) and cand_sl > (cur_sl + step_min):
+                                live_t["stoploss"] = cand_sl
                                 live_meta["sl_is_trailing_lock"] = True
                                 live_meta["sl_locked"] = True
                         else:
                             be_ceil = float(math.floor(entry_p * (1.0 - profit_lock_rate)))
-                            liq_ok = (liq_p <= 0.0) or (be_ceil < (liq_p - 15.0))
-                            if be_ceil >= (float(c.close) + spot_buf) and liq_ok and (cur_sl <= 0.0 or be_ceil < (cur_sl - step_min)):
-                                live_t["stoploss"] = be_ceil
+                            cand_sl = min(be_ceil, float(round(max(struct_sl, float(c.close) + spot_buf), 2))) if struct_sl is not None else be_ceil
+                            liq_ok = (liq_p <= 0.0) or (cand_sl < (liq_p - 15.0))
+                            if cand_sl >= (float(c.close) + spot_buf) and liq_ok and (cur_sl <= 0.0 or cand_sl < (cur_sl - step_min)):
+                                live_t["stoploss"] = cand_sl
                                 live_meta["sl_is_trailing_lock"] = True
                                 live_meta["sl_locked"] = True
                 else:
