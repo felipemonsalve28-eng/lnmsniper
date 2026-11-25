@@ -763,6 +763,143 @@ class TestC1Streak324HProduction(unittest.TestCase):
         self.assertEqual(p_dry.returncode, 0, p_dry.stderr)
         self.assertIn("[DRY-CHECK OK]", p_dry.stdout)
 
+    def test_09_api_v3_camelcase_fee_reconciliation_and_stopout_consistency(self) -> None:
+        """Verifica parser camelCase API v3 (openingFee, closingFee, sumFundingFees) vs snake_case y cero doble descuento."""
+        st_key = "TREND_BULL|MID|LOW_EXP|BULL|FULL_BULL"
+        now_ts = 1720005000.0
+
+        def _run_settlement_case(trade_id, ct_payload, margin_val=22880, lev_val=100.0):
+            b_path = os.path.join(self.tmp_dir, f"v3_brain_{trade_id}.json")
+            brain = AutonomousGoalBrain(filename=b_path, explorer_mode=False, learning_enabled=False)
+            brain.active_trades[trade_id] = {
+                "action": 1,
+                "style": "TREND",
+                "side": ct_payload.get("side", "buy"),
+                "margin": margin_val,
+                "leverage": lev_val,
+                "state": st_key,
+                "entry_time": now_ts - 240.0,
+                "entry_q": 0.065,
+                "decision_price": float(ct_payload.get("entryPrice") or ct_payload.get("price") or 90000.0),
+            }
+            cli = _MockProdClient(balance=100000, closed_trades=[dict(ct_payload, id=trade_id)])
+            with redirect_stdout(io.StringIO()):
+                settled, _, _, _ = process_settlement_queue(
+                    cli,
+                    brain,
+                    [trade_id],
+                    st_key,
+                    now_ts,
+                    None,
+                    "NORMAL",
+                    0,
+                    1.0,
+                    0.0,
+                )
+            self.assertEqual(settled, 1)
+            return brain
+
+        # 1. Payload real camelCase de Signet API v3: 1822 + 1822 = 3644 sats (0.1595% RT), jamás fallback 4576 sats (0.20% RT)
+        b_v3 = _run_settlement_case(
+            "v3-active-close",
+            {
+                "side": "buy",
+                "margin": 22880,
+                "leverage": 100.0,
+                "entryPrice": 90000.0,
+                "exitPrice": 90200.0,
+                "pl": 5000,
+                "openingFee": 1822,
+                "closingFee": 1822,
+                "sumFundingFees": 0,
+            },
+            margin_val=22880,
+            lev_val=100.0,
+        )
+        self.assertEqual(b_v3.total_fees_paid_sats, 3644)
+        self.assertEqual(b_v3.realized_net_profit_sats, 1356)
+        self.assertEqual(b_v3.transition_audit_log[-1]["fee_sats"], 3644)
+        self.assertEqual(b_v3.transition_audit_log[-1]["net_realized_sats"], 1356)
+        self.assertFalse(b_v3.supervisor.fer_defense_active)
+
+        # 2. Stop-out camelCase con closingFee=0 y sumFundingFees=25 (cero doble descuento)
+        b_stop = _run_settlement_case(
+            "v3-stopout-close",
+            {
+                "side": "buy",
+                "margin": 22880,
+                "leverage": 100.0,
+                "entryPrice": 90000.0,
+                "exitPrice": 89500.0,
+                "pl": -12000,
+                "openingFee": 1822,
+                "closingFee": 0,
+                "sumFundingFees": 25,
+                "stoplossWi": True,
+            },
+            margin_val=22880,
+            lev_val=100.0,
+        )
+        self.assertEqual(b_stop.total_fees_paid_sats, 1847)
+        self.assertEqual(b_stop.realized_net_profit_sats, -13847)
+        self.assertEqual(b_stop.transition_audit_log[-1]["fee_sats"], 1847)
+        self.assertEqual(b_stop.transition_audit_log[-1]["net_realized_sats"], -13847)
+
+        # 3. Fees explícitos en cero (openingFee=0, closingFee=0) no deben caer al fallback sintético 0.20%
+        b_zero = _run_settlement_case(
+            "v3-zero-fee",
+            {
+                "side": "buy",
+                "margin": 1000,
+                "leverage": 20.0,
+                "entryPrice": 90000.0,
+                "exitPrice": 90500.0,
+                "pl": 500,
+                "openingFee": 0,
+                "closingFee": 0,
+                "sumFundingFees": 0,
+            },
+            margin_val=1000,
+            lev_val=20.0,
+        )
+        self.assertEqual(b_zero.total_fees_paid_sats, 0)
+        self.assertEqual(b_zero.realized_net_profit_sats, 500)
+
+        # 4. Compatibilidad retroactiva snake_case (opening_fee, closing_fee, sum_carry_fees)
+        b_snake = _run_settlement_case(
+            "v3-snake-case",
+            {
+                "side": "sell",
+                "margin": 1000,
+                "leverage": 20.0,
+                "price": 90000.0,
+                "pl": 500,
+                "opening_fee": 40,
+                "closing_fee": 40,
+                "sum_carry_fees": 5,
+            },
+            margin_val=1000,
+            lev_val=20.0,
+        )
+        self.assertEqual(b_snake.total_fees_paid_sats, 85)
+        self.assertEqual(b_snake.realized_net_profit_sats, 415)
+
+        # 5. Fallback sintético solo cuando faltan campos de comisión
+        b_fb = _run_settlement_case(
+            "v3-missing-fee-fallback",
+            {
+                "side": "buy",
+                "margin": 1000,
+                "leverage": 20.0,
+                "entryPrice": 90000.0,
+                "pl": 500,
+            },
+            margin_val=1000,
+            lev_val=20.0,
+        )
+        self.assertEqual(b_fb.total_fees_paid_sats, 40)
+        self.assertEqual(b_fb.realized_net_profit_sats, 460)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

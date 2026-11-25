@@ -1982,7 +1982,7 @@ class AutonomousGoalBrain:
         exact_fee_sats=0, pl_includes_fees=False,
         funding_fee_sats=0, slippage_sats=0,
         trade_id=None, mae_sats=0.0, mfe_sats=0.0, duration_ticks=0.0,
-        predicted_q_entry=None, freeze_q_table=False
+        predicted_q_entry=None, freeze_q_table=False, exact_fee_is_explicit=False
     ):
         """
         Función de Recompensa de Acumulación Real de Satoshis (Sección 4):
@@ -2031,8 +2031,8 @@ class AutonomousGoalBrain:
 
         taker_rate = self.thresholds.get_float("fees", "taker_fee_rate", Config.TAKER_FEE)
         taker_fee_sats = (
-            int(exact_fee_sats)
-            if int(exact_fee_sats or 0) > 0
+            max(0, int(exact_fee_sats))
+            if (exact_fee_is_explicit or int(exact_fee_sats or 0) > 0)
             else max(2, int(round(float(margin_used) * float(lev_used) * (2.0 * taker_rate))))
         )
         funding_sats = int(round(float(funding_fee_sats or 0)))
@@ -2495,6 +2495,42 @@ class LNMarketsClient(ResilientLNMClient):
 # =====================================================================
 # 8. PATRIMONIO, RIESGO Y GUARDIÁN UNIFICADO CON CONFIRMACIÓN Y EDGE
 # =====================================================================
+def extract_trade_funding_sats(trade_obj):
+    if not isinstance(trade_obj, dict):
+        return 0
+    for key in ("sumFundingFees", "sum_carry_fees", "funding_fees"):
+        val = trade_obj.get(key)
+        if val is not None:
+            try:
+                return int(round(float(val)))
+            except (TypeError, ValueError):
+                pass
+    return 0
+
+
+def extract_trade_fees_v3(trade_obj):
+    if not isinstance(trade_obj, dict):
+        return 0, 0, 0, False
+
+    open_val = None
+    for key in ("openingFee", "opening_fee"):
+        if trade_obj.get(key) is not None:
+            open_val = trade_obj.get(key)
+            break
+
+    close_val = None
+    for key in ("closingFee", "closing_fee"):
+        if trade_obj.get(key) is not None:
+            close_val = trade_obj.get(key)
+            break
+
+    has_explicit_taker = (open_val is not None) or (close_val is not None)
+    open_fee = max(0, int(round(float(open_val or 0)))) if open_val is not None else 0
+    close_fee = max(0, int(round(float(close_val or 0)))) if close_val is not None else 0
+    funding_fee = extract_trade_funding_sats(trade_obj)
+    return open_fee, close_fee, funding_fee, has_explicit_taker
+
+
 def compute_account_equity(available_balance, running_trades):
     locked_margin = sum(int(t.get("margin") or 0) for t in running_trades)
     floating_pl = sum(int(t.get("pl") or 0) for t in running_trades)
@@ -2502,10 +2538,7 @@ def compute_account_equity(available_balance, running_trades):
         int(round(int(t.get("margin") or 0) * float(t.get("leverage") or 20.0) * Config.TAKER_FEE))
         for t in running_trades
     )
-    carry_fees = sum(
-        int(round(float(t.get("sum_carry_fees") or t.get("funding_fees") or 0)))
-        for t in running_trades
-    )
+    carry_fees = sum(extract_trade_funding_sats(t) for t in running_trades)
     true_equity = max(1, int(available_balance) + locked_margin + floating_pl - est_exit_fees - max(0, carry_fees))
     return true_equity, locked_margin, floating_pl
 
@@ -2787,7 +2820,7 @@ def execute_strategy_guardian(
         entry = float(trade.get("price") or trade.get("entryPrice") or lnm_price)
         current_sl = float(trade.get("stoploss") or 0.0)
         liq = float(trade.get("liquidation") or 0.0)
-        carry_sats = max(0, int(round(float(trade.get("sum_carry_fees") or trade.get("funding_fees") or 0))))
+        carry_sats = max(0, extract_trade_funding_sats(trade))
         notional_sats = max(1.0, float(margin) * float(lev))
         fee_offset = entry * ((2.4 * Config.TAKER_FEE) + (carry_sats / notional_sats))
         est_round_fee_sats = max(2, int(round(notional_sats * 2.0 * Config.TAKER_FEE))) + carry_sats
@@ -3049,7 +3082,7 @@ def evaluate_open_trades_online(brain, running, ind_5m, current_state, now):
         margin_sats = float(trade.get("margin") or meta.get("margin", 1000.0))
         lev_f = float(trade.get("leverage") or meta.get("leverage", 25.0))
         est_round_fee = margin_sats * lev_f * (2.0 * Config.TAKER_FEE)
-        carry_sats = max(0.0, float(trade.get("sum_carry_fees") or trade.get("funding_fees") or 0.0))
+        carry_sats = max(0.0, float(extract_trade_funding_sats(trade)))
         net_unrealized_sats = pl_sats - est_round_fee - carry_sats
         if hasattr(brain, "supervisor") and brain.supervisor is not None:
             exc_rec = brain.supervisor.update_open_position_excursion(tid, net_unrealized_sats, margin_sats=margin_sats)
@@ -3640,12 +3673,16 @@ def process_settlement_queue(
             brain.dirty = True
             settled_in_cycle += 1
             ct_obj = closed_map[cid]
-            pl = int(ct_obj.get("pl", 0))
+            pl = int(round(float(ct_obj.get("pl") or 0)))
             m_used = int(info.get("margin", ct_obj.get("margin", 1000)))
             lev_used = float(ct_obj.get("leverage") or info.get("leverage", 35.0))
-            exact_fee = int(ct_obj.get("opening_fee", 0) or 0) + int(ct_obj.get("closing_fee", 0) or 0)
-            funding_fee = int(round(float(ct_obj.get("sum_carry_fees") or ct_obj.get("funding_fees") or 0)))
-            fill_price = float(ct_obj.get("price") or ct_obj.get("entryPrice") or 0.0)
+            open_fee, close_fee, funding_fee, has_explicit_fee = extract_trade_fees_v3(ct_obj)
+            exact_fee = open_fee + close_fee
+            fill_price = float(
+                ct_obj.get("entryPrice")
+                if ct_obj.get("entryPrice") is not None
+                else (ct_obj.get("price") or ct_obj.get("entry_price") or 0.0)
+            )
             dec_price = float(info.get("decision_price") or fill_price)
             t_side = str(ct_obj.get("side") or info.get("side") or "buy")
             econ = SatsExpectancyGate.compute_trade_economic_breakdown(
@@ -3658,6 +3695,7 @@ def process_settlement_queue(
                 decision_price=dec_price,
                 side=t_side,
                 gross_includes_execution=True,
+                exact_fee_is_explicit=has_explicit_fee,
             )
             was_harvested = bool(info.get("ai_closed", False))
             orig_st = info.get("state", state)
@@ -3672,8 +3710,8 @@ def process_settlement_queue(
             total_net_pnl_sats = int(econ["net_pnl_sats"]) + realized_hedge_net + cashed_in_adj
             total_taker_fee_sats = int(econ["taker_fee_sats"]) + realized_hedge_fee
 
-            hit_tp_real = bool(ct_obj.get("takeprofit_wi")) or (
-                total_net_pnl_sats > m_used * 0.16 and not bool(ct_obj.get("stoploss_wi"))
+            hit_tp_real = bool(ct_obj.get("takeprofit_wi") or ct_obj.get("takeprofitWi")) or (
+                total_net_pnl_sats > m_used * 0.16 and not bool(ct_obj.get("stoploss_wi") or ct_obj.get("stoplossWi"))
             )
             entry_ts = float(info.get("entry_time", now))
             dur_ticks = max(1.0, (now - entry_ts) / tick_ref_sec)
@@ -3705,6 +3743,7 @@ def process_settlement_queue(
                 duration_ticks=dur_ticks,
                 predicted_q_entry=pred_q,
                 freeze_q_table=bool(getattr(Config, "DETERMINISTIC_TREND_POLICY", True) and not Config.EXPLORER_MODE),
+                exact_fee_is_explicit=has_explicit_fee,
             )
             if side_brake is not None:
                 sb_info = side_brake.record_trade_close(t_side, total_net_pnl_sats, close_ts=now)
@@ -4634,7 +4673,7 @@ def main():
                     _tid = str(_t["id"])
                     _meta = brain.active_trades.get(_tid, {})
                     _act = int(_meta.get("action", 2 if _t.get("side", "buy") == "buy" else 6))
-                    _carry = int(round(float(_t.get("sum_carry_fees") or _t.get("funding_fees") or 0)))
+                    _carry = extract_trade_funding_sats(_t)
                     _edge_res = compute_live_edge(
                         brain=brain,
                         state=state,

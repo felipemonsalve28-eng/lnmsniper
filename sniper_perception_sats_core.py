@@ -529,6 +529,7 @@ class SatsExpectancyGate:
         spread_bps=0.0,
         side="buy",
         gross_includes_execution=True,
+        exact_fee_is_explicit=False,
     ):
         """
         Distingue rigurosamente entre beneficio bruto y resultado neto en sats:
@@ -541,7 +542,8 @@ class SatsExpectancyGate:
         notional_sats = float(margin_sats) * float(leverage)
         est_entry_fee = max(1, int(round(notional_sats * cls.TAKER_FEE_RATE)))
         est_exit_fee = max(1, int(round(notional_sats * cls.TAKER_FEE_RATE)))
-        taker_fees = int(exact_fee_sats) if int(exact_fee_sats) > 0 else (est_entry_fee + est_exit_fee)
+        has_exact_fee = bool(exact_fee_is_explicit or int(exact_fee_sats or 0) > 0)
+        taker_fees = max(0, int(exact_fee_sats)) if has_exact_fee else (est_entry_fee + est_exit_fee)
         funding_sats = int(round(float(funding_fee_sats or 0)))
 
         slippage_sats = 0
@@ -562,8 +564,8 @@ class SatsExpectancyGate:
         return {
             "gross_pnl_sats": gross_sats,
             "net_pnl_sats": net_sats,
-            "entry_fee_sats": est_entry_fee,
-            "exit_fee_sats": max(1, taker_fees - est_entry_fee),
+            "entry_fee_sats": min(est_entry_fee, taker_fees) if has_exact_fee else est_entry_fee,
+            "exit_fee_sats": max(0, taker_fees - min(est_entry_fee, taker_fees)) if has_exact_fee else max(1, taker_fees - est_entry_fee),
             "taker_fee_sats": taker_fees,
             "funding_fee_sats": funding_sats,
             "settled_fee_sats": settled_fee_sats,
