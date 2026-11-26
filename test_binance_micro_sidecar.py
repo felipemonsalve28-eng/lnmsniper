@@ -442,7 +442,18 @@ class TestBinanceMicroSidecar(unittest.TestCase):
         self.assertIn("[DRY-CHECK OK]", res_dry.stdout)
 
     def test_07_ws_transient_timeout_continues_and_missing_connected_defaults_false(self) -> None:
-        """Verifica que TimeoutError transitorio no corta consume_ws_frames y que connected ausente da False."""
+        """Verifica ruta /market/stream, que TimeoutError transitorio no corta consume_ws_frames y connected ausente=False."""
+        self.assertEqual(
+            sidecar.DEFAULT_WS_URL,
+            "wss://fstream.binance.com/market/stream?streams=btcusdt@aggTrade/btcusdt@forceOrder",
+        )
+        use_ssl, host, port, path_query, host_header = sidecar._parse_ws_endpoint(sidecar.DEFAULT_WS_URL)
+        self.assertTrue(use_ssl)
+        self.assertEqual(host, "fstream.binance.com")
+        self.assertEqual(port, 443)
+        self.assertEqual(host_header, "fstream.binance.com")
+        self.assertEqual(path_query, "/market/stream?streams=btcusdt@aggTrade/btcusdt@forceOrder")
+
         sig = inspect.signature(consume_ws_frames)
         self.assertEqual(sig.parameters["read_timeout_sec"].default, 120.0)
 

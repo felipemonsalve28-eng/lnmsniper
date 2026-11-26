@@ -7,7 +7,7 @@ para LNM Sniper v7.3+ (Termux aarch64 / Linux / WSL, 100% Python stdlib, shadow_
 
 Características principales:
   - Cliente WebSocket RFC 6455 minimalista sobre stdlib (asyncio + ssl) hacia
-    wss://fstream.binance.com/stream?streams=btcusdt@aggTrade/btcusdt@forceOrder
+    wss://fstream.binance.com/market/stream?streams=btcusdt@aggTrade/btcusdt@forceOrder
     con handshake HTTP/1.1 Upgrade, decodificación de frames texto/continuación/ping/close,
     respuesta automática pong enmascarada (client->server), reconexión con backoff
     exponencial y parada limpia lock-free ante SIGINT/SIGTERM.
@@ -53,7 +53,7 @@ DEFAULT_TTL_SEC = 15.0
 DEFAULT_PUBLISH_INTERVAL_SEC = 1.0
 DEFAULT_REST_INTERVAL_SEC = 30.0
 DEFAULT_WS_URL = (
-    "wss://fstream.binance.com/stream?streams=btcusdt@aggTrade/btcusdt@forceOrder"
+    "wss://fstream.binance.com/market/stream?streams=btcusdt@aggTrade/btcusdt@forceOrder"
 )
 DEFAULT_REST_BASE_URL = "https://fapi.binance.com"
 DEFAULT_SNAPSHOT_FILENAME = "binance_micro_snapshot.json"
