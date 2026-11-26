@@ -68,8 +68,50 @@ from limit_execution_manager import (
     should_route_limit,
 )
 from side_streak_brake import SideStreakBrakeStore
+from binance_micro_sidecar import read_binance_micro_snapshot
 
 LIQUIDITY_RADAR = LiquidityRadar()
+
+
+def _build_binance_micro_telemetry(lnm_price, now=None, state_path=None):
+    """Construye el bloque compacto shadow_only de microestructura Binance sin bloquear el bucle."""
+    try:
+        snap = read_binance_micro_snapshot(state_path=state_path, now_ts=now, ttl_sec=15.0)
+        available = bool(snap.get("available", False))
+        stale = bool(snap.get("stale", True))
+        raw_age = snap.get("age_sec")
+        age_sec = round(float(raw_age), 3) if raw_age is not None else None
+        bin_px = float(snap.get("last_price", 0.0) or 0.0)
+        lnm_px = float(lnm_price or 0.0)
+        if available and bin_px > 0.0 and lnm_px > 0.0:
+            basis_bps = round(((bin_px - lnm_px) / lnm_px) * 10000.0, 2)
+        else:
+            basis_bps = None
+        return {
+            "available": available,
+            "stale": stale,
+            "age_sec": age_sec,
+            "basis_bps": basis_bps,
+            "cvd_1m_usd": round(float(snap.get("cvd_1m_usd", 0.0) or 0.0), 2),
+            "cvd_5m_usd": round(float(snap.get("cvd_5m_usd", 0.0) or 0.0), 2),
+            "liq_buy_1m_usd": round(float(snap.get("liq_buy_1m_usd", 0.0) or 0.0), 2),
+            "liq_sell_1m_usd": round(float(snap.get("liq_sell_1m_usd", 0.0) or 0.0), 2),
+            "funding_rate": round(float(snap.get("funding_rate", 0.0) or 0.0), 8),
+            "open_interest_btc": round(float(snap.get("open_interest_btc", 0.0) or 0.0), 4),
+        }
+    except Exception:
+        return {
+            "available": False,
+            "stale": True,
+            "age_sec": None,
+            "basis_bps": None,
+            "cvd_1m_usd": 0.0,
+            "cvd_5m_usd": 0.0,
+            "liq_buy_1m_usd": 0.0,
+            "liq_sell_1m_usd": 0.0,
+            "funding_rate": 0.0,
+            "open_interest_btc": 0.0,
+        }
 
 
 def _evaluate_liquidity_from_mtf(mtf_cache, ind_5m, ind_15m, lnm_price):
@@ -4914,6 +4956,10 @@ def main():
                             "reserved_margin_sats": int(limit_mgr.reserved_margin_sats()),
                             "stats": dict(limit_mgr.stats),
                         },
+                        "binance_micro": _build_binance_micro_telemetry(
+                            lnm_price or ind_5m.get("price", 0.0),
+                            now=now,
+                        ),
                     },
                     force=bool(closed_ids),
                 )
