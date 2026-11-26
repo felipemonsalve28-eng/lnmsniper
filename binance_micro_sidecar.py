@@ -288,7 +288,7 @@ async def consume_ws_frames(
     send_raw_fn: Callable[[bytes], Any],
     on_text_fn: Callable[[str], None],
     stop_check_fn: Optional[Callable[[], bool]] = None,
-    read_timeout_sec: float = 45.0,
+    read_timeout_sec: float = 120.0,
     mask_key: Optional[bytes] = None,
 ) -> Tuple[str, int]:
     """
@@ -305,6 +305,10 @@ async def consume_ws_frames(
 
         try:
             frame = await asyncio.wait_for(read_ws_frame(reader), timeout=read_timeout_sec)
+        except (TimeoutError, asyncio.TimeoutError):
+            if stop_check_fn is not None and stop_check_fn():
+                return ("STOPPED", 1000)
+            continue
         except asyncio.IncompleteReadError:
             return ("EOF", 1006)
 
@@ -864,7 +868,7 @@ def read_binance_micro_snapshot(
     now = float(now_ts) if now_ts is not None else time.time()
     age_sec = max(0.0, now - updated_at)
     is_stale = age_sec > eff_ttl
-    connected = bool(doc.get("connected", True))
+    connected = bool(doc.get("connected", False))
     is_available = (not is_stale) and connected
 
     return {
@@ -1022,7 +1026,7 @@ class BinanceMicroSidecarService:
                     send_raw_fn=_send_raw,
                     on_text_fn=self.aggregator.on_ws_message,
                     stop_check_fn=self.is_stopped,
-                    read_timeout_sec=45.0,
+                    read_timeout_sec=120.0,
                 )
                 if (time.monotonic() - conn_t0) >= 15.0:
                     backoff_sec = 1.0

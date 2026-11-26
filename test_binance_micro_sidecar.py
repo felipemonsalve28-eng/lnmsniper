@@ -441,6 +441,91 @@ class TestBinanceMicroSidecar(unittest.TestCase):
         self.assertEqual(res_dry.returncode, 0, msg=res_dry.stderr)
         self.assertIn("[DRY-CHECK OK]", res_dry.stdout)
 
+    def test_07_ws_transient_timeout_continues_and_missing_connected_defaults_false(self) -> None:
+        """Verifica que TimeoutError transitorio no corta consume_ws_frames y que connected ausente da False."""
+        sig = inspect.signature(consume_ws_frames)
+        self.assertEqual(sig.parameters["read_timeout_sec"].default, 120.0)
+
+        # 1. TimeoutError transitorio en read_ws_frame no aborta la sesión y lee el siguiente frame válido
+        orig_read_ws_frame = sidecar.read_ws_frame
+
+        async def _drive_after_transient_timeout() -> tuple[list, tuple[str, int], int]:
+            reader = asyncio.StreamReader()
+            received_texts = []
+            sent_raw = []
+            msg_ok = b'{"e":"aggTrade","p":"65125.5","q":"0.25","m":false}'
+            close_payload = struct.pack("!H", 1000)
+            reader.feed_data(
+                encode_ws_frame(WS_OP_TEXT, msg_ok, fin=True, masked=False)
+                + encode_ws_frame(WS_OP_CLOSE, close_payload, fin=True, masked=False)
+            )
+            reader.feed_eof()
+
+            calls = 0
+
+            async def _flaky_read_ws_frame(r: asyncio.StreamReader):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise TimeoutError("simulated transient socket idle")
+                if calls == 2:
+                    raise asyncio.TimeoutError("simulated asyncio wait_for timeout")
+                return await orig_read_ws_frame(r)
+
+            with patch.object(sidecar, "read_ws_frame", side_effect=_flaky_read_ws_frame):
+                status = await consume_ws_frames(
+                    reader=reader,
+                    send_raw_fn=sent_raw.append,
+                    on_text_fn=received_texts.append,
+                    mask_key=b"\x01\x02\x03\x04",
+                )
+            return received_texts, status, calls
+
+        texts, status, total_calls = asyncio.run(_drive_after_transient_timeout())
+        self.assertEqual(status, ("CLOSE", 1000))
+        self.assertEqual(total_calls, 4)
+        self.assertEqual(len(texts), 1)
+        self.assertEqual(json.loads(texts[0])["p"], "65125.5")
+
+        # 1b. Si stop_check_fn se activa durante un TimeoutError, retorna ("STOPPED", 1000) limpiamente
+        async def _drive_stop_on_timeout() -> tuple[str, int]:
+            reader = asyncio.StreamReader()
+            stopped = False
+
+            async def _timeout_then_stop(_r: asyncio.StreamReader):
+                nonlocal stopped
+                stopped = True
+                raise TimeoutError("idle before stop")
+
+            with patch.object(sidecar, "read_ws_frame", side_effect=_timeout_then_stop):
+                return await consume_ws_frames(
+                    reader=reader,
+                    send_raw_fn=lambda _b: None,
+                    on_text_fn=lambda _t: None,
+                    stop_check_fn=lambda: stopped,
+                )
+
+        self.assertEqual(asyncio.run(_drive_stop_on_timeout()), ("STOPPED", 1000))
+
+        # 2. Snapshot válido sin clave "connected" debe reportar connected=False y available=False
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snap_path = resolve_binance_snapshot_path(state_dir=tmpdir)
+            t0 = 1_700_400_000.0
+            doc_without_connected = {
+                "schema_version": 1,
+                "updated_at_ts": t0,
+                "ttl_sec": 15.0,
+                "last_price": 65125.5,
+                "cvd_1m_usd": 1250.0,
+            }
+            with open(snap_path, "wb") as fh:
+                fh.write(json.dumps(doc_without_connected).encode("utf-8"))
+
+            res = read_binance_micro_snapshot(state_path=snap_path, now_ts=t0 + 1.0, ttl_sec=15.0)
+            self.assertFalse(res["stale"])
+            self.assertFalse(res["connected"])
+            self.assertFalse(res["available"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
