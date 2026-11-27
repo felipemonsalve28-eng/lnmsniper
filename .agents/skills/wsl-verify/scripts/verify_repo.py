@@ -4,7 +4,7 @@
 Modos disponibles:
   quick      Compila sintácticamente (.py), valida CLI/invariantes P0/esquema 100/28,
              verifica strict_sha=True en cerebros/hedges y comprueba cachés WSL.
-  full       Ejecuta quick + las 11 suites secuenciales + post-check SHA-256.
+  full       Ejecuta quick + las 12 suites secuenciales + post-check SHA-256.
   oos-fold1  Certifica paridad directa 1:1 en SimTrainingEnvironment (M13..M18).
 """
 
@@ -26,6 +26,7 @@ REPO_ROOT = os.path.abspath(
 
 ALL_SUITES = (
     "test_anti_whipsaw_hedge.py",
+    "test_binance_micro_sidecar.py",
     "test_c1_streak3_24h_production.py",
     "test_candidate_certification.py",
     "test_learning_quality_and_sats.py",
@@ -191,7 +192,7 @@ def check_strict_sha_and_caches() -> None:
 
 
 def run_all_suites_sequential() -> None:
-    """Ejecuta secuencialmente las 11 suites con -B y aborta al primer fallo."""
+    """Ejecuta secuencialmente las 12 suites con -B y aborta al primer fallo."""
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     for idx, suite in enumerate(ALL_SUITES, 1):
         print(f"--- [{idx}/{len(ALL_SUITES)}] Ejecutando {suite} ---")
