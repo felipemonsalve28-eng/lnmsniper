@@ -92,9 +92,13 @@ def _build_binance_micro_telemetry(lnm_price, now=None, state_path=None):
             basis_bps = None
         return {
             "available": available,
+            "connected": bool(snap.get("connected", False)),
             "stale": stale,
             "age_sec": age_sec,
             "basis_bps": basis_bps,
+            "trades_1m": int(snap.get("trades_1m", 0) or 0),
+            "buy_vol_1m_usd": round(float(snap.get("buy_vol_1m_usd", 0.0) or 0.0), 2),
+            "sell_vol_1m_usd": round(float(snap.get("sell_vol_1m_usd", 0.0) or 0.0), 2),
             "cvd_1m_usd": round(float(snap.get("cvd_1m_usd", 0.0) or 0.0), 2),
             "cvd_5m_usd": round(float(snap.get("cvd_5m_usd", 0.0) or 0.0), 2),
             "liq_buy_1m_usd": round(float(snap.get("liq_buy_1m_usd", 0.0) or 0.0), 2),
@@ -105,9 +109,13 @@ def _build_binance_micro_telemetry(lnm_price, now=None, state_path=None):
     except Exception:
         return {
             "available": False,
+            "connected": False,
             "stale": True,
             "age_sec": None,
             "basis_bps": None,
+            "trades_1m": 0,
+            "buy_vol_1m_usd": 0.0,
+            "sell_vol_1m_usd": 0.0,
             "cvd_1m_usd": 0.0,
             "cvd_5m_usd": 0.0,
             "liq_buy_1m_usd": 0.0,
@@ -3864,6 +3872,10 @@ def process_settlement_queue(
                             in ("testnet", "test", "explorer")
                             else "mainnet"
                         )
+                        _net_pnl_sats = int(_audit_rec.get("net_realized_sats", total_net_pnl_sats))
+                        _opening_fee_sats = int(round(float(open_fee or 0)))
+                        _closing_fee_sats = int(round(float(close_fee or 0)))
+                        _funding_fee_sats = int(round(float(funding_fee or 0)))
                         _ev_path = micro_events_log_path or _resolve_binance_micro_events_path(_env_tag)
                         append_binance_micro_trade_event(
                             _ev_path,
@@ -3879,13 +3891,17 @@ def process_settlement_queue(
                                 "state": _close_state,
                                 "regime": _close_regime,
                                 "lnm_price": round(_close_px, 2),
-                                "net_realized_sats": int(_audit_rec.get("net_realized_sats", total_net_pnl_sats)),
+                                "net_realized_sats": _net_pnl_sats,
+                                "net_pnl_sats": _net_pnl_sats,
                                 "fee_sats": int(
                                     _audit_rec.get(
                                         "fee_sats",
-                                        max(0, int(total_taker_fee_sats) + int(round(float(funding_fee or 0)))),
+                                        max(0, int(total_taker_fee_sats) + _funding_fee_sats),
                                     )
                                 ),
+                                "opening_fee": _opening_fee_sats,
+                                "closing_fee": _closing_fee_sats,
+                                "funding": _funding_fee_sats,
                                 "mfe_sats": round(float(_audit_rec.get("mfe_sats", mfe_tracked)), 2),
                                 "mae_sats": round(float(_audit_rec.get("mae_sats", mae_tracked)), 2),
                                 "duration_ticks": round(float(_audit_rec.get("duration_ticks", dur_ticks)), 2),

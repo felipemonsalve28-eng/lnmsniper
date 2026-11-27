@@ -341,6 +341,7 @@ class TestBinanceMicroSidecar(unittest.TestCase):
             t0 = 1_700_300_000.0
             agg = BinanceMicroAggregator(clock_fn=lambda: t0)
             agg.on_agg_trade({"s": "BTCUSDT", "p": "65065.0", "q": "0.2", "m": False})
+            agg.on_agg_trade({"s": "BTCUSDT", "p": "65065.0", "q": "0.05", "m": True})
             agg.on_force_order({"o": {"s": "BTCUSDT", "S": "SELL", "p": "64900.0", "q": "0.1"}})
             agg.update_rest_metrics(funding_rate=-0.00005, mark_price=65060.0, open_interest_btc=79123.5)
             write_binance_micro_snapshot(agg.build_snapshot(connected=True, now_ts=t0), state_path=snap_path)
@@ -348,9 +349,13 @@ class TestBinanceMicroSidecar(unittest.TestCase):
             tel = v6._build_binance_micro_telemetry(65000.0, now=t0 + 1.25, state_path=snap_path)
             expected_keys = {
                 "available",
+                "connected",
                 "stale",
                 "age_sec",
                 "basis_bps",
+                "trades_1m",
+                "buy_vol_1m_usd",
+                "sell_vol_1m_usd",
                 "cvd_1m_usd",
                 "cvd_5m_usd",
                 "liq_buy_1m_usd",
@@ -360,14 +365,41 @@ class TestBinanceMicroSidecar(unittest.TestCase):
             }
             self.assertEqual(set(tel.keys()), expected_keys)
             self.assertTrue(tel["available"])
+            self.assertTrue(tel["connected"])
             self.assertFalse(tel["stale"])
             self.assertAlmostEqual(tel["age_sec"], 1.25, places=3)
             # (65065 - 65000) / 65000 * 10000 = +10.0 bps
             self.assertAlmostEqual(tel["basis_bps"], 10.0, places=2)
-            self.assertAlmostEqual(tel["cvd_1m_usd"], 13013.0, places=2)
+            self.assertEqual(tel["trades_1m"], 2)
+            self.assertAlmostEqual(tel["buy_vol_1m_usd"], 13013.0, places=2)
+            self.assertAlmostEqual(tel["sell_vol_1m_usd"], 3253.25, places=2)
+            self.assertAlmostEqual(tel["cvd_1m_usd"], 9759.75, places=2)
             self.assertAlmostEqual(tel["liq_sell_1m_usd"], 6490.0, places=2)
             self.assertAlmostEqual(tel["funding_rate"], -0.00005, places=8)
             self.assertAlmostEqual(tel["open_interest_btc"], 79123.5, places=4)
+
+            # Fallback por snapshot inexistente
+            missing_tel = v6._build_binance_micro_telemetry(
+                65000.0,
+                now=t0 + 1.25,
+                state_path=os.path.join(tmpdir, "missing_snapshot.json"),
+            )
+            self.assertEqual(set(missing_tel.keys()), expected_keys)
+            self.assertFalse(missing_tel["available"])
+            self.assertFalse(missing_tel["connected"])
+            self.assertEqual(missing_tel["trades_1m"], 0)
+            self.assertEqual(missing_tel["buy_vol_1m_usd"], 0.0)
+            self.assertEqual(missing_tel["sell_vol_1m_usd"], 0.0)
+
+            # Fallback ante excepción en read_binance_micro_snapshot
+            with patch.object(v6, "read_binance_micro_snapshot", side_effect=RuntimeError("boom")):
+                err_tel = v6._build_binance_micro_telemetry(65000.0, now=t0 + 1.25, state_path=snap_path)
+            self.assertEqual(set(err_tel.keys()), expected_keys)
+            self.assertFalse(err_tel["available"])
+            self.assertFalse(err_tel["connected"])
+            self.assertEqual(err_tel["trades_1m"], 0)
+            self.assertEqual(err_tel["buy_vol_1m_usd"], 0.0)
+            self.assertEqual(err_tel["sell_vol_1m_usd"], 0.0)
 
         # Garantía estática P0: jamás invocar lector Binance dentro de ruta crítica de trading
         for critical_fn in (
@@ -563,6 +595,7 @@ class TestBinanceMicroSidecar(unittest.TestCase):
             t0 = 1_700_500_100.0
             agg = BinanceMicroAggregator(clock_fn=lambda: t0)
             agg.on_agg_trade({"s": "BTCUSDT", "p": "65065.0", "q": "0.2", "m": False})
+            agg.on_agg_trade({"s": "BTCUSDT", "p": "65065.0", "q": "0.05", "m": True})
             agg.on_force_order({"o": {"s": "BTCUSDT", "S": "BUY", "p": "65100.0", "q": "0.1"}})
             agg.update_rest_metrics(funding_rate=0.0001, mark_price=65060.0, open_interest_btc=81234.5)
             write_binance_micro_snapshot(agg.build_snapshot(connected=True, now_ts=t0), state_path=snap_path)
@@ -600,7 +633,11 @@ class TestBinanceMicroSidecar(unittest.TestCase):
                 "regime": "TREND_BULL",
                 "lnm_price": 65130.0,
                 "net_realized_sats": 320,
+                "net_pnl_sats": 320,
                 "fee_sats": 88,
+                "opening_fee": 42,
+                "closing_fee": 46,
+                "funding": -6,
                 "mfe_sats": 410.0,
                 "mae_sats": 45.5,
                 "duration_ticks": 12.0,
@@ -627,14 +664,26 @@ class TestBinanceMicroSidecar(unittest.TestCase):
             self.assertEqual(parsed_open["margin_sats"], 2500)
             self.assertAlmostEqual(parsed_open["leverage"], 35.0, places=2)
             self.assertTrue(parsed_open["binance_micro"]["available"])
+            self.assertTrue(parsed_open["binance_micro"]["connected"])
+            self.assertEqual(parsed_open["binance_micro"]["trades_1m"], 2)
+            self.assertAlmostEqual(parsed_open["binance_micro"]["buy_vol_1m_usd"], 13013.0, places=2)
+            self.assertAlmostEqual(parsed_open["binance_micro"]["sell_vol_1m_usd"], 3253.25, places=2)
             self.assertAlmostEqual(parsed_open["binance_micro"]["basis_bps"], 10.0, places=2)
 
             self.assertEqual(parsed_close["event"], "CLOSE")
             self.assertEqual(parsed_close["trade_id"], "uuid-open-close-001")
             self.assertEqual(parsed_close["net_realized_sats"], 320)
+            self.assertEqual(parsed_close["net_pnl_sats"], 320)
             self.assertEqual(parsed_close["fee_sats"], 88)
+            self.assertEqual(parsed_close["opening_fee"], 42)
+            self.assertEqual(parsed_close["closing_fee"], 46)
+            self.assertEqual(parsed_close["funding"], -6)
             self.assertEqual(parsed_close["exit_reason"], "TAKE_PROFIT_ÓPTIMO")
             self.assertTrue(parsed_close["binance_micro"]["available"])
+            self.assertTrue(parsed_close["binance_micro"]["connected"])
+            self.assertEqual(parsed_close["binance_micro"]["trades_1m"], 2)
+            self.assertAlmostEqual(parsed_close["binance_micro"]["buy_vol_1m_usd"], 13013.0, places=2)
+            self.assertAlmostEqual(parsed_close["binance_micro"]["sell_vol_1m_usd"], 3253.25, places=2)
 
             # 3. Tolerancia total a fallos en rutas inválidas sin lanzar excepción
             blocker_file = os.path.join(tmpdir, "not_a_directory")
@@ -668,6 +717,108 @@ class TestBinanceMicroSidecar(unittest.TestCase):
             self.assertEqual(v6.Config.BINANCE_MICRO_EVENTS_FILE, mn_path)
         finally:
             v6.Config.configure_environment(prev_env)
+
+    def test_09_process_settlement_queue_close_jsonl_fer_and_micro_fields(self) -> None:
+        """Verifica que process_settlement_queue emita CLOSE JSONL con FER (fees/funding/net_pnl_sats) y 4 campos micro."""
+        import types
+        import lnm_sniper_v6_advanced as v6
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snap_path = resolve_binance_snapshot_path(state_dir=tmpdir)
+            events_path = os.path.join(tmpdir, "close_events.jsonl")
+            t0 = 1_700_600_000.0
+            agg = BinanceMicroAggregator(clock_fn=lambda: t0)
+            agg.on_agg_trade({"s": "BTCUSDT", "p": "65065.0", "q": "0.2", "m": False})
+            agg.on_agg_trade({"s": "BTCUSDT", "p": "65065.0", "q": "0.05", "m": True})
+            agg.update_rest_metrics(funding_rate=0.0001, mark_price=65060.0, open_interest_btc=81234.5)
+            write_binance_micro_snapshot(agg.build_snapshot(connected=True, now_ts=t0), state_path=snap_path)
+
+            closed_trade = {
+                "id": "uuid-close-fer-001",
+                "side": "buy",
+                "pl": 410,
+                "margin": 2500,
+                "leverage": 35.0,
+                "openingFee": 44,
+                "closingFee": 46,
+                "sumFundingFees": -12,
+                "entryPrice": 65000.0,
+                "exitPrice": 65130.0,
+                "takeprofit_wi": True,
+            }
+            fake_client = types.SimpleNamespace(
+                get_closed_trades=lambda limit=50: [closed_trade],
+                get_user=lambda force_refresh=False: {"balance": 100000},
+            )
+            fake_brain = types.SimpleNamespace(
+                active_trades={
+                    "uuid-close-fer-001": {
+                        "side": "buy",
+                        "margin": 2500,
+                        "leverage": 35.0,
+                        "decision_price": 65000.0,
+                        "state": "TREND_BULL|MID|LOW_EXP|BULL|FULL_BULL",
+                        "action": 1,
+                        "entry_time": t0,
+                        "mfe_sats": 450.0,
+                        "mae_sats": 25.0,
+                    }
+                },
+                dirty=False,
+                strategies={1: {"name": "LONG_TREND"}},
+                transition_audit_log=[],
+                _processed_closed_trade_ids_set=set(),
+                _normalize_state_key=lambda s: str(s),
+                remember_and_train=lambda *a, **kw: None,
+            )
+
+            def _read_tmp_snap(state_path=None, now_ts=None, ttl_sec=15.0):
+                return read_binance_micro_snapshot(state_path=snap_path, now_ts=now_ts, ttl_sec=ttl_sec)
+
+            with patch.object(v6, "read_binance_micro_snapshot", side_effect=_read_tmp_snap):
+                settled, con_losses, risk_mult, pause_until = v6.process_settlement_queue(
+                    client=fake_client,
+                    brain=fake_brain,
+                    closed_ids=["uuid-close-fer-001"],
+                    state="TREND_BULL|MID|LOW_EXP|BULL|FULL_BULL",
+                    now=t0 + 2.0,
+                    recovery_anchor_equity=None,
+                    current_mode="STANDARD",
+                    consecutive_losses=0,
+                    risk_multiplier=1.0,
+                    pause_until=0.0,
+                    lnm_price=65130.0,
+                    micro_events_log_path=events_path,
+                )
+
+            self.assertEqual(settled, 1)
+            self.assertEqual(con_losses, 0)
+            self.assertAlmostEqual(risk_mult, 1.0)
+            self.assertEqual(pause_until, 0.0)
+            self.assertTrue(os.path.isfile(events_path))
+
+            with open(events_path, "r", encoding="utf-8") as fh:
+                lines = fh.readlines()
+            self.assertEqual(len(lines), 1)
+            ev = json.loads(lines[0])
+            self.assertEqual(ev["event"], "CLOSE")
+            self.assertEqual(ev["trade_id"], "uuid-close-fer-001")
+            self.assertEqual(ev["side"], "buy")
+            # net_pnl_sats = pl(410) - (openingFee(44) + closingFee(46) + sumFundingFees(-12)) = 332
+            self.assertEqual(ev["net_pnl_sats"], 332)
+            self.assertEqual(ev["net_realized_sats"], 332)
+            self.assertEqual(ev["opening_fee"], 44)
+            self.assertEqual(ev["closing_fee"], 46)
+            self.assertEqual(ev["funding"], -12)
+            self.assertEqual(ev["fee_sats"], 78)
+
+            micro = ev["binance_micro"]
+            self.assertTrue(micro["available"])
+            self.assertTrue(micro["connected"])
+            self.assertEqual(micro["trades_1m"], 2)
+            self.assertAlmostEqual(micro["buy_vol_1m_usd"], 13013.0, places=2)
+            self.assertAlmostEqual(micro["sell_vol_1m_usd"], 3253.25, places=2)
+            self.assertAlmostEqual(micro["basis_bps"], -9.98, places=2)
 
 
 if __name__ == "__main__":
