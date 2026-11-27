@@ -13,7 +13,7 @@ import random
 
 from simulation.sim_clock import SimClock
 from simulation.sim_market_feed import SimMarketFeed, Candle
-from simulation.sim_lnm_exchange import SimLNMExchange
+from simulation.sim_lnm_exchange import MicrostructureStressConfig, SimLNMExchange
 from lnm_sniper_v6_advanced import (
     AutonomousGoalBrain,
     Config,
@@ -166,6 +166,7 @@ class SimTrainingEnvironment:
         base_risk_pct_std: float = 0.0075,
         be_stage1_r: float = 0.80,
         structural_td9_trailing_enabled: bool = False,
+        stress_config: Optional[MicrostructureStressConfig] = None,
     ):
         self.candidate_brain_file = str(candidate_brain_file)
         self.candidate_hedge_file = str(candidate_hedge_file)
@@ -185,6 +186,7 @@ class SimTrainingEnvironment:
         self.base_risk_pct_std = float(base_risk_pct_std)
         self.be_stage1_r = float(be_stage1_r)
         self.structural_td9_trailing_enabled = bool(structural_td9_trailing_enabled)
+        self.stress_config: Optional[MicrostructureStressConfig] = stress_config
         self.side_brake = SideStreakBrakeStore(
             env_mode="sim",
             persist_to_disk=False,
@@ -199,6 +201,7 @@ class SimTrainingEnvironment:
             funding_rate_8h=funding_rate_8h,
             default_slippage_bps=default_slippage_bps,
             inverse_contract_math=self.inverse_contract_math,
+            stress_config=self.stress_config,
         )
 
         # Cerebros estrictamente aislados (nunca tocan los archivos de producción)
@@ -349,6 +352,7 @@ class SimTrainingEnvironment:
             funding_rate_8h=self.exchange.funding_rate_8h,
             default_slippage_bps=self.exchange.default_slippage_bps,
             inverse_contract_math=self.inverse_contract_math,
+            stress_config=self.stress_config,
         )
         self.exchange.trade_counter = prev_counter
         self.side_brake.reset(persist=False)
@@ -506,15 +510,21 @@ class SimTrainingEnvironment:
         now = c.timestamp
 
         # 1. Evaluar posiciones vivas contra extremos de la vela en el exchange
-        events = self.exchange.step_candle(c)
-
-        mkt_state = self.feed.get_perception_state()
-        ind_5m = mkt_state["ind_5m"]
+        _stress_active = bool(self.stress_config is not None and self.stress_config.enabled)
+        if _stress_active:
+            mkt_state = self.feed.get_perception_state()
+            ind_5m = mkt_state["ind_5m"]
+            cur_atr = max(1.0, float(ind_5m.get("atr", c.close * 0.002)))
+            events = self.exchange.step_candle(c, atr_5m=cur_atr)
+        else:
+            events = self.exchange.step_candle(c)
+            mkt_state = self.feed.get_perception_state()
+            ind_5m = mkt_state["ind_5m"]
+            cur_atr = max(1.0, float(ind_5m.get("atr", c.close * 0.002)))
         ind_15m = mkt_state["ind_15m"]
         ind_1h = mkt_state["ind_1h"]
         ind_4h = mkt_state["ind_4h"]
         perception = mkt_state["perception"]
-        cur_atr = max(1.0, float(ind_5m.get("atr", c.close * 0.002)))
 
         # 1b. Reconciliar órdenes límite pasivas (incluye fills cerrados pesimistamente en la misma vela 1m)
         if self.limit_manager.pending:

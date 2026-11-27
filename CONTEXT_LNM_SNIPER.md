@@ -2,7 +2,7 @@
 ## LNM SNIPER v7.3+ (`C1_STREAK3_24H_INV` + Modo B `LIQ_BIAS_ONLY`)
 
 > **Memoria Técnica Estructural para Agentes en Antigravity**  
-> **Última Actualización:** `2026-11-26`  
+> **Última Actualización:** `2026-11-27`  
 > **HEAD Auditado Base:** `89036e0` (`origin/master` + Fase 4B/4B.1 JSONL `shadow_only` desplegado en Termux)  
 > **Gobernanza y Hoja de Ruta:** [`AGENTS.md`](AGENTS.md) · [`ROADMAP_LNM_SNIPER.md`](ROADMAP_LNM_SNIPER.md) · [`simulation/AGENTS.md`](simulation/AGENTS.md) · [`AGENT_MAINTENANCE_DIRECTIVE.md`](AGENT_MAINTENANCE_DIRECTIVE.md)
 
@@ -10,7 +10,7 @@
 
 ## 1. ESTADO ACTUAL DEL SISTEMA (EXECUTIVE SNAPSHOT)
 
-| Componente | Estado Vigente (`2026-11-26`) | Referencia / Evidencia |
+| Componente | Estado Vigente (`2026-11-27`) | Referencia / Evidencia |
 | :--- | :--- | :--- |
 | **Rama y Remoto** | `master` (`d0ea3fd` Fase 1B -> `5196b85` API v3 camelCase -> `cef38c0`/`10a87c9`/`249ac63` Fase 4 Sidecar `/market/stream` -> `d38f977`/`89036e0` Fase 4B/4B.1 JSONL `OPEN`/`CLOSE` + volúmenes crudos + desglose FER) | [`binance_micro_sidecar.py`](binance_micro_sidecar.py), [`lnm_sniper_v6_advanced.py`](lnm_sniper_v6_advanced.py), [`test_binance_micro_sidecar.py`](test_binance_micro_sidecar.py) |
 | **Edición / Política** | **`C1_STREAK3_24H_INV` + Modo B `LIQ_BIAS_ONLY`**: política determinista simétrica inmutable en RAM, `E2_FE_OFF`, `C1_SHORT_EXP_PHYS`, freno `C1_STREAK3_24H`, `STRUCTURAL_TD9_TRAILING_ENABLED=False` | [`lnm_sniper_v6_advanced.py`](lnm_sniper_v6_advanced.py), [`sniper_perception_sats_core.py`](sniper_perception_sats_core.py) |
@@ -71,13 +71,14 @@ Consulta este índice verificado por AST antes de abrir cualquier módulo con `r
 - **[`limit_execution_manager.py`](limit_execution_manager.py) (`623L`):** `LimitExecutionConfig:L32-66`, `round_to_tick:L69-83`, `should_route_limit:L86-139`, `compute_limit_entry_plan:L142-262`, `LimitExecutionManager:L265-623`.
 - **[`learning_thresholds_manager.py`](learning_thresholds_manager.py) (`1227L`):** `resolve_thresholds_path_for_env:L42-54`, `LearningThresholdsManager:L933-1204`, `get_thresholds_manager:L1212-1227`.
 - **[`learning_quality_supervisor.py`](learning_quality_supervisor.py) (`1137L`):** `LearningQualitySupervisor:L104-1051`, `AtomicTelemetryDispatcher:L1054-1137`.
-- **[`simulation/sim_training_environment.py`](simulation/sim_training_environment.py) (`1468L`):** `PrecomputedMarketFeed:L49-140`, `SimTrainingEnvironment:L143-1468`.
+- **[`simulation/sim_training_environment.py`](simulation/sim_training_environment.py) (`1478L`):** `PrecomputedMarketFeed:L49-140`, `SimTrainingEnvironment:L143-1478`.
 - **[`simulation/sim_market_feed.py`](simulation/sim_market_feed.py) (`401L`):** `Candle:L26-55`, `MTFAggregator:L58-189`, `SimMarketFeed:L192-401`.
-- **[`simulation/sim_lnm_exchange.py`](simulation/sim_lnm_exchange.py) (`501L`):** `SimLNMExchange:L19-501`.
+- **[`simulation/sim_lnm_exchange.py`](simulation/sim_lnm_exchange.py) (`600L`):** `MicrostructureStressConfig:L22-72`, `SimLNMExchange:L75-600`.
+- **[`simulation/run_phase5_stress.py`](simulation/run_phase5_stress.py) (`543L`):** `_parse_scenarios:L30-41`, `_parse_fee_rt_bps:L44-54`, `_atomic_write_json:L57-75`, `_load_months_meta:L78-85`, `_required_pkl_paths:L88-95`, `_run_dry_check:L98-132`, `_load_scope_blocks:L135-161`, `_evaluate_cell:L164-320`, `_evaluate_verdict:L323-399`, `_format_table:L402-460`, `main:L463-539`.
 
 ---
 
-## 4. HISTORIAL CONSOLIDADO DE ETAPAS (ETAPAS 1 A 33)
+## 4. HISTORIAL CONSOLIDADO DE ETAPAS (ETAPAS 1 A 34)
 
 ### Resumen Compacto de Etapas Base (1–29)
 | Rango | Hito Arquitectónico y Cuantitativo |
@@ -86,7 +87,7 @@ Consulta este índice verificado por AST antes de abrir cualquier módulo con `r
 | **Etapas 11–25** | Motor `simulation/` completo (`SimLNMExchange`, `PrecomputedMarketFeed`, Monte Carlo `0` mutaciones), remediación `F-01..F-25`, `sniper_cli.py`, aislamiento Mainnet/Testnet, auto-sync reloj `HTTP 401` y purga sintética. |
 | **Etapas 26–29** | Paridad simulador, consolidación `C1_STREAK3_24H_INV` + Modo B `LIQ_BIAS_ONLY` (`20b205d`/`6578e6d`/`876c3c6`), `README.md` (`c6d5690`) y sistema modular de agentes Antigravity + `verify_repo.py` (`d0d86ee`/`2e67c38`). |
 
-### Etapas Recientes (30–33)
+### Etapas Recientes (30–34)
 - **Etapa 30 — Fase 1B (`d0ea3fd`):** `DeterministicMTFAggregator` en RAM (`1m -> 15m/30m/45m/1h/4h`), `fuse_super_pools`, `TD9PerfectionTracker`, `SessionVWAPAccumulator` y trailing estructural detrás de `structural_td9_trailing_enabled=False`.
 - **Etapa 31 — Fees/Funding API v3 camelCase (`5196b85`):** `extract_trade_fees_v3` y `extract_trade_funding_sats` leyendo `openingFee`/`closingFee`/`sumFundingFees` exactos (`0.1595% RT`, `18M Net = +7,301 sats`, `12M OOS = +23,992 sats`).
 - **Etapa 32 — Fase 4 Sidecar Binance (`cef38c0`, `10a87c9`, `249ac63`):** `binance_micro_sidecar.py` stdlib RFC 6455 sobre `/market/stream`, agregador causal `CVD 1m/5m` + `forceOrder`, REST `30s`, `read_timeout_sec=120.0`, snapshot atómico en `$HOME/.sniper_state/`.
@@ -94,6 +95,11 @@ Consulta este índice verificado por AST antes de abrir cualquier módulo con `r
   - `d38f977`: `_format_sidecar_log`, `append_binance_micro_trade_event` tolerante a fallos y persistencia JSONL `OPEN`/`CLOSE` en `logs/binance_micro_events*.jsonl`.
   - `89036e0`: adición en `_build_binance_micro_telemetry` y `CLOSE` JSONL de `connected`, `trades_1m`, `buy_vol_1m_usd`, `sell_vol_1m_usd`, `net_pnl_sats`, `opening_fee`, `closing_fee` y `funding` (`9/9` tests en Termux, `P95 = 0.0056 ms`, desplegado en vivo en `sniper_testnet`).
   - Optimización de agentes: `verify_repo.py` ampliado a `12` suites (incluye `test_binance_micro_sidecar.py`), incorporación de `ROADMAP_LNM_SNIPER.md`, `MODO SOLO-EDICIÓN` para ahorro de cuota, corrección dimensional de fórmula inversa y regeneración AST de `HEAD 89036e0`.
+
+- **Etapa 34 — Fase 5 Estrés de Microestructura (`GO` 18M + Fold 1) y Descarte Fase 5B (`NO-GO`):**
+  - `simulation/sim_lnm_exchange.py`, `simulation/sim_training_environment.py`, `simulation/run_phase5_stress.py` y `test_simulation_engine.py` (`12/12`): modelo conservador opt-in `MicrostructureStressConfig` (`S0` default neutro con paridad exacta bit a bit, `S1` Termux realista y `S2` pico volatilidad).
+  - Matriz `18M` (`58` bloques) certificada **`GO`** en `20 bps` (`S1 OOS 12M = +14,279`, `PF = 1.116`, `MaxDD = 4.34%`, `DDG = 0`, `HFViol = 0`) y `16 bps` (`S1 OOS 12M = +16,477`, `PF = 1.134`, `MaxDD = 4.62%`; `S2 OOS 12M = +6,295`, `PF = 1.050`, `HFViol = 0`). `verify_repo.py --mode full` (`12/12`) y `--mode oos-fold1` PASS exacto.
+  - Ablación offline **Fase 5B** (`Dual-Track` Carril B `SNIPER` + $\text{ER}_8$ sin flujo real) cerrada como **`NO-GO`** (`B2` negativo `6/6` meses en Fold 1 @ `16 bps` sin BE: `N=95`, `WR=26.3%`, `Net=-11,209 sats`, `PF=0.488`, `MaxDD=4.98%`; `B1` `4–5` entradas/mes con `0%–20%` WR) y retirada del árbol de trabajo.
 
 ---
 

@@ -14,6 +14,62 @@ Implementa con rigor matemático:
 from typing import Dict, List, Optional, Tuple, Any
 import math
 import time
+from dataclasses import dataclass
+
+
+
+@dataclass(frozen=True)
+class MicrostructureStressConfig:
+    """
+    Configuración opt-in de estrés de microestructura (Fase 5, solo simulación).
+    Default neutro (enabled=False / S0) preserva paridad bit a bit con oos-fold1.
+    """
+    name: str = "S0"
+    enabled: bool = False
+    base_slip_bps: float = 0.0
+    k_vol: float = 0.0
+    theta_vol: float = 0.004
+    exec_latency_sec: float = 0.0
+    apply_to_sl: bool = True
+
+    @classmethod
+    def s0_nominal(cls) -> "MicrostructureStressConfig":
+        return cls(name="S0", enabled=False, base_slip_bps=0.0, k_vol=0.0, theta_vol=0.004, exec_latency_sec=0.0, apply_to_sl=False)
+
+    @classmethod
+    def s1_termux_realistic(cls) -> "MicrostructureStressConfig":
+        return cls(name="S1", enabled=True, base_slip_bps=2.0, k_vol=0.15, theta_vol=0.004, exec_latency_sec=1.5, apply_to_sl=True)
+
+    @classmethod
+    def s2_vol_spike(cls) -> "MicrostructureStressConfig":
+        return cls(name="S2", enabled=True, base_slip_bps=5.0, k_vol=0.25, theta_vol=0.004, exec_latency_sec=3.0, apply_to_sl=True)
+
+    @classmethod
+    def from_preset(cls, preset: str) -> "MicrostructureStressConfig":
+        key = str(preset or "S0").strip().upper()
+        if key == "S0":
+            return cls.s0_nominal()
+        if key == "S1":
+            return cls.s1_termux_realistic()
+        if key == "S2":
+            return cls.s2_vol_spike()
+        raise ValueError(f"Preset de estrés desconocido: {preset!r} (esperado: S0, S1 o S2)")
+
+    def compute_slip_ratio(
+        self,
+        ref_price: float,
+        atr_5m: float = 0.0,
+        candle_range_pct: float = 0.0,
+    ) -> float:
+        if not self.enabled:
+            return 0.0
+        px = max(1.0, float(ref_price))
+        base = max(0.0, float(self.base_slip_bps)) / 10000.0
+        atr_rel = max(0.0, float(atr_5m)) / px
+        vol_term = max(0.0, float(self.k_vol)) * max(0.0, atr_rel - float(self.theta_vol))
+        dt_s = max(0.0, float(self.exec_latency_sec))
+        lat_term = 0.25 * math.sqrt(dt_s / 60.0) * max(0.0, float(candle_range_pct))
+        return max(0.0, base + vol_term + lat_term)
 
 
 class SimLNMExchange:
@@ -28,6 +84,7 @@ class SimLNMExchange:
         funding_rate_8h: float = 0.0001,
         default_slippage_bps: float = 1.5,
         inverse_contract_math: bool = False,
+        stress_config: Optional[MicrostructureStressConfig] = None,
     ):
         self.initial_balance_sats = int(initial_balance_sats)
         self.balance_sats = int(initial_balance_sats)
@@ -35,6 +92,7 @@ class SimLNMExchange:
         self.funding_rate_8h = float(funding_rate_8h)
         self.default_slippage_bps = float(default_slippage_bps)
         self.inverse_contract_math = bool(inverse_contract_math)
+        self.stress_config: Optional[MicrostructureStressConfig] = stress_config
 
         self.running_trades: Dict[str, dict] = {}
         self.open_orders: Dict[str, dict] = {}
@@ -51,6 +109,11 @@ class SimLNMExchange:
 
         self.last_price: float = 70000.0
         self.last_ts: float = 0.0
+        self.last_candle_range_pct: float = 0.0
+        self.stress_entry_events: int = 0
+        self.stress_sl_events: int = 0
+        self.stress_entry_slip_bps_sum: float = 0.0
+        self.stress_sl_slip_bps_sum: float = 0.0
 
     @property
     def total_locked_margin_sats(self) -> int:
@@ -165,9 +228,18 @@ class SimLNMExchange:
         # 1. Nocional en Satoshis
         notional_sats = m * lev
 
-        # 2. Slippage dinámico proporcional a la volatilidad
+        # 2. Slippage dinámico proporcional a la volatilidad (o estrés opt-in Fase 5)
         atr_val = float(atr if atr is not None else (ref_price * 0.0015))
-        slip_ratio = (self.default_slippage_bps / 10000.0) * (1.0 + (atr_val / max(ref_price, 1.0)) * 10.0)
+        if self.stress_config is not None and self.stress_config.enabled:
+            slip_ratio = self.stress_config.compute_slip_ratio(
+                ref_price=ref_price,
+                atr_5m=atr_val,
+                candle_range_pct=self.last_candle_range_pct,
+            )
+            self.stress_entry_events += 1
+            self.stress_entry_slip_bps_sum += slip_ratio * 10000.0
+        else:
+            slip_ratio = (self.default_slippage_bps / 10000.0) * (1.0 + (atr_val / max(ref_price, 1.0)) * 10.0)
         if side_norm == "b":
             entry_price = ref_price * (1.0 + slip_ratio)
         else:
@@ -338,7 +410,31 @@ class SimLNMExchange:
         t["takeprofit"] = round(float(takeprofit_price), 2)
         return {"id": tid, "takeprofit": t["takeprofit"]}
 
-    def step_candle(self, candle: Any) -> List[dict]:
+    def _apply_sl_stress_slippage(
+        self,
+        fill_price: float,
+        side: str,
+        atr_5m: Optional[float],
+        ref_close: float,
+    ) -> float:
+        if (
+            self.stress_config is None
+            or not self.stress_config.enabled
+            or not self.stress_config.apply_to_sl
+        ):
+            return fill_price
+        sl_atr = float(atr_5m if atr_5m is not None else (ref_close * 0.0015))
+        sl_slip = self.stress_config.compute_slip_ratio(
+            ref_price=fill_price,
+            atr_5m=sl_atr,
+            candle_range_pct=self.last_candle_range_pct,
+        )
+        self.stress_sl_events += 1
+        self.stress_sl_slip_bps_sum += sl_slip * 10000.0
+        a_side = 1.0 if side == "b" else -1.0
+        return max(1.0, float(fill_price) * (1.0 - a_side * sl_slip))
+
+    def step_candle(self, candle: Any, atr_5m: Optional[float] = None) -> List[dict]:
         """
         Avanza un paso de simulación evaluando las órdenes abiertas contra los extremos
         de la vela (High, Low, Open, Close). Verifica Stop Loss, Take Profit y Liquidaciones.
@@ -351,6 +447,7 @@ class SimLNMExchange:
 
         self.last_price = c_close
         self.last_ts = c_ts
+        self.last_candle_range_pct = max(0.0, (c_high - c_low) / c_close)
 
         events_triggered = []
 
@@ -433,6 +530,7 @@ class SimLNMExchange:
                 is_sl_hit = (c_low <= sl) if side == "b" else (c_high >= sl)
                 if is_sl_hit:
                     fill_price = min(c_open, sl) if side == "b" else max(c_open, sl)
+                    fill_price = self._apply_sl_stress_slippage(fill_price, side, atr_5m, c_close)
                     ok, rec = self.close_trade(tid, price=fill_price, reason="STOP_LOSS", now=c_ts)
                     if ok:
                         events_triggered.append(rec)
@@ -474,6 +572,7 @@ class SimLNMExchange:
                 is_sl_hit = (c_low <= sl) if side == "b" else (c_high >= sl)
                 if is_sl_hit:
                     fill_price = min(c_open, sl) if side == "b" else max(c_open, sl)
+                    fill_price = self._apply_sl_stress_slippage(fill_price, side, atr_5m, c_close)
                     ok, rec = self.close_trade(tid, price=fill_price, reason="STOP_LOSS", now=c_ts)
                     if ok:
                         events_triggered.append(rec)

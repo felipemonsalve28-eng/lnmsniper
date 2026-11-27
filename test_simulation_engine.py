@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from simulation.sim_clock import SimClock
 from simulation.sim_market_feed import SimMarketFeed, Candle
-from simulation.sim_lnm_exchange import SimLNMExchange
+from simulation.sim_lnm_exchange import MicrostructureStressConfig, SimLNMExchange
 
 
 class TestSimClock(unittest.TestCase):
@@ -232,6 +232,98 @@ class TestSimLNMExchange(unittest.TestCase):
         )
         evs = self.exchange.step_candle(Candle(timestamp=1180.0, open=69600.0, high=69900.0, low=69590.0, close=69880.0))
         self.assertTrue(any(e["id"] == o2["id"] and e["close_reason"] == "STOP_LOSS" for e in evs))
+
+
+
+
+class TestPhase5MicrostructureStress(unittest.TestCase):
+    def test_phase5_stress_formula_and_presets(self):
+        s0 = MicrostructureStressConfig.from_preset("S0")
+        s1 = MicrostructureStressConfig.from_preset("S1")
+        s2 = MicrostructureStressConfig.from_preset("S2")
+        self.assertFalse(s0.enabled)
+        self.assertEqual(s0.compute_slip_ratio(70000.0, 500.0, 0.01), 0.0)
+
+        # Con ATR/P = 0.006 (> theta=0.004) y rango 1m = 0.01:
+        px = 100000.0
+        atr = 600.0
+        rng = 0.01
+        exp_s1 = 0.0002 + 0.15 * 0.002 + 0.25 * (1.5 / 60.0) ** 0.5 * 0.01
+        exp_s2 = 0.0005 + 0.25 * 0.002 + 0.25 * (3.0 / 60.0) ** 0.5 * 0.01
+        got_s1 = s1.compute_slip_ratio(px, atr, rng)
+        got_s2 = s2.compute_slip_ratio(px, atr, rng)
+        self.assertAlmostEqual(got_s1, exp_s1, places=10)
+        self.assertAlmostEqual(got_s2, exp_s2, places=10)
+        self.assertLess(got_s1, got_s2)
+
+        # Debajo de theta_vol no agrega componente vol_term
+        self.assertAlmostEqual(s1.compute_slip_ratio(px, 200.0, 0.0), 0.0002, places=10)
+
+    def test_phase5_adverse_entry_and_sl_execution_long_and_short(self):
+        from simulation.sim_market_feed import Candle
+
+        s1 = MicrostructureStressConfig.s1_termux_realistic()
+        ex_s0 = SimLNMExchange(initial_balance_sats=100000, inverse_contract_math=True)
+        ex_s1 = SimLNMExchange(initial_balance_sats=100000, inverse_contract_math=True, stress_config=s1)
+
+        warm = Candle(timestamp=1700000000.0, open=70000.0, high=70700.0, low=70000.0, close=70000.0, volume=10.0)
+        ex_s0.step_candle(warm)
+        ex_s1.step_candle(warm, atr_5m=420.0)
+
+        t0_l = ex_s0.open_trade("b", margin=5000, leverage=10, stoploss=69300.0, price=70000.0, atr=420.0, now=1700000000.0)
+        t1_l = ex_s1.open_trade("b", margin=5000, leverage=10, stoploss=69300.0, price=70000.0, atr=420.0, now=1700000000.0)
+        self.assertGreater(t1_l["entry_price"], t0_l["entry_price"])
+        self.assertEqual(ex_s1.stress_entry_events, 1)
+
+        sl_bar = Candle(timestamp=1700000060.0, open=69900.0, high=70000.0, low=69000.0, close=69200.0, volume=20.0)
+        ev0 = ex_s0.step_candle(sl_bar)
+        ev1 = ex_s1.step_candle(sl_bar, atr_5m=420.0)
+        self.assertEqual(len(ev0), 1)
+        self.assertEqual(len(ev1), 1)
+        self.assertEqual(ev0[0]["exit_price"], 69300.0)
+        self.assertLess(ev1[0]["exit_price"], ev0[0]["exit_price"])
+        self.assertLess(ev1[0]["net_pnl_sats"], ev0[0]["net_pnl_sats"])
+        self.assertEqual(ex_s1.stress_sl_events, 1)
+
+        # SHORT: entrada más baja y SL más alto (ambos adversos)
+        t0_s = ex_s0.open_trade("s", margin=5000, leverage=10, stoploss=70000.0, price=69200.0, atr=420.0, now=1700000060.0)
+        t1_s = ex_s1.open_trade("s", margin=5000, leverage=10, stoploss=70000.0, price=69200.0, atr=420.0, now=1700000060.0)
+        self.assertLess(t1_s["entry_price"], t0_s["entry_price"])
+        sl_bar_s = Candle(timestamp=1700000120.0, open=69300.0, high=70300.0, low=69200.0, close=70100.0, volume=20.0)
+        ev0_s = ex_s0.step_candle(sl_bar_s)
+        ev1_s = ex_s1.step_candle(sl_bar_s, atr_5m=420.0)
+        self.assertGreater(ev1_s[0]["exit_price"], ev0_s[0]["exit_price"])
+        self.assertLess(ev1_s[0]["net_pnl_sats"], ev0_s[0]["net_pnl_sats"])
+
+    def test_phase5_stress_config_persists_across_env_reset(self):
+        import tempfile
+        from simulation.sim_market_feed import Candle
+        from simulation.sim_training_environment import SimTrainingEnvironment
+
+        s2 = MicrostructureStressConfig.s2_vol_spike()
+        with tempfile.TemporaryDirectory() as td:
+            env = SimTrainingEnvironment(
+                candidate_brain_file=f"{td}/b.json",
+                candidate_hedge_file=f"{td}/h.json",
+                initial_balance_sats=100000,
+                stress_config=s2,
+            )
+            self.assertIs(env.exchange.stress_config, s2)
+            self.assertTrue(env.exchange.inverse_contract_math)
+            candles = [
+                Candle(
+                    timestamp=1700000000.0 + i * 60.0,
+                    open=70000.0,
+                    high=70050.0,
+                    low=69950.0,
+                    close=70000.0,
+                    volume=5.0,
+                )
+                for i in range(90)
+            ]
+            env.reset(candles, initial_balance_sats=100000, warmup_bars=80)
+            self.assertIs(env.exchange.stress_config, s2)
+            self.assertTrue(env.exchange.inverse_contract_math)
 
 
 if __name__ == "__main__":
