@@ -59,9 +59,11 @@ El sistema conserva intacto el contrato de 9 acciones discretas (`0`: `HOLD`, `1
   - Validado por selección A/B sobre 18 meses reales (`liquidity_radar.enabled = 1`, `liquidity_radar.shadow_only = 0`, `liquidity_radar.opposite_wall_enabled = 0`). Aporta sesgo direccional sin activar vetos por muros opuestos en `TREND`.
   - Incluye infraestructura causal O(1) de Fase 1B (`DeterministicMTFAggregator` sobre cubetas UTC fijas `15m/30m/45m/1h/4h`, `fuse_super_pools`, `TD9PerfectionTracker`, `SessionVWAPAccumulator` y hook `compute_structural_td9_trailing_stop` detrás de `STRUCTURAL_TD9_TRAILING_ENABLED = False`).
 - **Sidecar Desacoplado de Microestructura Binance Futures (`shadow_only`, [`binance_micro_sidecar.py`](binance_micro_sidecar.py)):**
-  - Proceso independiente 100% Python stdlib (`asyncio` + `ssl` RFC 6455) conectado a `wss://fstream.binance.com/market/stream?streams=btcusdt@aggTrade/btcusdt@forceOrder` (con `read_timeout_sec = 120.0` tolerante a `TimeoutError` transitorios) y REST público (`openInterest` + `premiumIndex` cada `30s`).
+  - Proceso independiente 100% Python stdlib (`asyncio` + `ssl` RFC 6455) conectado a `wss://fstream.binance.com/market/stream?streams=btcusdt@aggTrade/btcusdt@forceOrder` (con `read_timeout_sec = 120.0` tolerante a `TimeoutError` transitorios) y REST público (`openInterest` + `premiumIndex` cada `30s`), con logs timestamped `[YYYY-MM-DD HH:MM:SS]`.
   - Calcula `CVD 1m/5m` y liquidaciones `forceOrder` en aritmética entera micro-USD y publica cada `1s` un snapshot atómico en `$HOME/.sniper_state/binance_micro_snapshot.json` (`TTL = 15s`, `connected` default `False`).
-  - LNM Sniper lo lee en $O(1)$ (`P95 < 0.02 ms`, caché por `mtime_ns`) **exclusivamente para telemetría** (`binance_micro` en `telemetry_live*.json`), totalmente aislado de las decisiones de entrada/salida.
+  - LNM Sniper lo lee en $O(1)$ (`P95 = 0.0056 ms` medido en Termux, `< 0.300 ms`, caché por `mtime_ns`) **exclusivamente para telemetría** (`binance_micro` en `telemetry_live*.json`), totalmente aislado de las decisiones de entrada/salida.
+  - **Fase 4B / 4B.1 (JSONL `OPEN`/`CLOSE`):** persiste eventos atómicos en `logs/binance_micro_events*.jsonl` con `14` campos de microestructura (`connected`, `trades_1m`, `buy_vol_1m_usd`, `sell_vol_1m_usd`, `cvd_1m_usd`, `cvd_5m_usd`, `liq_buy_1m_usd`, `liq_sell_1m_usd`, `basis_bps`) y desglose real de comisiones API v3 (`opening_fee`, `closing_fee`, `funding`, `net_pnl_sats`).
+  - **Tape 1m y Guardia Fail-Open:** graba una cinta continua 1m de `12` campos en `logs/binance_micro_tape.jsonl` con rotación $O(1)$ (`20 MiB`), acompañada por la guardia determinista pura [`micro_flow_guard.py`](micro_flow_guard.py) ($O(1)$, cero I/O, `enabled = False`, `shadow_only = True`, 4 reglas simétricas: `MICRO_VETO_ADV_SQUEEZE`, `MICRO_VETO_COUNTER_FLOW`, `MICRO_VETO_POST_CLIMAX_LIQ`, `MICRO_VETO_PURE_CLIMAX`) y el auditor CLI offline [`tools/replay_micro_tape.py`](tools/replay_micro_tape.py).
 - **Resiliencia API v3, Concurrencia y Apagado Limpio:**
   - `ResilientLNMClient` ([`guardian_execution_core.py`](guardian_execution_core.py)) incorpora `TokenBucket(rate=20.0/s, capacity=40.0)`, generación de `clientId` único e idempotente (`generate_client_id`) en `open_trade()`, firma HMAC-SHA256, parseo preciso camelCase API v3 (`openingFee`, `closingFee`, `sumFundingFees`) y auto-sincronización de reloj ante `HTTP 401 outdated timestamp`.
   - `_handle_shutdown_signal` ([`lnm_sniper_v6_advanced.py`](lnm_sniper_v6_advanced.py)) ejecuta parada lock-free segura ante `SIGTERM`/`SIGINT` con sueño interrumpible (`0.25s`) y limpieza `try/finally`.
@@ -109,6 +111,22 @@ Resultados reproducibles directamente con [`SimTrainingEnvironment`](simulation/
 
 - **Estrés de Microestructura (`12M OOS`, `+50%` slippage + `1-bar` latencia):** `+13,488 sats`, `PF = 1.11`, `MaxDD = 4.63%`, `DDG = 0`.
 - **Monte Carlo (`1,000` trayectorias *block-bootstrap*, `12M OOS @ 0.20% RT`):** `P(Net > 0) = 62.10%`, mediana `P50 = +9,790 sats` (`PF P50 = 1.08`), `P95 RealDD = 3.83%`, `P(DDG >= 5.2%) = 0.00%`, `P(HardFloor) = 0.00%`.
+- **Tarifa Real API v3 (`5196b85` @ `0.16%` RT, referencia contable estática):** `18M Net = +7,301 sats`, `12M OOS = +23,992 sats`, `MaxDD = 4.62%`, `DDG = 0`.
+
+### Certificación Fase 5 — Estrés de Microestructura (`GO` en `18M` y `Fold 1`, [`simulation/run_phase5_stress.py`](simulation/run_phase5_stress.py))
+
+Matriz `18M` (`58` bloques) certificada con [`MicrostructureStressConfig`](simulation/sim_lnm_exchange.py) (`S0` default neutro bit a bit):
+
+| Escenario | Fee RT | `N` | `Net 18M` | `OOS 12M` | `PF OOS 12M` | `MaxDD` | `DDG` | `HFViol` |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`S0` (Nominal)** | `20 bps` | `672` | `-8,196` | **`+18,092`** | `1.145` | `4.66%` | `0` | `0` |
+| **`S1` (Termux Realista)** | `20 bps` | `634` | `-15,826` | **`+14,279`** | `1.116` | `4.34%` | `0` | `0` |
+| **`S2` (Pico Volatilidad)** | `20 bps` | `567` | `-58,041` | `-20,737` | `0.832` | `4.92%` | `0` | `0` |
+| **`S0` (Nominal)** | `16 bps` | `730` | `+608` | **`+19,273`** | `1.155` | `4.63%` | `0` | `0` |
+| **`S1` (Termux Realista)** | `16 bps` | `668` | `-4,460` | **`+16,477`** | `1.134` | `4.62%` | `0` | `0` |
+| **`S2` (Pico Volatilidad)** | `16 bps` | `598` | `-37,693` | **`+6,295`** | `1.050` | `4.62%` | `0` | `0` |
+
+- **Archivo `NO-GO` Fase 5B (`Dual-Track` Carril B `SNIPER` sin flujo real):** descartada definitivamente tras ablación en Fold 1 OOS (`B2` negativo `6/6` meses @ `16 bps`: `N=95`, `WR=26.3%`, `Net=-11,209 sats`, `PF=0.488`, `MaxDD=4.98%`; `B1` `4–5` entradas/mes con `0%–20%` WR).
 
 ---
 
@@ -135,7 +153,7 @@ python3 -B lnm_sniper_v6_advanced.py --dry-check
 
 ### Higiene de Actualización (`git pull --ff-only` en Termux)
 
-- Los archivos efímeros `telemetry_live*.json`, `side_brake_state_*.json*`, logs (`*.log`, `*.log.*`), `.env` y respaldos locales están excluidos en [`.gitignore`](.gitignore) para evitar conflictos durante `git pull --ff-only`.
+- Los archivos efímeros `telemetry_live*.json`, `side_brake_state_*.json*`, `logs/*.jsonl`, logs (`*.log`, `*.log.*`), `.env` y respaldos locales están excluidos en [`.gitignore`](.gitignore) para evitar conflictos durante `git pull --ff-only`.
 - El estado del freno por lado (`side_brake_state_*.json*`) y el snapshot del sidecar Binance (`binance_micro_snapshot.json*`) viven de forma aislada en `$HOME/.sniper_state/`.
 - Si un demonio en vivo actualiza alguno de los 4 archivos JSON semilla (`q_brain_*_lnm.json` o `hedge_state_*.json`) localmente en Termux, protege tu árbol antes de futuros `git pull --ff-only` marcándolos temporalmente con:
   ```bash
@@ -256,9 +274,13 @@ python3 -B simulation/train_candidate_brain.py --reset
 # 3. Certificar compuertas Schema v2, P0 y Monte Carlo antes de promover
 python3 -B simulation/certify_and_promote_candidate.py
 
-# Utilidades complementarias de recalibración y Walk-Forward OOS
+# Utilidades complementarias de recalibración, estrés Fase 5, laboratorio 5B v2 y microestructura
 python3 -B retrain_sats_offline.py
 python3 -B validate_walk_forward_oos.py
+python3 -B simulation/run_phase5_stress.py --scope fold1 --fee-rt-bps 16,20
+python3 -B simulation/run_phase5_stress.py --dry-check
+python3 -B simulation/run_phase5b_v2_lab.py --mode geometry --scope fold1 --dry-check
+python3 -B tools/replay_micro_tape.py --help
 ```
 
 ---
@@ -268,18 +290,21 @@ python3 -B validate_walk_forward_oos.py
 Ejecuta todas las suites **de forma secuencial** dentro de WSL (`Ubuntu`) o Linux usando `python3 -B`:
 
 ```bash
-# Verificador unificado rápido / completo (quick + 11 suites core + SHA-256 + purga __pycache__)
+# Verificador unificado rápido / completo (quick + 12 suites secuenciales + SHA-256 + purga __pycache__)
 python3 -B .agents/skills/wsl-verify/scripts/verify_repo.py --mode quick
 python3 -B .agents/skills/wsl-verify/scripts/verify_repo.py --mode full
 
-# Suite offline del sidecar Binance Futures (RFC 6455, CVD/forceOrder, /market/stream, P95 < 0.300 ms)
+# Certificación directa Fold 1 OOS (N=130, Net=+26,933, PF=1.729, M16=+31,746)
+python3 -B .agents/skills/wsl-verify/scripts/verify_repo.py --mode oos-fold1
+
+# Suite offline del sidecar Binance Futures (RFC 6455, CVD/forceOrder, tape 1m, micro_flow_guard)
 python3 -B test_binance_micro_sidecar.py
 
-# Compilación estática de todos los archivos Python (44 módulos)
-python3 -B -m py_compile *.py simulation/*.py .agents/skills/wsl-verify/scripts/verify_repo.py
+# Compilación estática de todos los módulos Python
+python3 -B -m py_compile *.py simulation/*.py tools/*.py .agents/skills/wsl-verify/scripts/verify_repo.py
 ```
 
-- En auditoría certificada (`11/11` suites core + `test_binance_micro_sidecar.py` PASS), todas las suites pasan en secuencia sin ensuciar los archivos trackeados y con `strict_sha=True` verificado sobre [`q_brain_advanced_lnm.json`](q_brain_advanced_lnm.json), [`q_brain_testnet_lnm.json`](q_brain_testnet_lnm.json), [`hedge_state_mainnet.json`](hedge_state_mainnet.json) y [`hedge_state_testnet.json`](hedge_state_testnet.json).
+- En auditoría certificada (`12/12` suites secuenciales PASS en `verify_repo.py --mode full`), todas las suites pasan en secuencia sin ensuciar los archivos trackeados y con `strict_sha=True` verificado sobre [`q_brain_advanced_lnm.json`](q_brain_advanced_lnm.json), [`q_brain_testnet_lnm.json`](q_brain_testnet_lnm.json), [`hedge_state_mainnet.json`](hedge_state_mainnet.json) y [`hedge_state_testnet.json`](hedge_state_testnet.json).
 
 ---
 
@@ -288,7 +313,9 @@ python3 -B -m py_compile *.py simulation/*.py .agents/skills/wsl-verify/scripts/
 | Archivo / Directorio | Responsabilidad Principal |
 | :--- | :--- |
 | [`lnm_sniper_v6_advanced.py`](lnm_sniper_v6_advanced.py) | Bucle principal `5s`, `MultiTimeframeCache`, `AutonomousGoalBrain`, parseo camelCase API v3, telemetría `binance_micro` (`shadow_only`), `--dry-check` y parada limpia `SIGTERM`/`SIGINT` |
-| [`binance_micro_sidecar.py`](binance_micro_sidecar.py) | Sidecar desacoplado 100% stdlib hacia `wss://fstream.binance.com/market/stream?streams=btcusdt@aggTrade/btcusdt@forceOrder` + REST (`openInterest`/`premiumIndex`), agregador `CVD 1m/5m` y `forceOrder` en micro-USD y lector $O(1)$ desde `$HOME/.sniper_state/binance_micro_snapshot.json` |
+| [`binance_micro_sidecar.py`](binance_micro_sidecar.py) | Sidecar desacoplado 100% stdlib hacia `wss://fstream.binance.com/market/stream?streams=btcusdt@aggTrade/btcusdt@forceOrder` + REST (`openInterest`/`premiumIndex`), agregador `CVD 1m/5m` y `forceOrder` en micro-USD, lector $O(1)$ (`$HOME/.sniper_state/binance_micro_snapshot.json`), JSONL `OPEN`/`CLOSE` (`logs/binance_micro_events*.jsonl`) y cinta continua 1m (`logs/binance_micro_tape.jsonl`, rotación $O(1)$) |
+| [`micro_flow_guard.py`](micro_flow_guard.py) | Guardia determinista pura ($O(1)$, cero I/O, `enabled = False`, `shadow_only = True`, fail-open) con 4 reglas simétricas contra micro-flujo adverso / post-clímax |
+| [`tools/replay_micro_tape.py`](tools/replay_micro_tape.py) | Auditor CLI offline streaming (100% stdlib) para evaluar eventos `OPEN`/`CLOSE` (`--events`) o cinta 1m (`--tape`) contra [`micro_flow_guard.py`](micro_flow_guard.py) |
 | [`guardian_execution_core.py`](guardian_execution_core.py) | `AtomicBrainStore` (`strict_sha=True`), `FileLockContext` POSIX, `HardFloorGuardian` (P0), `TokenBucket` (`20/s`, burst `40`) y `ResilientLNMClient` |
 | [`sniper_perception_sats_core.py`](sniper_perception_sats_core.py) | Clasificador de regímenes, `ShortTermPerceptionEngine`, `estimate_bayesian_win_rate`, `verify_net_sats_expectancy` y desglose neto inverso |
 | [`side_streak_brake.py`](side_streak_brake.py) | Freno persistente por lado `C1_STREAK3_24H` (`SideStreakBrakeStore`) con lectura $O(1)$ en RAM y firma `.sha256` en `$HOME/.sniper_state/` |
@@ -301,9 +328,9 @@ python3 -B -m py_compile *.py simulation/*.py .agents/skills/wsl-verify/scripts/
 | [`edge_monitor.py`](edge_monitor.py), [`predictive_hedge.py`](predictive_hedge.py), [`portfolio_hedge.py`](portfolio_hedge.py), [`hedge_risk_manager.py`](hedge_risk_manager.py), [`dynamic_hedge.py`](dynamic_hedge.py), [`adaptive_controller.py`](adaptive_controller.py), [`hedge_state_store.py`](hedge_state_store.py) | Subsistema completo de cobertura híbrida con máquina de 7 estados y persistencia `.sha256` (apagado en producción mediante `ENABLE_HYBRID_HEDGE = False`) |
 | [`sync_brains_dual.py`](sync_brains_dual.py) / [`init_clean_brains.py`](init_clean_brains.py) | Sincronización dual atómica e inicialización limpia de cerebros manteniendo esquema v2 |
 | [`retrain_sats_offline.py`](retrain_sats_offline.py) / [`validate_walk_forward_oos.py`](validate_walk_forward_oos.py) / [`audit_shadow_convergence.py`](audit_shadow_convergence.py) | Recalibración offline orientada a satoshis, reporte Walk-Forward OOS y auditoría de convergencia shadow |
-| `simulation/` | Exchange simulado inverso (`sim_lnm_exchange.py`), `PrecomputedMarketFeed` (`sim_market_feed.py`), `SimTrainingEnvironment`, descarga de velas, entrenamiento y certificación Monte Carlo |
+| `simulation/` | Exchange simulado inverso (`sim_lnm_exchange.py` con `MicrostructureStressConfig`), `PrecomputedMarketFeed` (`sim_market_feed.py`), `SimTrainingEnvironment`, estrés Fase 5 (`run_phase5_stress.py`), presupuesto por carriles (`lane_budget.py`), laboratorio streaming Fase 5B v2 (`run_phase5b_v2_lab.py`), descarga de velas, entrenamiento y certificación Monte Carlo |
 | `test_*.py` | `12` suites automatizadas unitarias, cuantitativas, de paridad OOS, sidecar Binance y CLI |
-| [`AGENTS.md`](AGENTS.md), [`AGENT_MAINTENANCE_DIRECTIVE.md`](AGENT_MAINTENANCE_DIRECTIVE.md), [`CONTEXT_LNM_SNIPER.md`](CONTEXT_LNM_SNIPER.md) | Gobernanza por etapas, reglas P0, arquitectura de subagentes y memoria técnica del proyecto |
+| [`AGENTS.md`](AGENTS.md), [`AGENT_MAINTENANCE_DIRECTIVE.md`](AGENT_MAINTENANCE_DIRECTIVE.md), [`CONTEXT_LNM_SNIPER.md`](CONTEXT_LNM_SNIPER.md), [`ROADMAP_LNM_SNIPER.md`](ROADMAP_LNM_SNIPER.md), [`simulation/AGENTS.md`](simulation/AGENTS.md) | Gobernanza por etapas, reglas P0, hoja de ruta cuantitativa, arquitectura de subagentes y memoria técnica del proyecto |
 
 ---
 
