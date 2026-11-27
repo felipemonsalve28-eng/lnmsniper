@@ -68,7 +68,10 @@ from limit_execution_manager import (
     should_route_limit,
 )
 from side_streak_brake import SideStreakBrakeStore
-from binance_micro_sidecar import read_binance_micro_snapshot
+from binance_micro_sidecar import (
+    append_binance_micro_trade_event,
+    read_binance_micro_snapshot,
+)
 
 LIQUIDITY_RADAR = LiquidityRadar()
 
@@ -112,6 +115,15 @@ def _build_binance_micro_telemetry(lnm_price, now=None, state_path=None):
             "funding_rate": 0.0,
             "open_interest_btc": 0.0,
         }
+
+
+def _resolve_binance_micro_events_path(env_mode=None):
+    """Resuelve la ruta JSONL shadow_only de eventos binance_micro separada por entorno."""
+    env_val = str(env_mode or getattr(Config, "ENV_MODE", "mainnet") or "mainnet").strip().lower()
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    if env_val in ("testnet", "test", "explorer") or "test" in env_val:
+        return os.path.join(base_dir, "logs", "binance_micro_events_testnet.jsonl")
+    return os.path.join(base_dir, "logs", "binance_micro_events.jsonl")
 
 
 def _evaluate_liquidity_from_mtf(mtf_cache, ind_5m, ind_15m, lnm_price):
@@ -159,6 +171,9 @@ class Config:
     BASE_URL = "https://api.lnmarkets.com/v3"
     BRAIN_FILE = "q_brain_advanced_lnm.json"
     HEDGE_STATE_FILE = "hedge_state_mainnet.json"
+    BINANCE_MICRO_EVENTS_FILE = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "logs", "binance_micro_events.jsonl"
+    )
     ENABLE_HYBRID_HEDGE = False
     DETERMINISTIC_TREND_POLICY = True
     FE_OFF_TREND = True
@@ -277,6 +292,7 @@ class Config:
             cls.BRAIN_FILE = "q_brain_testnet_lnm.json"
             cls.HEDGE_STATE_FILE = "hedge_state_testnet.json"
             cls.TELEMETRY_FILE = "telemetry_live_testnet.json"
+            cls.BINANCE_MICRO_EVENTS_FILE = os.path.join(base_dir, "logs", "binance_micro_events_testnet.jsonl")
             cls.CONFIG_LIVE_FILE = os.path.join(base_dir, "config", "config_live_testnet.json")
             cls.PID_FILE = os.path.join(base_dir, "sniper_testnet.pid")
             cls.SHARED_MTF_DISK_CACHE = os.path.join(tempfile.gettempdir(), "sniper_mtf_candles_v73_testnet.json")
@@ -307,6 +323,7 @@ class Config:
             cls.BRAIN_FILE = "q_brain_advanced_lnm.json"
             cls.HEDGE_STATE_FILE = "hedge_state_mainnet.json"
             cls.TELEMETRY_FILE = "telemetry_live_mainnet.json"
+            cls.BINANCE_MICRO_EVENTS_FILE = os.path.join(base_dir, "logs", "binance_micro_events.jsonl")
             cls.CONFIG_LIVE_FILE = os.path.join(base_dir, "config", "config_live_mainnet.json")
             cls.PID_FILE = os.path.join(base_dir, "sniper_mainnet.pid")
             cls.SHARED_MTF_DISK_CACHE = os.path.join(tempfile.gettempdir(), "sniper_mtf_candles_v73_mainnet.json")
@@ -3695,6 +3712,8 @@ def process_settlement_queue(
     risk_multiplier,
     pause_until,
     side_brake=None,
+    lnm_price=None,
+    micro_events_log_path=None,
 ):
     """
     Maneja la cola de liquidación diferida y conciliación de órdenes cerradas (Fase F6).
@@ -3761,6 +3780,7 @@ def process_settlement_queue(
             mfe_tracked = float(info.get("mfe_sats", max(0, total_net_pnl_sats)))
             pred_q = info.get("entry_q", None)
 
+            was_already_processed = str(cid).strip() in getattr(brain, "_processed_closed_trade_ids_set", set())
             brain.remember_and_train(
                 orig_st,
                 act_taken,
@@ -3787,6 +3807,94 @@ def process_settlement_queue(
                 freeze_q_table=bool(getattr(Config, "DETERMINISTIC_TREND_POLICY", True) and not Config.EXPLORER_MODE),
                 exact_fee_is_explicit=has_explicit_fee,
             )
+            if not was_already_processed:
+                try:
+                    _is_synth_close = (
+                        (not str(cid).strip())
+                        or str(cid).strip().startswith(("sim-", "test-", "trade-"))
+                        or ("unittest" in sys.modules)
+                        or ("pytest" in sys.modules)
+                    )
+                    if micro_events_log_path is not None or not _is_synth_close:
+                        _audit_rec = (
+                            brain.transition_audit_log[-1]
+                            if getattr(brain, "transition_audit_log", None)
+                            and str(brain.transition_audit_log[-1].get("trade_id")) == str(cid)
+                            else {}
+                        )
+                        _close_state = str(_audit_rec.get("state") or brain._normalize_state_key(orig_st))
+                        _close_regime = (
+                            str(_close_state).split("|")[0] if "|" in _close_state else str(_close_state)
+                        )
+                        _close_px = float(
+                            lnm_price
+                            if (lnm_price is not None and float(lnm_price or 0.0) > 0.0)
+                            else (
+                                ct_obj.get("exitPrice")
+                                or ct_obj.get("exit_price")
+                                or fill_price
+                                or 0.0
+                            )
+                        )
+                        _exit_reason = str(info.get("close_reason") or "").strip()
+                        if not _exit_reason:
+                            if bool(
+                                ct_obj.get("liquidated")
+                                or ct_obj.get("liquidation_wi")
+                                or ct_obj.get("liquidationWi")
+                            ):
+                                _exit_reason = "LIQUIDATION"
+                            elif bool(ct_obj.get("takeprofit_wi") or ct_obj.get("takeprofitWi")):
+                                _exit_reason = "TAKE_PROFIT"
+                            elif bool(ct_obj.get("stoploss_wi") or ct_obj.get("stoplossWi")):
+                                _exit_reason = "STOP_LOSS"
+                            elif was_harvested:
+                                _exit_reason = "AI_CLOSED"
+                            elif hit_tp_real:
+                                _exit_reason = "TAKE_PROFIT"
+                            else:
+                                _exit_reason = "EXCHANGE_CLOSED"
+                        _act_name = str(
+                            brain.strategies.get(int(act_taken), {}).get("name")
+                            or ("HOLD" if int(act_taken) == 0 else f"ACT_{int(act_taken)}")
+                        )
+                        _env_tag = (
+                            "testnet"
+                            if str(getattr(Config, "ENV_MODE", "mainnet")).strip().lower()
+                            in ("testnet", "test", "explorer")
+                            else "mainnet"
+                        )
+                        _ev_path = micro_events_log_path or _resolve_binance_micro_events_path(_env_tag)
+                        append_binance_micro_trade_event(
+                            _ev_path,
+                            {
+                                "ts": round(float(now), 3),
+                                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(now))),
+                                "env": _env_tag,
+                                "event": "CLOSE",
+                                "trade_id": str(cid),
+                                "side": str(t_side),
+                                "action_id": int(act_taken),
+                                "action_name": _act_name,
+                                "state": _close_state,
+                                "regime": _close_regime,
+                                "lnm_price": round(_close_px, 2),
+                                "net_realized_sats": int(_audit_rec.get("net_realized_sats", total_net_pnl_sats)),
+                                "fee_sats": int(
+                                    _audit_rec.get(
+                                        "fee_sats",
+                                        max(0, int(total_taker_fee_sats) + int(round(float(funding_fee or 0)))),
+                                    )
+                                ),
+                                "mfe_sats": round(float(_audit_rec.get("mfe_sats", mfe_tracked)), 2),
+                                "mae_sats": round(float(_audit_rec.get("mae_sats", mae_tracked)), 2),
+                                "duration_ticks": round(float(_audit_rec.get("duration_ticks", dur_ticks)), 2),
+                                "exit_reason": _exit_reason,
+                                "binance_micro": _build_binance_micro_telemetry(_close_px, now=now),
+                            },
+                        )
+                except Exception:
+                    pass
             if side_brake is not None:
                 sb_info = side_brake.record_trade_close(t_side, total_net_pnl_sats, close_ts=now)
                 if sb_info.get("triggered_pause"):
@@ -4628,6 +4736,7 @@ def main():
                     recovery_anchor_equity, current_mode,
                     consecutive_losses, risk_multiplier, pause_until,
                     side_brake=side_brake,
+                    lnm_price=(lnm_price or ind_5m.get("price", 0.0)),
                 )
                 if closed_ids:
                     last_known_balance = balance
@@ -4861,6 +4970,7 @@ def main():
                     now=now,
                 )
                 _still_ids = {str(x.get("id")) for x in still_running if isinstance(x, dict) and x.get("id")}
+                _pre_open_trade_ids = set(brain.active_trades.keys())
                 for _fev in _lim_rec.get("filled", []):
                     _ft = _fev["trade"]
                     _fm = _fev["meta"]
@@ -4923,6 +5033,55 @@ def main():
                         limit_mgr=limit_mgr,
                         side_brake=side_brake,
                     )
+
+                if (not Config.SHADOW_MODE) and (not safe_mode):
+                    try:
+                        _newly_opened_ids = [
+                            _tid for _tid in brain.active_trades.keys()
+                            if _tid not in _pre_open_trade_ids
+                        ]
+                        if _newly_opened_ids:
+                            _open_env_tag = (
+                                "testnet"
+                                if str(getattr(Config, "ENV_MODE", "mainnet")).strip().lower()
+                                in ("testnet", "test", "explorer")
+                                else "mainnet"
+                            )
+                            _open_ev_path = _resolve_binance_micro_events_path(_open_env_tag)
+                            _open_px = float(lnm_price or ind_5m.get("price", 0.0) or 0.0)
+                            _open_micro = _build_binance_micro_telemetry(_open_px, now=now)
+                            for _otid in _newly_opened_ids:
+                                _ometa = brain.active_trades.get(_otid)
+                                if not isinstance(_ometa, dict):
+                                    continue
+                                _oact = int(_ometa.get("action", 0))
+                                _oname = str(
+                                    brain.strategies.get(_oact, {}).get("name")
+                                    or ("HOLD" if _oact == 0 else f"ACT_{_oact}")
+                                )
+                                _ostate = str(_ometa.get("state") or state)
+                                _oreg = str(mkt_reg_tag or (_ostate.split("|")[0] if "|" in _ostate else _ostate))
+                                append_binance_micro_trade_event(
+                                    _open_ev_path,
+                                    {
+                                        "ts": round(float(now), 3),
+                                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(now))),
+                                        "env": _open_env_tag,
+                                        "event": "OPEN",
+                                        "trade_id": str(_otid),
+                                        "side": str(_ometa.get("side") or ""),
+                                        "action_id": _oact,
+                                        "action_name": _oname,
+                                        "state": _ostate,
+                                        "regime": _oreg,
+                                        "lnm_price": round(_open_px, 2),
+                                        "margin_sats": int(round(float(_ometa.get("margin", 0) or 0))),
+                                        "leverage": round(float(_ometa.get("leverage", 0.0) or 0.0), 2),
+                                        "binance_micro": _open_micro,
+                                    },
+                                )
+                    except Exception:
+                        pass
 
                 _liq_sig_tel = perception.get("liquidity") if isinstance(perception, dict) else {}
                 _liq_cfg_tel = LiquidityConfig.from_thresholds(THRESHOLDS_MANAGER)

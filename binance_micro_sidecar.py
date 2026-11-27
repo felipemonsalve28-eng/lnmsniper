@@ -101,6 +101,13 @@ def _safe_int(val: Any, default: int = 0) -> int:
         return default
 
 
+def _format_sidecar_log(msg: str, now_ts: Optional[float] = None) -> str:
+    """Formatea un mensaje de log del sidecar con prefijo de timestamp `[YYYY-MM-DD HH:MM:SS]`."""
+    ts = time.time() if now_ts is None else _safe_float(now_ts, 0.0)
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+    return f"[{stamp}] {msg}"
+
+
 def compute_websocket_accept(sec_key: str) -> str:
     """Calcula el valor exacto Sec-WebSocket-Accept (RFC 6455 Sección 4.2.2)."""
     digest = hashlib.sha1((str(sec_key) + _WS_MAGIC_GUID).encode("ascii")).digest()
@@ -895,6 +902,39 @@ def read_binance_micro_snapshot(
     }
 
 
+def append_binance_micro_trade_event(
+    log_path: str,
+    event_record: Dict[str, Any],
+) -> bool:
+    """
+    Agrega una línea JSONL UTF-8 compacta (`ensure_ascii=False`, `separators=(",", ":")`)
+    para auditoría `shadow_only` de microestructura Binance por trade (`OPEN`/`CLOSE`).
+    Crea el directorio padre si falta y nunca lanza excepciones hacia el llamador.
+    """
+    try:
+        if not isinstance(log_path, (str, os.PathLike)):
+            return False
+        target = os.fspath(log_path)
+        if not isinstance(target, str) or not target.strip():
+            return False
+        if not isinstance(event_record, dict):
+            return False
+        parent = os.path.dirname(os.path.abspath(target))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        line = json.dumps(
+            event_record,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+        with open(target, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+        return True
+    except Exception:
+        return False
+
+
 def _fetch_json_urllib(url: str, timeout_sec: float = 4.0) -> Dict[str, Any]:
     req = urllib.request.Request(
         url,
@@ -993,6 +1033,7 @@ class BinanceMicroSidecarService:
         ssl_ctx = ssl.create_default_context() if use_ssl else None
         backoff_sec = 1.0
         max_backoff_sec = 30.0
+        ws_connect_count = 0
 
         while not self.is_stopped():
             writer: Optional[asyncio.StreamWriter] = None
@@ -1015,13 +1056,21 @@ class BinanceMicroSidecarService:
                     timeout_sec=10.0,
                 )
                 self.connected = True
+                ws_connect_count += 1
+                ws_evt = "Reconectado" if ws_connect_count > 1 else "Conectado"
+                print(
+                    _format_sidecar_log(
+                        f"[BINANCE-SIDECAR] {ws_evt} WS ({host}:{port}{path_query})"
+                    )
+                )
+                sys.stdout.flush()
 
                 async def _send_raw(raw_frame: bytes) -> None:
                     if writer is not None:
                         writer.write(raw_frame)
                         await asyncio.wait_for(writer.drain(), timeout=5.0)
 
-                await consume_ws_frames(
+                ws_status, ws_code = await consume_ws_frames(
                     reader=reader,
                     send_raw_fn=_send_raw,
                     on_text_fn=self.aggregator.on_ws_message,
@@ -1030,13 +1079,25 @@ class BinanceMicroSidecarService:
                 )
                 if (time.monotonic() - conn_t0) >= 15.0:
                     backoff_sec = 1.0
+                if not self.is_stopped():
+                    sys.stderr.write(
+                        _format_sidecar_log(
+                            f"[BINANCE-SIDECAR] Desconexión WS ({ws_status}:{ws_code}). "
+                            f"Reconectando en {backoff_sec:.1f}s..."
+                        )
+                        + "\n"
+                    )
+                    sys.stderr.flush()
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 if not self.is_stopped():
                     sys.stderr.write(
-                        f"[BINANCE-SIDECAR] Desconexión/error WS ({type(exc).__name__}: {exc}). "
-                        f"Reintentando en {backoff_sec:.1f}s...\n"
+                        _format_sidecar_log(
+                            f"[BINANCE-SIDECAR] Desconexión/error WS ({type(exc).__name__}: {exc}). "
+                            f"Reintentando en {backoff_sec:.1f}s..."
+                        )
+                        + "\n"
                     )
                     sys.stderr.flush()
             finally:
@@ -1099,7 +1160,10 @@ class BinanceMicroSidecarService:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                sys.stderr.write(f"[BINANCE-SIDECAR] Error publicando snapshot: {exc}\n")
+                sys.stderr.write(
+                    _format_sidecar_log(f"[BINANCE-SIDECAR] Error publicando snapshot: {exc}")
+                    + "\n"
+                )
                 sys.stderr.flush()
             await self._sleep_interruptible(self.publish_interval_sec)
 
@@ -1239,11 +1303,21 @@ def main(argv: Optional[list] = None) -> int:
                 pass
 
     print(
-        f"[BINANCE-SIDECAR] Iniciando stream shadow_only symbol={service.symbol} -> {service.state_path} "
-        f"(TTL={service.ttl_sec:.1f}s)"
+        _format_sidecar_log(
+            f"[BINANCE-SIDECAR] Iniciando stream shadow_only symbol={service.symbol} -> {service.state_path} "
+            f"(TTL={service.ttl_sec:.1f}s)"
+        )
     )
     sys.stdout.flush()
     asyncio.run(service.run())
+    stop_sig = service.stop_state.get("sig")
+    sig_info = f" (sig={stop_sig})" if stop_sig is not None else ""
+    print(
+        _format_sidecar_log(
+            f"[BINANCE-SIDECAR] Stream detenido limpiamente{sig_info} -> {service.state_path}"
+        )
+    )
+    sys.stdout.flush()
     return 0
 
 

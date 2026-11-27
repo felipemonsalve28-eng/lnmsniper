@@ -25,6 +25,8 @@ from binance_micro_sidecar import (
     WS_OP_PING,
     WS_OP_PONG,
     WS_OP_TEXT,
+    _format_sidecar_log,
+    append_binance_micro_trade_event,
     build_masked_pong_frame,
     compute_websocket_accept,
     consume_ws_frames,
@@ -377,6 +379,7 @@ class TestBinanceMicroSidecar(unittest.TestCase):
             src = inspect.getsource(critical_fn)
             self.assertNotIn("read_binance_micro_snapshot", src)
             self.assertNotIn("_build_binance_micro_telemetry", src)
+            self.assertNotIn("append_binance_micro_trade_event", src)
 
     def test_05_latency_benchmark_read_snapshot_under_300us(self) -> None:
         """Benchmark de latencia de `read_binance_micro_snapshot()`: P95 < 0.300 ms."""
@@ -536,6 +539,135 @@ class TestBinanceMicroSidecar(unittest.TestCase):
             self.assertFalse(res["stale"])
             self.assertFalse(res["connected"])
             self.assertFalse(res["available"])
+
+    def test_08_format_sidecar_log_and_jsonl_trade_events_persistence(self) -> None:
+        """Valida _format_sidecar_log determinista, persistencia JSONL OPEN/CLOSE, tolerancia a errores y rutas por entorno."""
+        import lnm_sniper_v6_advanced as v6
+
+        # 1. Prefijo determinista [YYYY-MM-DD HH:MM:SS] con now_ts fijo
+        fixed_ts_1 = 1_700_500_123.0
+        expected_stamp_1 = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(fixed_ts_1))
+        formatted_1 = _format_sidecar_log("[BINANCE-SIDECAR] Inicio de prueba", now_ts=fixed_ts_1)
+        self.assertEqual(formatted_1, f"[{expected_stamp_1}] [BINANCE-SIDECAR] Inicio de prueba")
+        self.assertRegex(formatted_1, r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] ")
+
+        fixed_ts_2 = 1_700_500_456.0
+        expected_stamp_2 = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(fixed_ts_2))
+        formatted_2 = _format_sidecar_log("[BINANCE-SIDECAR] Desconexión WS", now_ts=fixed_ts_2)
+        self.assertEqual(formatted_2, f"[{expected_stamp_2}] [BINANCE-SIDECAR] Desconexión WS")
+        self.assertNotEqual(expected_stamp_1, expected_stamp_2)
+
+        # 2. Persistencia JSONL OPEN y CLOSE en directorio temporal (creación de directorio padre + formato compacto UTF-8)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snap_path = resolve_binance_snapshot_path(state_dir=tmpdir)
+            t0 = 1_700_500_100.0
+            agg = BinanceMicroAggregator(clock_fn=lambda: t0)
+            agg.on_agg_trade({"s": "BTCUSDT", "p": "65065.0", "q": "0.2", "m": False})
+            agg.on_force_order({"o": {"s": "BTCUSDT", "S": "BUY", "p": "65100.0", "q": "0.1"}})
+            agg.update_rest_metrics(funding_rate=0.0001, mark_price=65060.0, open_interest_btc=81234.5)
+            write_binance_micro_snapshot(agg.build_snapshot(connected=True, now_ts=t0), state_path=snap_path)
+
+            micro_open = v6._build_binance_micro_telemetry(65000.0, now=t0 + 1.0, state_path=snap_path)
+            micro_close = v6._build_binance_micro_telemetry(65130.0, now=t0 + 5.0, state_path=snap_path)
+
+            events_path = os.path.join(tmpdir, "nested_logs", "binance_micro_events_testnet.jsonl")
+            open_record = {
+                "ts": round(t0 + 1.0, 3),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + 1.0)),
+                "env": "testnet",
+                "event": "OPEN",
+                "trade_id": "uuid-open-close-001",
+                "side": "buy",
+                "action_id": 1,
+                "action_name": "LONG_TREND",
+                "state": "TREND_BULL|MID|LOW_EXP|BULL|FULL_BULL",
+                "regime": "TREND_BULL",
+                "lnm_price": 65000.0,
+                "margin_sats": 2500,
+                "leverage": 35.0,
+                "binance_micro": micro_open,
+            }
+            close_record = {
+                "ts": round(t0 + 5.0, 3),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + 5.0)),
+                "env": "testnet",
+                "event": "CLOSE",
+                "trade_id": "uuid-open-close-001",
+                "side": "buy",
+                "action_id": 1,
+                "action_name": "LONG_TREND",
+                "state": "TREND_BULL|MID|LOW_EXP|BULL|FULL_BULL",
+                "regime": "TREND_BULL",
+                "lnm_price": 65130.0,
+                "net_realized_sats": 320,
+                "fee_sats": 88,
+                "mfe_sats": 410.0,
+                "mae_sats": 45.5,
+                "duration_ticks": 12.0,
+                "exit_reason": "TAKE_PROFIT_ÓPTIMO",
+                "binance_micro": micro_close,
+            }
+
+            self.assertTrue(append_binance_micro_trade_event(events_path, open_record))
+            self.assertTrue(append_binance_micro_trade_event(events_path, close_record))
+            self.assertTrue(os.path.isfile(events_path))
+
+            with open(events_path, "r", encoding="utf-8") as fh:
+                raw_lines = fh.readlines()
+            self.assertEqual(len(raw_lines), 2)
+            # Verifica separadores compactos (",", ":") y ensure_ascii=False
+            self.assertNotIn(": ", raw_lines[0])
+            self.assertNotIn(", ", raw_lines[0])
+            self.assertIn("TAKE_PROFIT_ÓPTIMO", raw_lines[1])
+
+            parsed_open = json.loads(raw_lines[0])
+            parsed_close = json.loads(raw_lines[1])
+            self.assertEqual(parsed_open["event"], "OPEN")
+            self.assertEqual(parsed_open["trade_id"], "uuid-open-close-001")
+            self.assertEqual(parsed_open["margin_sats"], 2500)
+            self.assertAlmostEqual(parsed_open["leverage"], 35.0, places=2)
+            self.assertTrue(parsed_open["binance_micro"]["available"])
+            self.assertAlmostEqual(parsed_open["binance_micro"]["basis_bps"], 10.0, places=2)
+
+            self.assertEqual(parsed_close["event"], "CLOSE")
+            self.assertEqual(parsed_close["trade_id"], "uuid-open-close-001")
+            self.assertEqual(parsed_close["net_realized_sats"], 320)
+            self.assertEqual(parsed_close["fee_sats"], 88)
+            self.assertEqual(parsed_close["exit_reason"], "TAKE_PROFIT_ÓPTIMO")
+            self.assertTrue(parsed_close["binance_micro"]["available"])
+
+            # 3. Tolerancia total a fallos en rutas inválidas sin lanzar excepción
+            blocker_file = os.path.join(tmpdir, "not_a_directory")
+            with open(blocker_file, "wb") as bfh:
+                bfh.write(b"x")
+            self.assertFalse(
+                append_binance_micro_trade_event(os.path.join(blocker_file, "events.jsonl"), open_record)
+            )
+            self.assertFalse(append_binance_micro_trade_event(tmpdir, open_record))
+            self.assertFalse(append_binance_micro_trade_event("", open_record))
+            self.assertFalse(append_binance_micro_trade_event(os.path.join(tmpdir, "bad\x00.jsonl"), open_record))
+            self.assertFalse(append_binance_micro_trade_event(events_path, "not-a-dict"))  # type: ignore[arg-type]
+
+        # 4. Verificación de rutas separadas por entorno (testnet vs mainnet)
+        prev_env = v6.Config.ENV_MODE
+        try:
+            v6.Config.configure_environment("testnet")
+            tn_path = v6._resolve_binance_micro_events_path()
+            self.assertTrue(
+                tn_path.endswith(os.path.join("logs", "binance_micro_events_testnet.jsonl")),
+                msg=f"Ruta testnet inesperada: {tn_path}",
+            )
+            self.assertEqual(v6.Config.BINANCE_MICRO_EVENTS_FILE, tn_path)
+
+            v6.Config.configure_environment("mainnet")
+            mn_path = v6._resolve_binance_micro_events_path()
+            self.assertTrue(
+                mn_path.endswith(os.path.join("logs", "binance_micro_events.jsonl")),
+                msg=f"Ruta mainnet inesperada: {mn_path}",
+            )
+            self.assertEqual(v6.Config.BINANCE_MICRO_EVENTS_FILE, mn_path)
+        finally:
+            v6.Config.configure_environment(prev_env)
 
 
 if __name__ == "__main__":
