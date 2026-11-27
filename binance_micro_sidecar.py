@@ -935,6 +935,106 @@ def append_binance_micro_trade_event(
         return False
 
 
+from typing import Mapping  # noqa: E402
+
+DEFAULT_TAPE_MAX_BYTES = 20 * 1024 * 1024
+DEFAULT_BINANCE_TAPE_PATH = os.path.join("logs", "binance_micro_tape.jsonl")
+
+
+def rotate_tape_file_if_needed(
+    tape_path: str,
+    max_bytes: int = DEFAULT_TAPE_MAX_BYTES,
+    incoming_bytes: int = 0,
+) -> bool:
+    """Rota `<tape_path>` -> `<tape_path>.1` en O(1) si supera `max_bytes`; nunca lanza excepción."""
+    try:
+        if not isinstance(tape_path, (str, os.PathLike)):
+            return False
+        target = os.fspath(tape_path)
+        if not isinstance(target, str) or not target.strip():
+            return False
+        eff_max = int(max_bytes)
+        if eff_max <= 0:
+            return False
+        eff_incoming = max(0, int(incoming_bytes))
+        if not os.path.exists(target):
+            return False
+        if os.path.getsize(target) + eff_incoming > eff_max:
+            os.replace(target, f"{target}.1")
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def append_binance_micro_tape_1m(
+    tape_path: Optional[str],
+    snapshot: Mapping[str, Any],
+    *,
+    ts: Optional[float] = None,
+    max_bytes: int = DEFAULT_TAPE_MAX_BYTES,
+) -> bool:
+    """
+    Graba una línea JSONL de 12 campos por minuto cerrado con rotación O(1) segura.
+    Nunca lanza excepción ante errores de disco o permisos.
+    """
+    try:
+        if tape_path is None or not isinstance(tape_path, (str, os.PathLike)):
+            return False
+        target = os.fspath(tape_path)
+        if not isinstance(target, str) or not target.strip():
+            return False
+        if not isinstance(snapshot, Mapping):
+            return False
+
+        abs_target = os.path.abspath(target)
+        parent = os.path.dirname(abs_target)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
+        if ts is not None:
+            eff_ts = _safe_float(ts, time.time())
+        else:
+            raw_ts = snapshot.get("ts")
+            if raw_ts is None:
+                raw_ts = snapshot.get("updated_at_ts")
+            eff_ts = _safe_float(raw_ts, time.time())
+
+        raw_price = snapshot.get("price")
+        if raw_price is None:
+            raw_price = snapshot.get("last_price")
+        price = _safe_float(raw_price, 0.0)
+        if price <= 0.0 and snapshot.get("mark_price") is not None:
+            price = _safe_float(snapshot.get("mark_price"), 0.0)
+
+        record = {
+            "ts": eff_ts,
+            "price": price,
+            "connected": bool(snapshot.get("connected", False)),
+            "stale": bool(snapshot.get("stale", False)),
+            "trades_1m": max(0, _safe_int(snapshot.get("trades_1m"), 0)),
+            "buy_vol_1m_usd": _safe_float(snapshot.get("buy_vol_1m_usd"), 0.0),
+            "sell_vol_1m_usd": _safe_float(snapshot.get("sell_vol_1m_usd"), 0.0),
+            "cvd_1m_usd": _safe_float(snapshot.get("cvd_1m_usd"), 0.0),
+            "cvd_5m_usd": _safe_float(snapshot.get("cvd_5m_usd"), 0.0),
+            "liq_buy_1m_usd": _safe_float(snapshot.get("liq_buy_1m_usd"), 0.0),
+            "liq_sell_1m_usd": _safe_float(snapshot.get("liq_sell_1m_usd"), 0.0),
+            "basis_bps": _safe_float(snapshot.get("basis_bps"), 0.0),
+        }
+        line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+        line_bytes = line.encode("utf-8")
+        rotate_tape_file_if_needed(
+            abs_target,
+            max_bytes=max_bytes,
+            incoming_bytes=len(line_bytes),
+        )
+        with open(abs_target, "a", encoding="utf-8") as fh:
+            fh.write(line)
+        return True
+    except Exception:
+        return False
+
+
 def _fetch_json_urllib(url: str, timeout_sec: float = 4.0) -> Dict[str, Any]:
     req = urllib.request.Request(
         url,
@@ -1000,6 +1100,8 @@ class BinanceMicroSidecarService:
         publish_interval_sec: float = DEFAULT_PUBLISH_INTERVAL_SEC,
         rest_interval_sec: float = DEFAULT_REST_INTERVAL_SEC,
         ttl_sec: float = DEFAULT_TTL_SEC,
+        tape_path: Optional[str] = None,
+        tape_max_bytes: int = DEFAULT_TAPE_MAX_BYTES,
     ) -> None:
         self.state_path = os.path.abspath(state_path)
         self.ws_url = str(ws_url or DEFAULT_WS_URL)
@@ -1008,6 +1110,11 @@ class BinanceMicroSidecarService:
         self.publish_interval_sec = max(0.2, float(publish_interval_sec))
         self.rest_interval_sec = max(5.0, float(rest_interval_sec))
         self.ttl_sec = max(1.0, float(ttl_sec))
+        self.tape_path: Optional[str] = (
+            os.path.abspath(str(tape_path)) if tape_path else None
+        )
+        self.tape_max_bytes: int = max(1, int(tape_max_bytes))
+        self._last_tape_minute_bucket: Optional[int] = None
 
         self.aggregator = BinanceMicroAggregator(symbol=self.symbol)
         self.connected: bool = False
@@ -1157,6 +1264,22 @@ class BinanceMicroSidecarService:
                     snap,
                     self.state_path,
                 )
+                now_ts = _safe_float(snap.get("updated_at_ts"), 0.0)
+                if now_ts <= 0.0:
+                    now_ts = time.time()
+                cur_bucket = int(now_ts // 60)
+                if self._last_tape_minute_bucket is None:
+                    self._last_tape_minute_bucket = cur_bucket
+                elif cur_bucket > self._last_tape_minute_bucket:
+                    self._last_tape_minute_bucket = cur_bucket
+                    if self.tape_path:
+                        await asyncio.to_thread(
+                            append_binance_micro_tape_1m,
+                            self.tape_path,
+                            snap,
+                            ts=float(cur_bucket * 60),
+                            max_bytes=self.tape_max_bytes,
+                        )
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -1242,6 +1365,22 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="TTL máximo de validez del snapshot en segundos (default: 15.0).",
     )
     parser.add_argument(
+        "--tape-path",
+        default=None,
+        help="Ruta JSONL para grabar el tape histórico 1m por minuto cerrado (default: desactivado).",
+    )
+    parser.add_argument(
+        "--enable-tape",
+        action="store_true",
+        help=f"Activa la grabación de tape 1m en {DEFAULT_BINANCE_TAPE_PATH} si no se pasa --tape-path.",
+    )
+    parser.add_argument(
+        "--tape-max-bytes",
+        type=int,
+        default=DEFAULT_TAPE_MAX_BYTES,
+        help=f"Tamaño máximo en bytes antes de rotar el tape 1m a .1 (default: {DEFAULT_TAPE_MAX_BYTES}).",
+    )
+    parser.add_argument(
         "--dry-check",
         action="store_true",
         help="Valida configuración, framing RFC 6455 y agregador en RAM sin red ni credenciales.",
@@ -1281,6 +1420,9 @@ def main(argv: Optional[list] = None) -> int:
         return _run_dry_check(args)
 
     state_path = resolve_binance_snapshot_path(state_dir=args.state_dir)
+    tape_path = args.tape_path
+    if not tape_path and getattr(args, "enable_tape", False):
+        tape_path = DEFAULT_BINANCE_TAPE_PATH
     service = BinanceMicroSidecarService(
         state_path=state_path,
         ws_url=args.ws_url,
@@ -1289,6 +1431,8 @@ def main(argv: Optional[list] = None) -> int:
         publish_interval_sec=args.publish_interval,
         rest_interval_sec=args.rest_interval,
         ttl_sec=args.ttl_sec,
+        tape_path=tape_path,
+        tape_max_bytes=args.tape_max_bytes,
     )
 
     def _on_signal(signum: int, _frame: Any) -> None:

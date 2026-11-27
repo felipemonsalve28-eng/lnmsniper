@@ -326,5 +326,294 @@ class TestPhase5MicrostructureStress(unittest.TestCase):
             self.assertTrue(env.exchange.inverse_contract_math)
 
 
+class TestPhase5Bv2LaneIsolation(unittest.TestCase):
+    def test_no_contagion_exact_lane_a_vs_lane_b_and_global_dd(self):
+        from simulation.lane_budget import LaneBudgetConfig, LaneBudgetController
+
+        ctrl = LaneBudgetController(
+            initial_equity_sats=100_000,
+            config=LaneBudgetConfig(enabled=True),
+        )
+        # Inyectar -1.50% en B y -2.10% en A => DD_global = 3.60% > 3.50%
+        ctrl.record_lane_b_pnl(-1500.0, now_ts=1000.0, side="b")
+        ctrl.record_lane_a_pnl(-2100.0)
+
+        self.assertAlmostEqual(ctrl.dd_b, 0.0150, places=6)
+        self.assertAlmostEqual(ctrl.dd_a, 0.0210, places=6)
+        self.assertAlmostEqual(ctrl.dd_global, 0.0360, places=6)
+        self.assertFalse(ctrl.lane_a_recovery_mode)
+
+        dec_b = ctrl.evaluate_lane_b_entry(
+            side="s",
+            now_ts=1005.0,
+            n_open_a=0,
+            n_open_b_buy=0,
+            n_open_b_sell=0,
+            avail_balance_sats=96_400.0,
+            open_margin_b_sats=0.0,
+            margin_new_sats=1000.0,
+            open_loss_at_sl_b_sats=0.0,
+            loss_at_sl_new_sats=100.0,
+        )
+        self.assertFalse(dec_b.allowed)
+        self.assertTrue(dec_b.lane_b_paused)
+        self.assertEqual(dec_b.reason, "LANE_B_PAUSED_24H")
+        self.assertFalse(dec_b.lane_a_recovery_mode)
+
+        # Carril A solo entra en recovery_mode cuando dd_a >= 3.50% y sale cuando dd_a <= 2.50%
+        ctrl.record_lane_a_pnl(-1400.0)
+        self.assertAlmostEqual(ctrl.dd_a, 0.0350, places=6)
+        self.assertTrue(ctrl.lane_a_recovery_mode)
+        ctrl.record_lane_a_pnl(+1000.0)
+        self.assertAlmostEqual(ctrl.dd_a, 0.0250, places=6)
+        self.assertFalse(ctrl.lane_a_recovery_mode)
+
+    def test_lane_b_kill_switch_soft_cut_streak_protective_brake_margin_and_sl_risk(self):
+        from simulation.lane_budget import (
+            LaneBudgetConfig,
+            LaneBudgetController,
+            compute_inverse_loss_at_sl_sats,
+            compute_inverse_net_pnl_sats,
+        )
+
+        # Validar matemática inversa exacta
+        pnl = compute_inverse_net_pnl_sats(
+            side="b",
+            margin_sats=1000.0,
+            leverage=10.0,
+            entry_price=50000.0,
+            exit_price=50000.0,
+            fee_rate_open=0.0008,
+            fee_rate_close=0.0008,
+            funding_sats=0.0,
+        )
+        self.assertAlmostEqual(pnl["gross_pnl_sats"], 0.0, places=9)
+        self.assertAlmostEqual(pnl["opening_fee_sats"], 8.0, places=9)
+        self.assertAlmostEqual(pnl["closing_fee_sats"], 8.0, places=9)
+        self.assertAlmostEqual(pnl["net_pnl_sats"], -16.0, places=9)
+
+        loss_sl = compute_inverse_loss_at_sl_sats(
+            margin_sats=1000.0,
+            leverage=10.0,
+            entry_price=50000.0,
+            sl_price=49250.0,
+            fee_rate_open=0.0008,
+            fee_rate_close=0.0008,
+        )
+        exp_l_sl = abs(50000.0 - 49250.0) / 49250.0 + 0.0008 + (50000.0 / 49250.0) * 0.0008
+        self.assertAlmostEqual(loss_sl, 10000.0 * exp_l_sl, places=6)
+
+        # 1. Recorte 0.5x en DD_B >= 0.80%
+        ctrl = LaneBudgetController(100_000, LaneBudgetConfig(enabled=True))
+        ctrl.record_lane_b_pnl(-800.0, now_ts=1000.0, side="b")
+        dec_soft = ctrl.evaluate_lane_b_entry(
+            side="s",
+            now_ts=1005.0,
+            n_open_a=0,
+            n_open_b_buy=0,
+            n_open_b_sell=0,
+            avail_balance_sats=99_200.0,
+            open_margin_b_sats=0.0,
+            margin_new_sats=1000.0,
+            open_loss_at_sl_b_sats=0.0,
+            loss_at_sl_new_sats=100.0,
+        )
+        self.assertTrue(dec_soft.allowed)
+        self.assertAlmostEqual(dec_soft.risk_multiplier, 0.50, places=6)
+
+        # 2. Pausa 24h tras 2 pérdidas seguidas por lado en B
+        ctrl_streak = LaneBudgetController(100_000, LaneBudgetConfig(enabled=True))
+        ctrl_streak.record_lane_b_trade_close("b", -300.0, now_ts=1000.0)
+        ctrl_streak.record_lane_b_trade_close("b", -300.0, now_ts=1100.0)
+        dec_b_paused = ctrl_streak.evaluate_lane_b_entry(
+            side="b",
+            now_ts=1200.0,
+            n_open_a=0,
+            n_open_b_buy=0,
+            n_open_b_sell=0,
+            avail_balance_sats=99_400.0,
+            open_margin_b_sats=0.0,
+            margin_new_sats=1000.0,
+            open_loss_at_sl_b_sats=0.0,
+            loss_at_sl_new_sats=100.0,
+        )
+        self.assertFalse(dec_b_paused.allowed)
+        self.assertTrue(dec_b_paused.lane_b_paused)
+        self.assertEqual(dec_b_paused.reason, "LANE_B_PAUSED_24H")
+
+        # Lado contrario ("s") sigue permitido y "b" se libera tras 24h
+        dec_s_ok = ctrl_streak.evaluate_lane_b_entry(
+            side="s",
+            now_ts=1200.0,
+            n_open_a=0,
+            n_open_b_buy=0,
+            n_open_b_sell=0,
+            avail_balance_sats=99_400.0,
+            open_margin_b_sats=0.0,
+            margin_new_sats=1000.0,
+            open_loss_at_sl_b_sats=0.0,
+            loss_at_sl_new_sats=100.0,
+        )
+        self.assertTrue(dec_s_ok.allowed)
+
+        dec_b_unpaused = ctrl_streak.evaluate_lane_b_entry(
+            side="b",
+            now_ts=1100.0 + 86_400.0,
+            n_open_a=0,
+            n_open_b_buy=0,
+            n_open_b_sell=0,
+            avail_balance_sats=99_400.0,
+            open_margin_b_sats=0.0,
+            margin_new_sats=1000.0,
+            open_loss_at_sl_b_sats=0.0,
+            loss_at_sl_new_sats=100.0,
+        )
+        self.assertTrue(dec_b_unpaused.allowed)
+
+        # 3. Freno protector si DD_A >= 2.00% o DD_global >= 2.20%
+        ctrl_prot_a = LaneBudgetController(100_000, LaneBudgetConfig(enabled=True))
+        ctrl_prot_a.record_lane_a_pnl(-2000.0)
+        dec_pa = ctrl_prot_a.evaluate_lane_b_entry(
+            side="b",
+            now_ts=1000.0,
+            n_open_a=0,
+            n_open_b_buy=0,
+            n_open_b_sell=0,
+            avail_balance_sats=98_000.0,
+            open_margin_b_sats=0.0,
+            margin_new_sats=1000.0,
+            open_loss_at_sl_b_sats=0.0,
+            loss_at_sl_new_sats=100.0,
+        )
+        self.assertFalse(dec_pa.allowed)
+        self.assertEqual(dec_pa.reason, "LANE_B_PROTECTIVE_DD_BRAKE")
+
+        ctrl_prot_g = LaneBudgetController(100_000, LaneBudgetConfig(enabled=True))
+        ctrl_prot_g.record_lane_a_pnl(-1500.0)
+        ctrl_prot_g.record_lane_b_pnl(-700.0, now_ts=1000.0)
+        dec_pg = ctrl_prot_g.evaluate_lane_b_entry(
+            side="b",
+            now_ts=1005.0,
+            n_open_a=0,
+            n_open_b_buy=0,
+            n_open_b_sell=0,
+            avail_balance_sats=97_800.0,
+            open_margin_b_sats=0.0,
+            margin_new_sats=1000.0,
+            open_loss_at_sl_b_sats=0.0,
+            loss_at_sl_new_sats=100.0,
+        )
+        self.assertFalse(dec_pg.allowed)
+        self.assertEqual(dec_pg.reason, "LANE_B_PROTECTIVE_DD_BRAKE")
+
+        # 4. Tope de 15% margen y cota sum(LossAtSL_open_B) + LossAtSL_new <= (0.0150 - DD_B) * E_global
+        ctrl_caps = LaneBudgetController(100_000, LaneBudgetConfig(enabled=True))
+        ctrl_caps.record_lane_b_pnl(-500.0, now_ts=1000.0)  # dd_b=0.005, e_global=99_500 => cap SL=995.0
+        dec_mcap = ctrl_caps.evaluate_lane_b_entry(
+            side="b",
+            now_ts=1005.0,
+            n_open_a=0,
+            n_open_b_buy=0,
+            n_open_b_sell=0,
+            avail_balance_sats=100_000.0,
+            open_margin_b_sats=10_000.0,
+            margin_new_sats=5_001.0,
+            open_loss_at_sl_b_sats=0.0,
+            loss_at_sl_new_sats=100.0,
+        )
+        self.assertFalse(dec_mcap.allowed)
+        self.assertEqual(dec_mcap.reason, "LANE_B_MARGIN_CAP_15PCT")
+
+        dec_slcap = ctrl_caps.evaluate_lane_b_entry(
+            side="b",
+            now_ts=1005.0,
+            n_open_a=0,
+            n_open_b_buy=0,
+            n_open_b_sell=0,
+            avail_balance_sats=100_000.0,
+            open_margin_b_sats=1_000.0,
+            margin_new_sats=1_000.0,
+            open_loss_at_sl_b_sats=600.0,
+            loss_at_sl_new_sats=400.0,
+        )
+        self.assertFalse(dec_slcap.allowed)
+        self.assertEqual(dec_slcap.reason, "LANE_B_OPEN_SL_RISK_CAP")
+
+        dec_ok = ctrl_caps.evaluate_lane_b_entry(
+            side="b",
+            now_ts=1005.0,
+            n_open_a=0,
+            n_open_b_buy=0,
+            n_open_b_sell=0,
+            avail_balance_sats=100_000.0,
+            open_margin_b_sats=1_000.0,
+            margin_new_sats=1_000.0,
+            open_loss_at_sl_b_sats=600.0,
+            loss_at_sl_new_sats=395.0,
+        )
+        self.assertTrue(dec_ok.allowed)
+
+    def test_asymmetric_slots_lane_a_priority_and_total_cap(self):
+        from simulation.lane_budget import LaneBudgetConfig, LaneBudgetController
+
+        ctrl = LaneBudgetController(100_000, LaneBudgetConfig(enabled=True))
+        common = dict(
+            now_ts=1000.0,
+            avail_balance_sats=100_000.0,
+            open_margin_b_sats=0.0,
+            margin_new_sats=1000.0,
+            open_loss_at_sl_b_sats=0.0,
+            loss_at_sl_new_sats=100.0,
+        )
+
+        # N_A=3, N_B=0 => B permitido (3 <= 3, y quedan 4 >= 3 slots para A)
+        self.assertTrue(ctrl.evaluate_lane_b_entry(side="b", n_open_a=3, n_open_b_buy=0, n_open_b_sell=0, **common).allowed)
+
+        # N_A=4, N_B=0 => B rechazado (N_A + N_B = 4 > 3)
+        dec_na4 = ctrl.evaluate_lane_b_entry(side="b", n_open_a=4, n_open_b_buy=0, n_open_b_sell=0, **common)
+        self.assertFalse(dec_na4.allowed)
+        self.assertEqual(dec_na4.reason, "LANE_B_SLOT_CAP")
+
+        # Máximo 1 por lado en B, máximo 2 total en B
+        dec_same_side = ctrl.evaluate_lane_b_entry(side="b", n_open_a=1, n_open_b_buy=1, n_open_b_sell=0, **common)
+        self.assertFalse(dec_same_side.allowed)
+        self.assertEqual(dec_same_side.reason, "LANE_B_SLOT_CAP")
+
+        dec_other_side = ctrl.evaluate_lane_b_entry(side="s", n_open_a=2, n_open_b_buy=1, n_open_b_sell=0, **common)
+        self.assertTrue(dec_other_side.allowed)
+
+        dec_b_full = ctrl.evaluate_lane_b_entry(side="b", n_open_a=0, n_open_b_buy=1, n_open_b_sell=1, **common)
+        self.assertFalse(dec_b_full.allowed)
+        self.assertEqual(dec_b_full.reason, "LANE_B_SLOT_CAP")
+
+        # Carril A puede llenar los 3 slots reservados aunque B tenga 2 abiertos (total 5)
+        self.assertTrue(ctrl.evaluate_lane_a_entry(n_open_a=2, n_open_b=2).allowed)
+        self.assertFalse(ctrl.evaluate_lane_a_entry(n_open_a=3, n_open_b=2).allowed)
+
+    def test_phase5b_v2_lab_cli_help_offline(self):
+        import subprocess
+        import sys
+
+        proc = subprocess.run(
+            [sys.executable, "simulation/run_phase5b_v2_lab.py", "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        for flag in (
+            "--scope",
+            "--scenarios",
+            "--fee-rt-bps",
+            "--mode",
+            "--sl-floors",
+            "--cooldown-hours",
+            "--short-exp-anchor",
+            "--json-out",
+            "--cache-dir",
+        ):
+            self.assertIn(flag, proc.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

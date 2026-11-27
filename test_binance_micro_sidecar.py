@@ -821,5 +821,442 @@ class TestBinanceMicroSidecar(unittest.TestCase):
             self.assertAlmostEqual(micro["basis_bps"], -9.98, places=2)
 
 
+from binance_micro_sidecar import (
+    DEFAULT_BINANCE_TAPE_PATH,
+    DEFAULT_TAPE_MAX_BYTES,
+    BinanceMicroSidecarService,
+    _build_arg_parser as _sidecar_build_arg_parser,
+    append_binance_micro_tape_1m,
+    rotate_tape_file_if_needed,
+)
+from micro_flow_guard import (
+    MICRO_VETO_ADV_SQUEEZE,
+    MICRO_VETO_COUNTER_FLOW,
+    MICRO_VETO_POST_CLIMAX_LIQ,
+    MICRO_VETO_PURE_CLIMAX,
+    MicroFlowGuardConfig,
+    evaluate_micro_entry_guard,
+    normalize_side_sign,
+)
+from tools import replay_micro_tape
+
+
+class TestMicroFlowGuardAndTape(unittest.TestCase):
+    @staticmethod
+    def _base_snap(**overrides) -> dict:
+        snap = {
+            "available": True,
+            "connected": True,
+            "stale": False,
+            "age_sec": 0.5,
+            "trades_1m": 120,
+            "buy_vol_1m_usd": 500_000.0,
+            "sell_vol_1m_usd": 500_000.0,
+            "cvd_5m_usd": 0.0,
+            "liq_buy_1m_usd": 0.0,
+            "liq_sell_1m_usd": 0.0,
+        }
+        snap.update(overrides)
+        return snap
+
+    @staticmethod
+    def _reflect_snap(snap: dict) -> dict:
+        out = dict(snap)
+        out["buy_vol_1m_usd"] = snap["sell_vol_1m_usd"]
+        out["sell_vol_1m_usd"] = snap["buy_vol_1m_usd"]
+        out["liq_buy_1m_usd"] = snap["liq_sell_1m_usd"]
+        out["liq_sell_1m_usd"] = snap["liq_buy_1m_usd"]
+        out["cvd_5m_usd"] = -float(snap["cvd_5m_usd"])
+        return out
+
+    def test_01_fail_open_exhaustive_and_disabled(self) -> None:
+        """Valida fail-open estricto en todas las fallas de señal y disabled."""
+        self.assertEqual(normalize_side_sign(1), 1)
+        self.assertEqual(normalize_side_sign(4), 1)
+        self.assertEqual(normalize_side_sign(5), -1)
+        self.assertEqual(normalize_side_sign(8), -1)
+        self.assertEqual(normalize_side_sign(-1), -1)
+        self.assertEqual(normalize_side_sign(" BUY "), 1)
+        self.assertEqual(normalize_side_sign("Long"), 1)
+        self.assertEqual(normalize_side_sign("sell"), -1)
+        self.assertEqual(normalize_side_sign("-"), -1)
+        self.assertEqual(normalize_side_sign(True), 0)
+        self.assertEqual(normalize_side_sign(False), 0)
+        self.assertEqual(normalize_side_sign(0), 0)
+        self.assertEqual(normalize_side_sign("hold"), 0)
+
+        dec_dis = evaluate_micro_entry_guard(
+            "buy", self._base_snap(), MicroFlowGuardConfig(enabled=False)
+        )
+        self.assertTrue(dec_dis.allowed)
+        self.assertFalse(dec_dis.vetoed)
+        self.assertFalse(dec_dis.fail_open)
+        self.assertEqual(dec_dis.reason, "DISABLED")
+
+        cfg = MicroFlowGuardConfig(enabled=True, shadow_only=False)
+        cases = [
+            (0, self._base_snap(), "FAIL_OPEN_INVALID_SIDE"),
+            (True, self._base_snap(), "FAIL_OPEN_INVALID_SIDE"),
+            ("buy", None, "FAIL_OPEN_NONE"),
+            ("buy", self._base_snap(connected=False), "FAIL_OPEN_DISCONNECTED"),
+            ("buy", self._base_snap(available=False), "FAIL_OPEN_DISCONNECTED"),
+            ("buy", self._base_snap(stale=True), "FAIL_OPEN_STALE"),
+            ("buy", self._base_snap(age_sec=5.01), "FAIL_OPEN_AGE"),
+            ("buy", {"connected": True, "stale": False, "trades_1m": 50}, "FAIL_OPEN_AGE"),
+            ("buy", self._base_snap(trades_1m=29), "FAIL_OPEN_LOW_VOLUME"),
+            (
+                "buy",
+                self._base_snap(buy_vol_1m_usd=100_000.0, sell_vol_1m_usd=149_999.0),
+                "FAIL_OPEN_LOW_VOLUME",
+            ),
+            ("buy", self._base_snap(buy_vol_1m_usd=float("nan")), "FAIL_OPEN_PARSE_ERROR"),
+            ("buy", self._base_snap(cvd_5m_usd=float("inf")), "FAIL_OPEN_PARSE_ERROR"),
+            ("buy", self._base_snap(trades_1m=True), "FAIL_OPEN_PARSE_ERROR"),
+            ("buy", self._base_snap(sell_vol_1m_usd=-1.0), "FAIL_OPEN_PARSE_ERROR"),
+        ]
+        for side, snap, exp_reason in cases:
+            dec = evaluate_micro_entry_guard(side, snap, cfg)
+            self.assertTrue(dec.allowed, msg=exp_reason)
+            self.assertFalse(dec.vetoed, msg=exp_reason)
+            self.assertFalse(dec.would_veto, msg=exp_reason)
+            self.assertTrue(dec.fail_open, msg=exp_reason)
+            self.assertEqual(dec.reason, exp_reason)
+            self.assertIsNone(dec.rule_code)
+
+        # Edad por timestamp con now_ts
+        snap_ts = self._base_snap(ts=1000.0)
+        snap_ts.pop("age_sec")
+        dec_age = evaluate_micro_entry_guard("buy", snap_ts, cfg, now_ts=1005.5)
+        self.assertTrue(dec_age.fail_open)
+        self.assertEqual(dec_age.reason, "FAIL_OPEN_AGE")
+
+    def test_02_small_liquidations_immunity_and_four_rules_symmetry(self) -> None:
+        """Valida inmunidad con liq_tot < 75k USD y simetría exacta LONG vs SHORT en 4 reglas."""
+        cfg = MicroFlowGuardConfig(enabled=True, shadow_only=False)
+
+        # Inmunidad a liquidaciones pequeñas (< 75_000)
+        small_liq = self._base_snap(
+            buy_vol_1m_usd=200_000.0,
+            sell_vol_1m_usd=600_000.0,  # i_cvd = -0.50 -> dir_cvd_1m = -0.50
+            liq_buy_1m_usd=0.0,
+            liq_sell_1m_usd=74_999.0,  # l_dir = -1.0 pero liq_tot < 75k
+            cvd_5m_usd=-1_000_000.0,
+        )
+        dec_small = evaluate_micro_entry_guard("buy", small_liq, cfg)
+        self.assertTrue(dec_small.allowed)
+        self.assertFalse(dec_small.would_veto)
+        self.assertEqual(dec_small.reason, "PASS")
+
+        rule_snaps = [
+            (
+                MICRO_VETO_ADV_SQUEEZE,
+                self._base_snap(
+                    buy_vol_1m_usd=300_000.0,
+                    sell_vol_1m_usd=700_000.0,  # dir_cvd_1m = -0.40 <= -0.15
+                    liq_buy_1m_usd=10_000.0,
+                    liq_sell_1m_usd=90_000.0,  # liq_tot=100k, l_dir=-0.80 <= -0.50
+                    cvd_5m_usd=0.0,
+                ),
+            ),
+            (
+                MICRO_VETO_COUNTER_FLOW,
+                self._base_snap(
+                    buy_vol_1m_usd=300_000.0,
+                    sell_vol_1m_usd=700_000.0,  # dir_cvd_1m = -0.40 <= -0.30
+                    cvd_5m_usd=-30_000_000.0,  # <= -25M
+                ),
+            ),
+            (
+                MICRO_VETO_POST_CLIMAX_LIQ,
+                self._base_snap(
+                    buy_vol_1m_usd=650_000.0,
+                    sell_vol_1m_usd=350_000.0,  # dir_cvd_1m = +0.30 >= 0.15
+                    liq_buy_1m_usd=85_000.0,
+                    liq_sell_1m_usd=15_000.0,  # liq_tot=100k, l_dir=+0.70 >= 0.60
+                    cvd_5m_usd=40_000_000.0,  # >= 35M
+                ),
+            ),
+            (
+                MICRO_VETO_PURE_CLIMAX,
+                self._base_snap(
+                    buy_vol_1m_usd=800_000.0,
+                    sell_vol_1m_usd=200_000.0,  # dir_cvd_1m = +0.60 >= 0.55
+                    cvd_5m_usd=65_000_000.0,  # >= 60M
+                ),
+            ),
+            (
+                None,
+                self._base_snap(
+                    buy_vol_1m_usd=550_000.0,
+                    sell_vol_1m_usd=450_000.0,
+                    cvd_5m_usd=5_000_000.0,
+                ),
+            ),
+        ]
+
+        for exp_rule, snap in rule_snaps:
+            dec_l = evaluate_micro_entry_guard("buy", snap, cfg)
+            dec_s = evaluate_micro_entry_guard("sell", self._reflect_snap(snap), cfg)
+            self.assertEqual(dec_l.rule_code, exp_rule)
+            self.assertEqual(dec_s.rule_code, exp_rule)
+            self.assertEqual(dec_l.allowed, dec_s.allowed)
+            self.assertEqual(dec_l.vetoed, dec_s.vetoed)
+            self.assertEqual(dec_l.would_veto, dec_s.would_veto)
+            self.assertAlmostEqual(dec_l.dir_cvd_1m, dec_s.dir_cvd_1m, places=12)
+            self.assertAlmostEqual(dec_l.dir_cvd_5m_usd, dec_s.dir_cvd_5m_usd, places=6)
+            self.assertAlmostEqual(dec_l.l_dir, dec_s.l_dir, places=12)
+            self.assertAlmostEqual(dec_l.i_cvd_1m, -dec_s.i_cvd_1m, places=12)
+            self.assertAlmostEqual(dec_l.i_liq_1m, -dec_s.i_liq_1m, places=12)
+            self.assertEqual(dec_l.to_dict()["rule_code"], exp_rule)
+
+    def test_03_shadow_only_vs_active_veto(self) -> None:
+        """Verifica modo sombra (allowed=True, would_veto=True) vs veto activo (allowed=False, vetoed=True)."""
+        snap = self._base_snap(
+            buy_vol_1m_usd=250_000.0,
+            sell_vol_1m_usd=750_000.0,
+            cvd_5m_usd=-30_000_000.0,
+        )
+        dec_shadow = evaluate_micro_entry_guard(
+            1, snap, MicroFlowGuardConfig(enabled=True, shadow_only=True)
+        )
+        self.assertTrue(dec_shadow.allowed)
+        self.assertFalse(dec_shadow.vetoed)
+        self.assertTrue(dec_shadow.would_veto)
+        self.assertEqual(dec_shadow.rule_code, MICRO_VETO_COUNTER_FLOW)
+
+        dec_active = evaluate_micro_entry_guard(
+            1, snap, MicroFlowGuardConfig(enabled=True, shadow_only=False)
+        )
+        self.assertFalse(dec_active.allowed)
+        self.assertTrue(dec_active.vetoed)
+        self.assertTrue(dec_active.would_veto)
+        self.assertEqual(dec_active.rule_code, MICRO_VETO_COUNTER_FLOW)
+
+    def test_04_tape_1m_writer_rotation_schema_and_oserror_tolerance(self) -> None:
+        """Valida esquema exacto de 12 campos, rotación <= max_bytes (.1), tolerancia OSError y CLI."""
+        expected_keys = {
+            "ts",
+            "price",
+            "connected",
+            "stale",
+            "trades_1m",
+            "buy_vol_1m_usd",
+            "sell_vol_1m_usd",
+            "cvd_1m_usd",
+            "cvd_5m_usd",
+            "liq_buy_1m_usd",
+            "liq_sell_1m_usd",
+            "basis_bps",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tape_path = os.path.join(tmpdir, "sub", "binance_micro_tape.jsonl")
+            snap = {
+                "last_price": 65123.5,
+                "connected": True,
+                "stale": False,
+                "trades_1m": 45,
+                "buy_vol_1m_usd": 300_000.0,
+                "sell_vol_1m_usd": 200_000.0,
+                "cvd_1m_usd": 100_000.0,
+                "cvd_5m_usd": 250_000.0,
+                "liq_buy_1m_usd": 10_000.0,
+                "liq_sell_1m_usd": 5_000.0,
+                "basis_bps": None,
+            }
+            max_b = 450
+            for idx in range(5):
+                self.assertTrue(
+                    append_binance_micro_tape_1m(
+                        tape_path,
+                        snap,
+                        ts=1_700_700_000 + idx * 60,
+                        max_bytes=max_b,
+                    )
+                )
+            self.assertTrue(os.path.isfile(tape_path))
+            self.assertTrue(os.path.isfile(f"{tape_path}.1"))
+            self.assertLessEqual(os.path.getsize(tape_path), max_b)
+            self.assertLessEqual(os.path.getsize(f"{tape_path}.1"), max_b)
+
+            with open(tape_path, "r", encoding="utf-8") as fh:
+                lines = fh.readlines()
+            self.assertGreaterEqual(len(lines), 1)
+            self.assertNotIn(": ", lines[0])
+            self.assertNotIn(", ", lines[0])
+            row = json.loads(lines[0])
+            self.assertEqual(set(row.keys()), expected_keys)
+            self.assertEqual(row["basis_bps"], 0.0)
+            self.assertEqual(row["price"], 65123.5)
+
+            # Tolerancia a OSError sin lanzar excepción
+            blocker = os.path.join(tmpdir, "blocker_file")
+            with open(blocker, "wb") as bfh:
+                bfh.write(b"x")
+            self.assertFalse(
+                append_binance_micro_tape_1m(os.path.join(blocker, "tape.jsonl"), snap)
+            )
+            self.assertFalse(append_binance_micro_tape_1m(None, snap))
+            with patch("builtins.open", side_effect=OSError("disk full")):
+                self.assertFalse(append_binance_micro_tape_1m(tape_path, snap))
+            self.assertFalse(rotate_tape_file_if_needed(os.path.join(tmpdir, "missing.jsonl"), 100, 10))
+
+            # Defaults de servicio y parser CLI sin romper comportamiento previo
+            svc_default = BinanceMicroSidecarService(state_path=os.path.join(tmpdir, "s.json"))
+            self.assertIsNone(svc_default.tape_path)
+            self.assertEqual(svc_default.tape_max_bytes, DEFAULT_TAPE_MAX_BYTES)
+            args = _sidecar_build_arg_parser().parse_args(["--enable-tape", "--tape-max-bytes", "1024"])
+            self.assertTrue(args.enable_tape)
+            self.assertIsNone(args.tape_path)
+            self.assertEqual(args.tape_max_bytes, 1024)
+            self.assertTrue(DEFAULT_BINANCE_TAPE_PATH.endswith("binance_micro_tape.jsonl"))
+
+    def test_05_replay_micro_tape_cli_events_tape_and_help(self) -> None:
+        """Valida CLI --help, --events (OPEN/CLOSE + FER + sats_avoided) y --tape (huecos + percentiles)."""
+        repo_root = os.path.dirname(os.path.abspath(__file__))
+        script_path = os.path.join(repo_root, "tools", "replay_micro_tape.py")
+        help_proc = subprocess.run(
+            [sys.executable, "-B", script_path, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertEqual(help_proc.returncode, 0, msg=help_proc.stderr)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            events_path = os.path.join(tmpdir, "events.jsonl")
+            events_rows = [
+                {
+                    "ts": 1000.0,
+                    "event": "OPEN",
+                    "trade_id": "t1",
+                    "side": "buy",
+                    "binance_micro": self._base_snap(
+                        buy_vol_1m_usd=300_000.0,
+                        sell_vol_1m_usd=700_000.0,
+                        liq_buy_1m_usd=10_000.0,
+                        liq_sell_1m_usd=90_000.0,
+                        cvd_5m_usd=-5_000_000.0,
+                    ),
+                },
+                {
+                    "ts": 1020.0,
+                    "event": "CLOSE",
+                    "trade_id": "t1",
+                    "side": "buy",
+                    "net_pnl_sats": -400,
+                    "fee_sats": 80,
+                },
+                {
+                    "ts": 1100.0,
+                    "event": "OPEN",
+                    "trade_id": "t2",
+                    "side": "buy",
+                    "binance_micro": self._base_snap(
+                        buy_vol_1m_usd=550_000.0,
+                        sell_vol_1m_usd=450_000.0,
+                        cvd_5m_usd=2_000_000.0,
+                    ),
+                },
+                {
+                    "ts": 1130.0,
+                    "event": "CLOSE",
+                    "trade_id": "t2",
+                    "side": "buy",
+                    "net_pnl_sats": 320,
+                    "fee_sats": 80,
+                },
+            ]
+            with open(events_path, "w", encoding="utf-8") as fh:
+                for rec in events_rows:
+                    fh.write(json.dumps(rec) + "\n")
+                fh.write("{malformed-json\n")
+
+            ev_out = os.path.join(tmpdir, "ev_report.json")
+            rc_ev = replay_micro_tape.main(["--events", events_path, "--json-out", ev_out])
+            self.assertEqual(rc_ev, 0)
+            with open(ev_out, "r", encoding="utf-8") as fh:
+                ev_rep = json.load(fh)
+            self.assertEqual(ev_rep["paired_trades"], 2)
+            self.assertEqual(ev_rep["vetoed_count"], 1)
+            self.assertEqual(ev_rep["approved_count"], 1)
+            self.assertEqual(ev_rep["veto_by_rule"][MICRO_VETO_ADV_SQUEEZE], 1)
+            self.assertAlmostEqual(ev_rep["net_pnl_base_sats"], -80.0)
+            self.assertAlmostEqual(ev_rep["net_pnl_approved_sats"], 320.0)
+            self.assertAlmostEqual(ev_rep["sats_avoided"], 400.0)
+            self.assertAlmostEqual(ev_rep["fer_base"], -0.5)
+            self.assertAlmostEqual(ev_rep["fer_approved"], 4.0)
+            self.assertAlmostEqual(ev_rep["delta_fer"], 4.5)
+
+            tape_path = os.path.join(tmpdir, "tape.jsonl")
+            tape_rows = [
+                {
+                    "ts": 1700000000.0,
+                    "price": 65000.0,
+                    "connected": True,
+                    "stale": False,
+                    "trades_1m": 50,
+                    "buy_vol_1m_usd": 800_000.0,
+                    "sell_vol_1m_usd": 200_000.0,
+                    "cvd_1m_usd": 600_000.0,
+                    "cvd_5m_usd": 65_000_000.0,
+                    "liq_buy_1m_usd": 20_000.0,
+                    "liq_sell_1m_usd": 10_000.0,
+                    "basis_bps": 1.0,
+                },
+                {
+                    "ts": 1700000180.0,  # hueco > 90s
+                    "price": 64900.0,
+                    "connected": True,
+                    "stale": False,
+                    "trades_1m": 10,  # low_volume
+                    "buy_vol_1m_usd": 100_000.0,
+                    "sell_vol_1m_usd": 50_000.0,
+                    "cvd_1m_usd": 50_000.0,
+                    "cvd_5m_usd": -1_000_000.0,
+                    "liq_buy_1m_usd": 0.0,
+                    "liq_sell_1m_usd": 0.0,
+                    "basis_bps": 0.0,
+                },
+            ]
+            with open(tape_path, "w", encoding="utf-8") as fh:
+                for row in tape_rows:
+                    fh.write(json.dumps(row) + "\n")
+
+            tape_out = os.path.join(tmpdir, "tape_report.json")
+            rc_tape = replay_micro_tape.main(["--tape", tape_path, "--json-out", tape_out])
+            self.assertEqual(rc_tape, 0)
+            with open(tape_out, "r", encoding="utf-8") as fh:
+                tape_rep = json.load(fh)
+            self.assertEqual(tape_rep["total_minutes"], 2)
+            self.assertEqual(tape_rep["gaps_gt_90s"], 1)
+            self.assertEqual(tape_rep["low_volume_count"], 1)
+            self.assertEqual(tape_rep["long_veto_by_rule"][MICRO_VETO_PURE_CLIMAX], 1)
+            self.assertEqual(tape_rep["short_veto_by_rule"][MICRO_VETO_COUNTER_FLOW], 1)
+
+    def test_06_micro_flow_guard_latency_benchmark(self) -> None:
+        """Benchmark de >= 5,000 evaluaciones: exige P95 < 0.05 ms (50,000 ns)."""
+        cfg = MicroFlowGuardConfig(enabled=True, shadow_only=False)
+        snap = self._base_snap(
+            buy_vol_1m_usd=600_000.0,
+            sell_vol_1m_usd=400_000.0,
+            cvd_5m_usd=10_000_000.0,
+            liq_buy_1m_usd=50_000.0,
+            liq_sell_1m_usd=30_000.0,
+        )
+        for _ in range(200):
+            evaluate_micro_entry_guard("buy", snap, cfg)
+
+        iters = 5_000
+        lat_ns = []
+        for _ in range(iters):
+            t0 = time.perf_counter_ns()
+            evaluate_micro_entry_guard("buy", snap, cfg)
+            lat_ns.append(time.perf_counter_ns() - t0)
+
+        lat_ns.sort()
+        p95_ns = lat_ns[int(0.95 * iters)]
+        self.assertLess(p95_ns, 50_000, msg=f"P95 demasiado alto: {p95_ns} ns")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
