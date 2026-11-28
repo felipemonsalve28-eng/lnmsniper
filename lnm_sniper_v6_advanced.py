@@ -3722,6 +3722,7 @@ def process_settlement_queue(
     side_brake=None,
     lnm_price=None,
     micro_events_log_path=None,
+    lane_b_runtime=None,
 ):
     """
     Maneja la cola de liquidación diferida y conciliación de órdenes cerradas (Fase F6).
@@ -3733,6 +3734,8 @@ def process_settlement_queue(
     closed_map = {str(ct["id"]): ct for ct in client.get_closed_trades(limit=50)}
     tick_ref_sec = max(1.0, THRESHOLDS_MANAGER.get_float("reward", "tick_duration_sec", 15.0))
     for cid in closed_ids:
+        if lane_b_runtime is not None and lane_b_runtime.is_lane_b_trade(cid):
+            continue
         info = brain.active_trades.get(cid)
         if not isinstance(info, dict):
             brain.active_trades.pop(cid, None)
@@ -3877,9 +3880,7 @@ def process_settlement_queue(
                         _closing_fee_sats = int(round(float(close_fee or 0)))
                         _funding_fee_sats = int(round(float(funding_fee or 0)))
                         _ev_path = micro_events_log_path or _resolve_binance_micro_events_path(_env_tag)
-                        append_binance_micro_trade_event(
-                            _ev_path,
-                            {
+                        _close_ev_payload = {
                                 "ts": round(float(now), 3),
                                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(now))),
                                 "env": _env_tag,
@@ -3907,8 +3908,10 @@ def process_settlement_queue(
                                 "duration_ticks": round(float(_audit_rec.get("duration_ticks", dur_ticks)), 2),
                                 "exit_reason": _exit_reason,
                                 "binance_micro": _build_binance_micro_telemetry(_close_px, now=now),
-                            },
-                        )
+                        }
+                        if lane_b_runtime is not None:
+                            _close_ev_payload.update({"lane": "A", "exec_type": str(info.get("entry_mode") or "MARKET").upper(), "limit_price": info.get("limit_price"), "fill_price": round(float(fill_price), 2) if fill_price else None, "micro_guard_shadow": info.get("micro_guard_shadow") or lane_b_runtime.evaluate_micro_guard_shadow(t_side, now_ts=now)})
+                        append_binance_micro_trade_event(_ev_path, _close_ev_payload)
                 except Exception:
                     pass
             if side_brake is not None:
@@ -3956,10 +3959,13 @@ def manage_open_positions_and_hedges(
     account_state,
     now,
     safe_mode=False,
+    lane_b_runtime=None,
 ):
     """
     Supervisa excursiones MFE/MAE en tiempo real, trailing stops y hedges integrados (Fase F6).
     """
+    if lane_b_runtime is not None and primary_running:
+        primary_running = [t for t in primary_running if not lane_b_runtime.is_lane_b_trade(t)]
     still_running = []
     if primary_running:
         still_running = run_integrated_guardian_and_hedge_cycle(
@@ -4016,6 +4022,7 @@ def evaluate_and_dispatch_entries(
     ind_1d=None,
     limit_mgr=None,
     side_brake=None,
+    lane_b_runtime=None,
 ):
     """
     Evalúa compuertas Bayesianas, calcula sizing 1/4 Kelly y despacha o simula en sombra (Fases F4, F5, F6, F7).
@@ -4419,7 +4426,23 @@ def evaluate_and_dispatch_entries(
                 live_primary = [t for t in live_running if str(t.get("id")) not in hedge_tid_set]
                 _eff_slot_cap = min(dynamic_max_pos, Config.MAX_CONCURRENT_TRADES)
                 _open_lim_now = limit_mgr.active_open_count() if limit_mgr is not None else 0
-                if (len(live_primary) + _open_lim_now) < _eff_slot_cap:
+                _mg_a_ok = True
+                if lane_b_runtime is not None and (len(live_primary) + _open_lim_now) < _eff_slot_cap:
+                    _mg_a_ok, _mg_a_dec = lane_b_runtime.evaluate_micro_guard(
+                        lane="A",
+                        side=strat["side"],
+                        price=float(ind_5m["price"]),
+                        micro_snapshot=read_binance_micro_snapshot(now_ts=now, ttl_sec=15.0),
+                        now_ts=now,
+                    )
+                    if not _mg_a_ok:
+                        if hasattr(brain, "supervisor") and brain.supervisor is not None:
+                            brain.supervisor.discard_last_action_decision()
+                        print(
+                            f"  🛡️ [MICRO GUARD VETO CARRIL A] {strat['name']} {strat['side'].upper()} | "
+                            f"{_mg_a_dec.get('reason')} (age={_mg_a_dec.get('age_sec')}s)"
+                        )
+                if _mg_a_ok and (len(live_primary) + _open_lim_now) < _eff_slot_cap:
                     _lim_cfg = LimitExecutionConfig.from_thresholds(THRESHOLDS_MANAGER)
                     _liq_sig_cur = perception.get("liquidity") if isinstance(perception, dict) else None
                     _use_limit, _lim_route_reason = should_route_limit(
@@ -4516,7 +4539,7 @@ def evaluate_and_dispatch_entries(
                             matched_post_timeout = False
                             for vt in verify_running:
                                 vtid = str(vt["id"])
-                                if vtid not in brain.active_trades and vtid not in hedge_tid_set:
+                                if vtid not in brain.active_trades and vtid not in hedge_tid_set and not (lane_b_runtime is not None and lane_b_runtime.is_lane_b_trade(vt)):
                                     adopted_meta = infer_adopted_trade(
                                         vt, ind_5m, state, now, forced_action=action
                                     )
@@ -4550,11 +4573,24 @@ def _parse_cli_env():
     return env_val
 
 
+def _parse_cli_enable_lane_b_scalp(argv=None):
+    args = sys.argv if argv is None else argv
+    return "--enable-lane-b-scalp" in args
+
+
+def _validate_lane_b_cli_guard(env_mode, enable_lane_b_scalp):
+    if enable_lane_b_scalp and str(env_mode or "").strip().lower() != "testnet":
+        raise SystemExit(
+            f"ERROR CRITICO: --enable-lane-b-scalp solo esta permitido en --env testnet (actual: {env_mode})."
+        )
+
+
 def _print_cli_usage():
     print(
         "Uso: python3 lnm_sniper_v6_advanced.py [OPCIONES]\n"
         "  --env {mainnet|testnet}   Selecciona entorno de ejecucion\n"
         "  --testnet                 Atajo para --env testnet\n"
+        "  --enable-lane-b-scalp     Habilita Carril B Scalp (SOLO testnet 48h)\n"
         "  --safe-mode               Gestiona posiciones abiertas sin nuevas entradas\n"
         "  --once                    Ejecuta un ciclo unico y termina\n"
         "  --dry-check               Valida configuracion efectiva sin credenciales ni red\n"
@@ -4569,6 +4605,8 @@ def main():
 
     env_selected = _parse_cli_env()
     Config.configure_environment(env_selected)
+    enable_lane_b_scalp = _parse_cli_enable_lane_b_scalp()
+    _validate_lane_b_cli_guard(Config.ENV_MODE, enable_lane_b_scalp)
 
     if "--dry-check" in sys.argv:
         liq_cfg = LiquidityConfig.from_thresholds(THRESHOLDS_MANAGER)
@@ -4637,6 +4675,10 @@ def main():
         pause_duration_sec=getattr(Config, "STREAK3_PAUSE_SEC", 86400.0),
         enabled=getattr(Config, "STREAK3_24H_ENABLED", True),
     )
+    lane_b_runtime = None
+    if enable_lane_b_scalp:
+        from dual_lane_testnet_runtime import DualLaneTestnetRuntime
+        lane_b_runtime = DualLaneTestnetRuntime(env_mode=Config.ENV_MODE)
 
     def _handle_shutdown_signal(signum, _frame):
         stop_state["requested"] = True
@@ -4727,6 +4769,12 @@ def main():
                     time.sleep(Config.IDLE_ANALYZE_INTERVAL_SEC)
                     continue
 
+                lane_b_open_count = 0
+                if lane_b_runtime is not None:
+                    lane_b_open_count = sum(1 for _t in primary_running if lane_b_runtime.is_lane_b_trade(_t))
+                    primary_running = [_t for _t in primary_running if not lane_b_runtime.is_lane_b_trade(_t)]
+                    closed_ids = [tid for tid in closed_ids if not lane_b_runtime.is_lane_b_trade(tid)]
+
                 brain.check_and_advance_goal(balance)
 
                 proc_t0 = time.perf_counter()
@@ -4753,6 +4801,7 @@ def main():
                     consecutive_losses, risk_multiplier, pause_until,
                     side_brake=side_brake,
                     lnm_price=(lnm_price or ind_5m.get("price", 0.0)),
+                    lane_b_runtime=lane_b_runtime,
                 )
                 if closed_ids:
                     last_known_balance = balance
@@ -4955,7 +5004,8 @@ def main():
                     client, brain, hedge_store, portfolio_state,
                     primary_running, ind_5m, ind_15m, ind_1h,
                     state, current_mode, edge_scores_by_tid, perception,
-                    q_vec, account_state, now, safe_mode=safe_mode
+                    q_vec, account_state, now, safe_mode=safe_mode,
+                    lane_b_runtime=lane_b_runtime,
                 )
 
                 active_count = max(len(still_running), len(brain.active_trades))
@@ -5012,8 +5062,10 @@ def main():
                 for _cev in _lim_rec.get("cancelled", []):
                     print(f"  🧹 [LÍMITE CANCELADA] id={str(_cev.get('order_id',''))[:8]} | Motivo: {_cev.get('reason')}")
 
-                _eff_avail_balance = max(0, int(balance) - limit_mgr.reserved_margin_sats())
-                _eff_active_count = max(len(still_running), len(brain.active_trades)) + limit_mgr.active_open_count()
+                _lb_res_margin = lane_b_runtime.reserved_margin_sats() if lane_b_runtime is not None else 0
+                _lb_pending_cnt = lane_b_runtime.pending_order_count() if lane_b_runtime is not None else 0
+                _eff_avail_balance = max(0, int(balance) - limit_mgr.reserved_margin_sats() - _lb_res_margin)
+                _eff_active_count = max(len(still_running), len(brain.active_trades)) + limit_mgr.active_open_count() + lane_b_open_count + _lb_pending_cnt
 
                 if new_entries_allowed and _eff_active_count < dynamic_max_pos:
                     _action_taken, last_entry_time = evaluate_and_dispatch_entries(
@@ -5029,7 +5081,7 @@ def main():
                         current_dd_pct=current_dd_pct,
                         dynamic_max_pos=dynamic_max_pos,
                         active_count=max(len(still_running), len(brain.active_trades)),
-                        locked_margin=locked_margin + limit_mgr.reserved_margin_sats(),
+                        locked_margin=locked_margin + limit_mgr.reserved_margin_sats() + _lb_res_margin,
                         equity=equity,
                         balance=_eff_avail_balance,
                         last_entry_time=last_entry_time,
@@ -5048,6 +5100,7 @@ def main():
                         ind_1d=ind_1d,
                         limit_mgr=limit_mgr,
                         side_brake=side_brake,
+                        lane_b_runtime=lane_b_runtime,
                     )
 
                 if (not Config.SHADOW_MODE) and (not safe_mode):
@@ -5077,9 +5130,7 @@ def main():
                                 )
                                 _ostate = str(_ometa.get("state") or state)
                                 _oreg = str(mkt_reg_tag or (_ostate.split("|")[0] if "|" in _ostate else _ostate))
-                                append_binance_micro_trade_event(
-                                    _open_ev_path,
-                                    {
+                                _open_ev_payload = {
                                         "ts": round(float(now), 3),
                                         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(now))),
                                         "env": _open_env_tag,
@@ -5094,10 +5145,31 @@ def main():
                                         "margin_sats": int(round(float(_ometa.get("margin", 0) or 0))),
                                         "leverage": round(float(_ometa.get("leverage", 0.0) or 0.0), 2),
                                         "binance_micro": _open_micro,
-                                    },
-                                )
+                                }
+                                if lane_b_runtime is not None:
+                                    _mg_shadow = lane_b_runtime.evaluate_micro_guard_shadow(_ometa.get("side"), now_ts=now)
+                                    _ometa["micro_guard_shadow"] = _mg_shadow
+                                    _open_ev_payload.update({"lane": "A", "exec_type": str(_ometa.get("entry_mode") or "MARKET").upper(), "limit_price": _ometa.get("limit_price"), "fill_price": round(float(_ometa.get("entry_price") or _open_px), 2), "micro_guard_shadow": _mg_shadow, "opening_fee": 0, "closing_fee": 0, "funding": 0, "net_pnl_sats": 0, "exit_reason": None})
+                                append_binance_micro_trade_event(_open_ev_path, _open_ev_payload)
                     except Exception:
                         pass
+                if lane_b_runtime is not None and (not Config.SHADOW_MODE) and (not safe_mode):
+                    try:
+                        lane_b_runtime.step(
+                            now_ts=now,
+                            mtf_cache=mtf_cache,
+                            client=client,
+                            running_trades=running,
+                            closed_trades=None,
+                            equity_sats=equity,
+                            available_margin_sats=_eff_avail_balance,
+                            dd_a_pct=current_dd_pct,
+                            dd_global_pct=current_dd_pct,
+                            hard_floor_active=bool(floor_threat or safe_mode),
+                            micro_snapshot=read_binance_micro_snapshot(now_ts=now, ttl_sec=15.0),
+                        )
+                    except Exception as _lb_err:
+                        print(f"  [AVISO CARRIL B] {_lb_err}")
 
                 _liq_sig_tel = perception.get("liquidity") if isinstance(perception, dict) else {}
                 _liq_cfg_tel = LiquidityConfig.from_thresholds(THRESHOLDS_MANAGER)
@@ -5173,6 +5245,11 @@ def main():
                 limit_mgr.cancel_all_for_shutdown(client)
         except Exception as exc:
             print(f"[AVISO CIERRE LÍMITES] {exc}")
+        if lane_b_runtime is not None:
+            try:
+                lane_b_runtime.cancel_pending_for_shutdown(client)
+            except Exception as _lb_shut_err:
+                print(f"[AVISO CIERRE CARRIL B] {_lb_shut_err}")
         try:
             brain.save_brain(force=True)
         except Exception as exc:
