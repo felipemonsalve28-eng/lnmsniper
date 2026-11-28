@@ -10,8 +10,8 @@ description: >-
 
 Ejecuta siempre las validaciones en **WSL (`Ubuntu`)** sobre `/mnt/c/Users/mberm/OneDrive/Documentos/sniper` usando `python3 -B` y [verify_repo.py](./scripts/verify_repo.py).
 
-## 0. Regla de Ahorro de Cuota (`MODO SOLO-EDICIÓN`)
-- Si el prompt especifica `MODO SOLO-EDICIÓN`, ejecuta **únicamente** `python3 -B -m py_compile <archivos_editados>` y entrega el comando exacto para que el usuario corra `verify_repo.py` en su terminal WSL.
+## 0. Regla por Defecto: Ahorro de Cuota (`MODO SOLO-EDICIÓN`)
+- **`MODO SOLO-EDICIÓN` es el modo operativo por defecto:** salvo instrucción explícita de correr pruebas completas en WSL, ejecuta **únicamente** `python3 -B -m py_compile <archivos_editados>` y entrega al usuario el comando exacto de `verify_repo.py` o runner WSL para ejecutarlo en su terminal.
 
 ## 1. Script Canónico de Verificación (`verify_repo.py`)
 
@@ -35,7 +35,8 @@ Ejecuta siempre las validaciones en **WSL (`Ubuntu`)** sobre `/mnt/c/Users/mberm
 11. `test_sniper_cli.py`
 12. `test_terminal_bellman_fix.py`
 
-## 3. Reglas Críticas de Terminal WSL
-- **Cero paralelismo de suites:** nunca correr dos suites simultáneas sobre el mismo workspace.
+## 3. Reglas Críticas de Terminal WSL y Presupuesto de RAM
+- **Cero paralelismo de suites o labs pesados:** nunca correr dos suites ni dos corridas `18M` simultáneas sobre el mismo workspace.
+- **Streaming `1` `.pkl` a la vez (`< 500 MB` RAM, `0` Swap):** toda corrida `18M` (`run_phase5b_v2_lab.py --mode exit_asym`, futuro `--mode scalping`, `run_phase5_stress.py`) debe iterar bloque a bloque liberando memoria con `del blk; gc.collect()`.
 - **Anti-CRLF PowerShell -> WSL:** usar `@' ... '@ | wsl -d Ubuntu -- python3 -B -` o `(@' ... '@).Replace("`r","") | wsl -d Ubuntu -- bash -s`.
 - **Integridad de Estado y Cachés:** confirmar `git status --short` sin mutaciones en los `4` JSON de cerebro/cobertura y `58 + 58` `.pkl` intactos en `/home/akapana/.cache/sniper_wf_s2*_cache`.
