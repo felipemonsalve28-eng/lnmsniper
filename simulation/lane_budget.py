@@ -4,7 +4,7 @@ simulation/lane_budget.py
 Aislamiento de carriles (Carril A / Carril B) y contabilidad exacta de contrato inverso BTCUSD.
 Módulo 100% puro, cero I/O, portable Termux/WSL (solo stdlib).
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, Optional
 
 
@@ -121,6 +121,8 @@ class LaneBudgetConfig:
     protective_dd_global_max_pct: float = 0.0220
     lane_a_recovery_enter_dd: float = 0.0350
     lane_a_recovery_exit_dd: float = 0.0250
+    rolling_pause_reset: bool = False
+    lane_b_episode_hard_cap_pct: float = 0.0300
 
 
 @dataclass(frozen=True)
@@ -171,6 +173,12 @@ class LaneBudgetController:
         self.paused_until_ts_b_side: Dict[str, float] = {"b": -1e18, "s": -1e18}
         self.loss_streak_b: Dict[str, int] = {"b": 0, "s": 0}
 
+        self.episode_peak_b: float = init_eq
+        self.dd_b_episode: float = 0.0
+        self._dd_pause_armed_b: bool = False
+        self.post_pause_half_risk_b: bool = False
+        self.reanchor_count_b: int = 0
+
     @staticmethod
     def _calc_dd(equity: float, peak: float) -> float:
         if peak <= 0.0:
@@ -183,9 +191,28 @@ class LaneBudgetController:
             self.peak_global = self.e_global
         self.dd_global = self._calc_dd(self.e_global, self.peak_global)
 
+    def sync_pause_state(self, now_ts: float) -> bool:
+        if not self.config.rolling_pause_reset:
+            return False
+        ts = float(now_ts)
+        if self._dd_pause_armed_b and ts >= self.paused_until_ts_b:
+            if self.dd_b_episode < self.config.lane_b_episode_hard_cap_pct:
+                self.peak_b = self.e_b
+                self.dd_b = 0.0
+                self._dd_pause_armed_b = False
+                self.post_pause_half_risk_b = True
+                self.reanchor_count_b += 1
+                return True
+            return False
+        return False
+
     def is_lane_b_paused(self, now_ts: float = 0.0, side: Optional[str] = None) -> bool:
+        if self.config.rolling_pause_reset:
+            self.sync_pause_state(now_ts)
         ts = float(now_ts)
         paused = (ts < self.paused_until_ts_b) or (self.dd_b >= self.config.lane_b_hard_dd_pause_pct)
+        if self.config.rolling_pause_reset and self.dd_b_episode >= self.config.lane_b_episode_hard_cap_pct:
+            paused = True
         if side is not None:
             s_key = _normalize_side(side)
             paused = paused or (ts < self.paused_until_ts_b_side[s_key])
@@ -218,6 +245,11 @@ class LaneBudgetController:
         ts = float(now_ts)
 
         self.e_b += d
+        if self.e_b > self.episode_peak_b:
+            self.episode_peak_b = self.e_b
+            self.post_pause_half_risk_b = False
+        self.dd_b_episode = self._calc_dd(self.e_b, self.episode_peak_b)
+
         if self.e_b > self.peak_b:
             self.peak_b = self.e_b
         self.dd_b = self._calc_dd(self.e_b, self.peak_b)
@@ -226,6 +258,7 @@ class LaneBudgetController:
 
         if self.dd_b >= self.config.lane_b_hard_dd_pause_pct:
             self.paused_until_ts_b = max(self.paused_until_ts_b, ts + float(self.config.lane_b_pause_sec))
+            self._dd_pause_armed_b = True
 
         if side is not None:
             s_key = _normalize_side(side)
@@ -273,7 +306,11 @@ class LaneBudgetController:
         b_paused = (
             self.is_lane_b_paused(now_ts=now_ts)
             if now_ts is not None
-            else (self.dd_b >= cfg.lane_b_hard_dd_pause_pct or self.paused_until_ts_b > 0.0)
+            else (
+                self.dd_b >= cfg.lane_b_hard_dd_pause_pct
+                or self.paused_until_ts_b > 0.0
+                or (cfg.rolling_pause_reset and self.dd_b_episode >= cfg.lane_b_episode_hard_cap_pct)
+            )
         )
         allowed = (na + nb < cfg.max_concurrent_total) and (na < cfg.lane_a_max_slots)
         return self._decision(
@@ -300,9 +337,11 @@ class LaneBudgetController:
         cfg = self.config
         s_key = _normalize_side(side)
         ts = float(now_ts)
-        b_paused = self.is_lane_b_paused(now_ts=ts, side=s_key)
+        if cfg.rolling_pause_reset:
+            self.sync_pause_state(ts)
 
         if not cfg.enabled:
+            b_paused = self.is_lane_b_paused(now_ts=ts, side=s_key)
             return self._decision(
                 allowed=False,
                 reason="LANE_B_DISABLED",
@@ -310,6 +349,15 @@ class LaneBudgetController:
                 lane_b_paused=b_paused,
             )
 
+        if cfg.rolling_pause_reset and self.dd_b_episode >= cfg.lane_b_episode_hard_cap_pct:
+            return self._decision(
+                allowed=False,
+                reason="LANE_B_EPISODE_HARD_CAP",
+                risk_multiplier=0.0,
+                lane_b_paused=True,
+            )
+
+        b_paused = self.is_lane_b_paused(now_ts=ts, side=s_key)
         if b_paused:
             return self._decision(
                 allowed=False,
@@ -366,7 +414,21 @@ class LaneBudgetController:
                 lane_b_paused=False,
             )
 
-        risk_mult = cfg.lane_b_soft_risk_mult if self.dd_b >= cfg.lane_b_soft_dd_cut_pct else 1.0
+        if cfg.rolling_pause_reset:
+            ep_headroom = max(0.0, cfg.lane_b_episode_hard_cap_pct - self.dd_b_episode)
+            ep_sl_cap = ep_headroom * self.episode_peak_b
+            if float(open_loss_at_sl_b_sats) + float(loss_at_sl_new_sats) > ep_sl_cap + 1e-9:
+                return self._decision(
+                    allowed=False,
+                    reason="LANE_B_EPISODE_HARD_CAP" if ep_headroom <= 0.0 else "LANE_B_OPEN_SL_RISK_CAP",
+                    risk_multiplier=0.0,
+                    lane_b_paused=(ep_headroom <= 0.0),
+                )
+
+        need_soft = (self.dd_b >= cfg.lane_b_soft_dd_cut_pct) or (
+            cfg.rolling_pause_reset and self.post_pause_half_risk_b
+        )
+        risk_mult = cfg.lane_b_soft_risk_mult if need_soft else 1.0
         return self._decision(
             allowed=True,
             reason="LANE_B_ALLOWED",

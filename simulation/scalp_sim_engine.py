@@ -7,7 +7,7 @@ Módulo puro de simulación: cero I/O a disco, cero dependencias de red, stdlib 
 from __future__ import annotations
 
 from collections import Counter, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
@@ -32,10 +32,13 @@ from simulation.lane_budget import (
 from simulation.sim_lnm_exchange import MicrostructureStressConfig
 
 
+VALID_LOCK_MODES: Tuple[str, ...] = ("legacy", "pure_sl_tp", "delayed_75")
+VALID_MACRO_FILTERS: Tuple[str, ...] = ("off", "counter_block", "range_only")
 SCALP_PROFILE_ORDER: Tuple[str, ...] = (
     "SCALP_SWEEP_TIGHT",
     "SCALP_SWEEP_STD",
     "SCALP_VWAP_TD9",
+    "SCALP_SWEEP_WIDE",
     "SCALP_SWEEP_EXT",
 )
 
@@ -93,12 +96,12 @@ class ScalpProfileConfig:
 SCALP_PROFILES: Dict[str, ScalpProfileConfig] = {
     "SCALP_SWEEP_TIGHT": ScalpProfileConfig(
         name="SCALP_SWEEP_TIGHT",
-        min_sl_pct=0.0045,
-        max_sl_pct=0.0052,
-        atr_sl_mult=1.10,
-        min_tp_pct=0.0095,
-        max_tp_pct=0.0110,
-        target_rr=2.00,
+        min_sl_pct=0.0055,
+        max_sl_pct=0.0058,
+        atr_sl_mult=1.20,
+        min_tp_pct=0.0125,
+        max_tp_pct=0.0135,
+        target_rr=2.25,
         retest_atr=0.08,
         fallback_pullback_atr=0.14,
         ttl_sec_5m=240.0,
@@ -111,12 +114,12 @@ SCALP_PROFILES: Dict[str, ScalpProfileConfig] = {
     ),
     "SCALP_SWEEP_STD": ScalpProfileConfig(
         name="SCALP_SWEEP_STD",
-        min_sl_pct=0.0050,
-        max_sl_pct=0.0060,
-        atr_sl_mult=1.25,
-        min_tp_pct=0.0110,
-        max_tp_pct=0.0135,
-        target_rr=2.20,
+        min_sl_pct=0.0055,
+        max_sl_pct=0.0062,
+        atr_sl_mult=1.30,
+        min_tp_pct=0.0128,
+        max_tp_pct=0.0145,
+        target_rr=2.30,
         retest_atr=0.10,
         fallback_pullback_atr=0.16,
         ttl_sec_5m=300.0,
@@ -129,12 +132,12 @@ SCALP_PROFILES: Dict[str, ScalpProfileConfig] = {
     ),
     "SCALP_VWAP_TD9": ScalpProfileConfig(
         name="SCALP_VWAP_TD9",
-        min_sl_pct=0.0046,
-        max_sl_pct=0.0058,
-        atr_sl_mult=1.15,
-        min_tp_pct=0.0100,
-        max_tp_pct=0.0125,
-        target_rr=2.05,
+        min_sl_pct=0.0055,
+        max_sl_pct=0.0060,
+        atr_sl_mult=1.25,
+        min_tp_pct=0.0125,
+        max_tp_pct=0.0140,
+        target_rr=2.20,
         retest_atr=0.12,
         fallback_pullback_atr=0.15,
         ttl_sec_5m=300.0,
@@ -145,12 +148,30 @@ SCALP_PROFILES: Dict[str, ScalpProfileConfig] = {
         min_wall_fee_ratio=2.0,
         cooldown_same_side_sec=2400.0,
     ),
+    "SCALP_SWEEP_WIDE": ScalpProfileConfig(
+        name="SCALP_SWEEP_WIDE",
+        min_sl_pct=0.0058,
+        max_sl_pct=0.0062,
+        atr_sl_mult=1.35,
+        min_tp_pct=0.0140,
+        max_tp_pct=0.0150,
+        target_rr=2.42,
+        retest_atr=0.10,
+        fallback_pullback_atr=0.16,
+        ttl_sec_5m=360.0,
+        ttl_sec_15m=540.0,
+        min_liq_score=0.40,
+        require_htf_or_super_pool=False,
+        use_vwap_td9=False,
+        min_wall_fee_ratio=2.3,
+        cooldown_same_side_sec=2700.0,
+    ),
     "SCALP_SWEEP_EXT": ScalpProfileConfig(
         name="SCALP_SWEEP_EXT",
-        min_sl_pct=0.0056,
+        min_sl_pct=0.0058,
         max_sl_pct=0.0065,
-        atr_sl_mult=1.40,
-        min_tp_pct=0.0135,
+        atr_sl_mult=1.45,
+        min_tp_pct=0.0140,
         max_tp_pct=0.0160,
         target_rr=2.45,
         retest_atr=0.08,
@@ -267,12 +288,14 @@ class CausalScalpContextBuilder:
             liq_config or LiquidityConfig(enabled=True, shadow_only=False, opposite_wall_enabled=True)
         )
         self._atr_cache: Dict[str, Tuple[int, float]] = {}
+        self._macro_cache: Dict[str, Tuple[int, float, Dict[str, Any]]] = {}
 
     def reset(self) -> None:
         max_h = self.agg.max_history
         self.agg = DeterministicMTFAggregator(max_history=max_h)
         self.radar.clear_cache()
         self._atr_cache.clear()
+        self._macro_cache.clear()
 
     def _causal_atr(
         self,
@@ -369,6 +392,69 @@ class CausalScalpContextBuilder:
 
         return {"bull": bull_cand, "bear": bear_cand}
 
+    def _causal_macro_ind(
+        self,
+        tf: str,
+        fallback_pct: float,
+    ) -> Dict[str, Any]:
+        """Calcula indicadores macro causales 1h/4h EXCLUSIVAMENTE sobre barras cerradas."""
+        _, h_tf, l_tf, c_tf, _, ts_tf = self.agg.get_ohlcv(tf, include_forming=False)
+        n_closed = len(c_tf)
+        if n_closed < 3:
+            return {"regime": "RANGE", "market_regime": "RANGE", "ema_score": 0.0}
+
+        last_ts = (
+            float(ts_tf[-1])
+            if isinstance(ts_tf, (list, tuple)) and len(ts_tf) > 0
+            else float(ts_tf or 0.0)
+        )
+        cached = self._macro_cache.get(tf)
+        if cached is not None and cached[0] == n_closed and cached[1] == last_ts:
+            return dict(cached[2])
+
+        def _ema(vals: Sequence[float], span: int) -> float:
+            alpha = 2.0 / (float(span) + 1.0)
+            e = float(vals[0])
+            for x in vals[1:]:
+                e = alpha * float(x) + (1.0 - alpha) * e
+            return e
+
+        c_last = max(1.0, float(c_tf[-1]))
+        atr_val = self._causal_atr(tf, c_last, fallback_pct, h_tf, l_tf, c_tf)
+        atr_pct = atr_val / c_last
+        ema9 = _ema(c_tf, 9)
+        ema21 = _ema(c_tf, 21)
+        ema50 = _ema(c_tf, 50)
+
+        if ema9 > ema21 >= ema50:
+            ema_score = 1.0
+        elif ema9 < ema21 <= ema50:
+            ema_score = -1.0
+        else:
+            ema_score = 0.0
+
+        if atr_pct >= 0.015:
+            regime = "EXTREME_VOLATILITY"
+        elif ema9 > ema21 and abs(ema9 - ema21) / c_last >= 0.0015:
+            regime = "TREND_BULL"
+        elif ema9 < ema21 and abs(ema9 - ema21) / c_last >= 0.0015:
+            regime = "TREND_BEAR"
+        else:
+            regime = "RANGE"
+
+        out: Dict[str, Any] = {
+            "ema9": ema9,
+            "ema21": ema21,
+            "ema50": ema50,
+            "atr": atr_val,
+            "atr_pct": atr_pct,
+            "ema_score": ema_score,
+            "regime": regime,
+            "market_regime": regime,
+        }
+        self._macro_cache[tf] = (n_closed, last_ts, out)
+        return dict(out)
+
     def step(
         self,
         ts: float,
@@ -380,6 +466,8 @@ class CausalScalpContextBuilder:
         ind_5m: Optional[Dict[str, Any]] = None,
         ind_15m: Optional[Dict[str, Any]] = None,
         perception: Optional[Dict[str, Any]] = None,
+        ind_1h: Optional[Dict[str, Any]] = None,
+        ind_4h: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         ts_f = float(ts)
         c_f = max(1.0, float(close_px))
@@ -448,6 +536,8 @@ class CausalScalpContextBuilder:
 
         td9_out = self.agg.get_td9_state()
         htf_sweeps = self._detect_htf_sweep_reclaim(hierarchy, tf_ohlcv, atr_15m, c_f)
+        eff_ind_1h = ind_1h if isinstance(ind_1h, dict) else self._causal_macro_ind("1h", 0.0070)
+        eff_ind_4h = ind_4h if isinstance(ind_4h, dict) else self._causal_macro_ind("4h", 0.0120)
 
         return {
             "ts": ts_f,
@@ -460,6 +550,8 @@ class CausalScalpContextBuilder:
             "vwap": vwap_out,
             "td9": td9_out,
             "htf_sweeps": htf_sweeps,
+            "ind_1h": eff_ind_1h,
+            "ind_4h": eff_ind_4h,
             "perception": perception if isinstance(perception, dict) else {},
         }
 
@@ -496,6 +588,33 @@ def _extract_bar_fields(step_item: Any) -> Tuple[float, float, float, float, flo
     return ts, o, h, l, c, v, ind_5m, ind_15m, perception
 
 
+def _extract_bar_fields_full(
+    step_item: Any,
+) -> Tuple[
+    float,
+    float,
+    float,
+    float,
+    float,
+    float,
+    Optional[Dict[str, Any]],
+    Optional[Dict[str, Any]],
+    Optional[Dict[str, Any]],
+    Optional[Dict[str, Any]],
+    Optional[Dict[str, Any]],
+]:
+    """Extrae (ts, open, high, low, close, volume, ind_5m, ind_15m, ind_1h, ind_4h, perception)."""
+    ts, o, h, l, c, v, ind_5m, ind_15m, perception = _extract_bar_fields(step_item)
+    ind_1h: Optional[Dict[str, Any]] = None
+    ind_4h: Optional[Dict[str, Any]] = None
+    if isinstance(step_item, (tuple, list)):
+        if len(step_item) > 3 and isinstance(step_item[3], dict):
+            ind_1h = step_item[3]
+        if len(step_item) > 4 and isinstance(step_item[4], dict):
+            ind_4h = step_item[4]
+    return ts, o, h, l, c, v, ind_5m, ind_15m, ind_1h, ind_4h, perception
+
+
 class ScalpSimEngine:
     """
     Motor de simulación causal para Carril B con ejecución LIMIT/MARKET,
@@ -511,6 +630,10 @@ class ScalpSimEngine:
         initial_balance_sats: float = 100_000,
         lane_config: Optional[LaneBudgetConfig] = None,
         funding_rate_8h: float = 0.0001,
+        lock_mode: str = "pure_sl_tp",
+        macro_filter: str = "off",
+        dynamic_risk_clamp: bool = True,
+        rolling_pause_reset: bool = False,
     ) -> None:
         self.profile: ScalpProfileConfig = (
             profile if isinstance(profile, ScalpProfileConfig) else get_scalp_profile(profile)
@@ -524,7 +647,30 @@ class ScalpSimEngine:
         self.fee_rate_close: float = max(0.0, self.fee_rt_bps / 20000.0)
         self.stress_config: Optional[MicrostructureStressConfig] = stress_config
         self.initial_balance_sats: float = float(initial_balance_sats)
-        self.lane_config: LaneBudgetConfig = lane_config if lane_config is not None else LaneBudgetConfig(enabled=True)
+
+        lk = str(lock_mode or "").strip().lower()
+        if lk not in VALID_LOCK_MODES:
+            raise ValueError(f"lock_mode inválido: {lock_mode!r}. Válidos: {VALID_LOCK_MODES}")
+        self.lock_mode: str = lk
+
+        mf = str(macro_filter or "").strip().lower()
+        if mf not in VALID_MACRO_FILTERS:
+            raise ValueError(f"macro_filter inválido: {macro_filter!r}. Válidos: {VALID_MACRO_FILTERS}")
+        self.macro_filter: str = mf
+
+        self.dynamic_risk_clamp: bool = bool(dynamic_risk_clamp)
+        self.rolling_pause_reset: bool = bool(rolling_pause_reset)
+
+        if lane_config is None:
+            self.lane_config: LaneBudgetConfig = LaneBudgetConfig(
+                enabled=True,
+                rolling_pause_reset=bool(rolling_pause_reset),
+            )
+        elif bool(rolling_pause_reset) and not lane_config.rolling_pause_reset:
+            self.lane_config = replace(lane_config, rolling_pause_reset=True)
+        else:
+            self.lane_config = lane_config
+
         self.funding_rate_8h: float = float(funding_rate_8h)
 
         self.guardian = HardFloorGuardian(
@@ -574,8 +720,11 @@ class ScalpSimEngine:
         self.cancelled_ttl: int = 0
         self.cancelled_runaway: int = 0
         self.cancelled_invalidated: int = 0
+        self.clamped_entries: int = 0
 
         self.last_entry_ts_by_side: Dict[str, float] = {"b": -1e18, "s": -1e18}
+        self._edge_latch_side: Optional[str] = None
+        self._edge_anchor_ts: Dict[Tuple[str, str], float] = {}
         self._seq_id: int = 0
 
         self.peak_equity_mtm: float = self.initial_balance_sats
@@ -593,7 +742,10 @@ class ScalpSimEngine:
             self._ctx_builder.reset()
 
     def _reject(self, reason: str) -> None:
-        self.rejected_reasons[str(reason)] += 1
+        r_str = str(reason)
+        if r_str.startswith("LIMIT_OFFSET_TOO_FAR"):
+            r_str = "LIMIT_OFFSET_TOO_FAR"
+        self.rejected_reasons[r_str] += 1
 
     def _compute_sl_stress_price(
         self,
@@ -665,6 +817,11 @@ class ScalpSimEngine:
         self.max_seen_dd_b = max(self.max_seen_dd_b, self.lane_budget.dd_b)
         self.max_seen_dd_a = max(self.max_seen_dd_a, self.lane_budget.dd_a)
 
+        gross_pct = (
+            100.0
+            * (1.0 - float(trade["entry_price"]) / max(1e-9, float(exit_price)))
+            * (1.0 if trade["side"] == "b" else -1.0)
+        )
         rec = {
             "id": trade["id"],
             "profile": self.profile.name,
@@ -677,6 +834,7 @@ class ScalpSimEngine:
             "sl_price": trade["sl_price"],
             "tp_price": trade["tp_price"],
             "lock_active": bool(trade.get("lock_active", False)),
+            "gross_pct": gross_pct,
             "gross_pnl_sats": pnl["gross_pnl_sats"],
             "fees_sats": pnl["fees_sats"],
             "opening_fee_sats": pnl["opening_fee_sats"],
@@ -722,11 +880,12 @@ class ScalpSimEngine:
         sl_hit = (sl > 0.0) and ((low_px <= sl) if side == "b" else (high_px >= sl))
         tp_hit = (tp > 0.0) and ((high_px >= tp) if side == "b" else (low_px <= tp))
         liq_hit = (liq > 0.0) and ((low_px <= liq) if side == "b" else (high_px >= liq))
+        sl_reason = "DEF_SCALP_LOCK" if bool(trade.get("lock_active", False)) else "STOP_LOSS"
 
         if sl_protects_before_liq and sl_hit:
             fill_px = min(ref_open, sl) if side == "b" else max(ref_open, sl)
             fill_px = self._compute_sl_stress_price(fill_px, side, atr_5m, candle_range_pct)
-            self._close_trade_record(trade, fill_px, "STOP_LOSS", ts)
+            self._close_trade_record(trade, fill_px, sl_reason, ts)
             return True
 
         if liq_hit and not sl_protects_before_liq:
@@ -736,7 +895,7 @@ class ScalpSimEngine:
         if sl_hit:
             fill_px = min(ref_open, sl) if side == "b" else max(ref_open, sl)
             fill_px = self._compute_sl_stress_price(fill_px, side, atr_5m, candle_range_pct)
-            self._close_trade_record(trade, fill_px, "STOP_LOSS", ts)
+            self._close_trade_record(trade, fill_px, sl_reason, ts)
             return True
 
         if tp_hit:
@@ -790,13 +949,32 @@ class ScalpSimEngine:
                 self._close_trade_record(trade, close_px, "TIME_STOP", ts)
                 continue
 
-            # 4. DEF_SCALP_LOCK al cierre de barra t (ratchet SL para t+1)
-            if self.profile.def_scalp_lock_enabled:
+            # 4. DEF_SCALP_LOCK al cierre de barra t (ratchet SL para t+1) según lock_mode
+            if self.lock_mode == "legacy" and self.profile.def_scalp_lock_enabled:
                 r_dist = float(trade["initial_sl_dist"])
                 if r_dist > 0.0:
                     entry = float(trade["entry_price"])
                     trig = self.profile.def_scalp_lock_trigger_r * r_dist
                     off = self.profile.def_scalp_lock_offset_r * r_dist
+                    if trade["side"] == "b":
+                        if close_px >= entry + trig:
+                            new_sl = _round_nearest_tick(entry + off, self.profile.tick_size_usd)
+                            if new_sl > float(trade["sl_price"]) and new_sl < close_px:
+                                trade["sl_price"] = new_sl
+                                trade["lock_active"] = True
+                    else:
+                        if close_px <= entry - trig:
+                            new_sl = _round_nearest_tick(entry - off, self.profile.tick_size_usd)
+                            if new_sl < float(trade["sl_price"]) and new_sl > close_px:
+                                trade["sl_price"] = new_sl
+                                trade["lock_active"] = True
+            elif self.lock_mode == "delayed_75" and self.profile.def_scalp_lock_enabled:
+                entry = float(trade["entry_price"])
+                tp_dist = float(trade.get("initial_tp_dist") or abs(float(trade["tp_price"]) - entry))
+                if tp_dist > 0.0:
+                    trig = 0.75 * tp_dist
+                    fee_dist = entry * (self.fee_rate_open + self.fee_rate_close)
+                    off = min(0.68 * tp_dist, max(0.50 * tp_dist, 0.42 * tp_dist + fee_dist))
                     if trade["side"] == "b":
                         if close_px >= entry + trig:
                             new_sl = _round_nearest_tick(entry + off, self.profile.tick_size_usd)
@@ -863,6 +1041,7 @@ class ScalpSimEngine:
                     "sl_price": float(sl_px),
                     "tp_price": float(tp_px),
                     "initial_sl_dist": abs(entry_px - sl_px),
+                    "initial_tp_dist": abs(float(tp_px) - float(entry_px)),
                     "loss_at_sl_sats": loss_sl,
                     "liq_price": self._calc_liq_price(entry_px, side, order["leverage"]),
                     "open_ts": ts,
@@ -917,6 +1096,7 @@ class ScalpSimEngine:
                     "sl_price": sl_px,
                     "tp_price": tp_px,
                     "initial_sl_dist": abs(p_lim - sl_px),
+                    "initial_tp_dist": abs(tp_px - p_lim),
                     "loss_at_sl_sats": float(order["loss_at_sl_sats"]),
                     "liq_price": self._calc_liq_price(p_lim, side, order["leverage"]),
                     "open_ts": ts,
@@ -1056,6 +1236,7 @@ class ScalpSimEngine:
         sl_dist = abs(px - float(cand_sl))
         tp_dist = abs(float(cand_tp) - px)
         sl_dist = min(cfg.max_sl_pct * px, max(cfg.min_sl_pct * px, sl_dist))
+        tp_dist = max(tp_dist, sl_dist * cfg.target_rr)
         tp_dist = min(cfg.max_tp_pct * px, max(cfg.min_tp_pct * px, tp_dist))
         if side == "b":
             return (
@@ -1092,7 +1273,7 @@ class ScalpSimEngine:
                 return "s", liq_sig
             return None
 
-        if cfg.name == "SCALP_SWEEP_STD":
+        if cfg.name in ("SCALP_SWEEP_STD", "SCALP_SWEEP_WIDE"):
             if abs(score) < cfg.min_liq_score:
                 return None
             cand_side = "b" if score > 0.0 else "s"
@@ -1204,6 +1385,117 @@ class ScalpSimEngine:
             return "s", liq_sig
         return None
 
+    def _check_macro_filter(
+        self,
+        side: str,
+        context: Optional[Dict[str, Any]],
+    ) -> Tuple[bool, str]:
+        if self.macro_filter == "off" or not isinstance(context, dict):
+            return True, "OK"
+
+        explicit_macro = str(context.get("macro_regime") or "").strip().upper()
+        ind_1h = context.get("ind_1h") or {}
+        ind_4h = context.get("ind_4h") or {}
+        perc = context.get("perception") or {}
+
+        is_extreme_vol = "EXTREME_VOLATILITY" in {
+            explicit_macro,
+            str(perc.get("market_regime") or "").upper(),
+            str(ind_1h.get("market_regime") or "").upper(),
+            str(ind_1h.get("regime") or "").upper(),
+            str(ind_4h.get("market_regime") or "").upper(),
+            str(ind_4h.get("regime") or "").upper(),
+        }
+        if is_extreme_vol:
+            return False, "MACRO_EXTREME_VOL"
+
+        reg_1h = str(ind_1h.get("regime") or ind_1h.get("market_regime") or "").upper()
+        mreg_1h = str(ind_1h.get("market_regime") or "").upper()
+        ema_1h = float(ind_1h.get("ema_score") or 0.0)
+        adx_1h = float(ind_1h.get("adx") or 0.0)
+        e9_1h, e21_1h = float(ind_1h.get("ema9") or 0.0), float(ind_1h.get("ema21") or 0.0)
+
+        reg_4h = str(ind_4h.get("regime") or ind_4h.get("market_regime") or "").upper()
+        mreg_4h = str(ind_4h.get("market_regime") or "").upper()
+        ema_4h = float(ind_4h.get("ema_score") or 0.0)
+        e9_4h, e21_4h = float(ind_4h.get("ema9") or 0.0), float(ind_4h.get("ema21") or 0.0)
+
+        range_tags = {
+            "RANGE",
+            "RANGING",
+            "RANGE_NORMAL",
+            "RANGE_SQUEEZE",
+            "TRANSITION",
+            "NEUTRAL",
+            "EMA_FLAT",
+        }
+        spread_1h = abs(e9_1h - e21_1h) / max(1.0, e21_1h) if e21_1h > 0.0 else 0.0
+        spread_4h = abs(e9_4h - e21_4h) / max(1.0, e21_4h) if e21_4h > 0.0 else 0.0
+
+        bull_1h = ("BULL" in reg_1h) or (
+            reg_1h not in range_tags and ema_1h >= 0.5 and e9_1h > e21_1h and spread_1h >= 0.0015
+        )
+        bear_1h = ("BEAR" in reg_1h) or (
+            reg_1h not in range_tags and ema_1h <= -0.5 and e9_1h < e21_1h and spread_1h >= 0.0015
+        )
+        bull_4h = ("BULL" in reg_4h) or (
+            reg_4h not in range_tags and ema_4h >= 0.5 and e9_4h > e21_4h and spread_4h >= 0.0015
+        )
+        bear_4h = ("BEAR" in reg_4h) or (
+            reg_4h not in range_tags and ema_4h <= -0.5 and e9_4h < e21_4h and spread_4h >= 0.0015
+        )
+
+        strong_bull = (
+            explicit_macro in ("TREND_BULL", "FULL_BULL", "STRONG_BULL")
+            or (bull_1h and bull_4h)
+            or (bull_1h and (mreg_1h == "VOLATILITY_EXPANSION" or adx_1h >= 25.0 or ema_4h > 0.0 or not ind_4h))
+            or (bull_1h and ema_1h >= 1.0 and spread_1h >= 0.0025 and not bear_4h)
+            or (bull_4h and (mreg_4h == "VOLATILITY_EXPANSION" or ema_1h > 0.0))
+        )
+        strong_bear = (
+            explicit_macro in ("TREND_BEAR", "FULL_BEAR", "STRONG_BEAR")
+            or (bear_1h and bear_4h)
+            or (bear_1h and (mreg_1h == "VOLATILITY_EXPANSION" or adx_1h >= 25.0 or ema_4h < 0.0 or not ind_4h))
+            or (bear_1h and ema_1h <= -1.0 and spread_1h >= 0.0025 and not bull_4h)
+            or (bear_4h and (mreg_4h == "VOLATILITY_EXPANSION" or ema_1h < 0.0))
+        )
+
+        if self.macro_filter == "counter_block":
+            if side == "s" and strong_bull:
+                return False, "MACRO_COUNTER_BLOCK"
+            if side == "b" and strong_bear:
+                return False, "MACRO_COUNTER_BLOCK"
+            return True, "OK"
+
+        if self.macro_filter == "range_only":
+            allowed_tags = {
+                "",
+                "RANGE",
+                "RANGING",
+                "RANGE_NORMAL",
+                "RANGE_SQUEEZE",
+                "TRANSITION",
+                "NEUTRAL",
+                "EMA_FLAT",
+            }
+            if explicit_macro:
+                if explicit_macro not in allowed_tags:
+                    return False, "MACRO_NOT_RANGE"
+            if (
+                bull_1h
+                or bear_1h
+                or bull_4h
+                or bear_4h
+                or mreg_1h == "VOLATILITY_EXPANSION"
+                or mreg_4h == "VOLATILITY_EXPANSION"
+                or (reg_1h not in allowed_tags)
+                or (reg_4h not in allowed_tags)
+            ):
+                return False, "MACRO_NOT_RANGE"
+            return True, "OK"
+
+        return True, "OK"
+
     def submit_signal(
         self,
         side: str = "b",
@@ -1223,6 +1515,7 @@ class ScalpSimEngine:
         ts: Optional[float] = None,
         enforce_cooldown: bool = False,
         check_walls: bool = False,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """
         Registra y valida una señal al cierre de la barra actual t (created_bar_idx = t).
@@ -1240,6 +1533,12 @@ class ScalpSimEngine:
         if self.halted:
             self._reject("HALTED")
             return False, "HALTED", None
+
+        if context is not None:
+            macro_ok, macro_reason = self._check_macro_filter(norm_side, context)
+            if not macro_ok:
+                self._reject(macro_reason)
+                return False, macro_reason, None
 
         if enforce_cooldown:
             last_ts = float(self.last_entry_ts_by_side.get(norm_side, -1e18))
@@ -1279,6 +1578,8 @@ class ScalpSimEngine:
                 )
                 if not plan.get("valid"):
                     reason = str(plan.get("reason") or "LIMIT_PLAN_INVALID")
+                    if reason.startswith("LIMIT_OFFSET_TOO_FAR"):
+                        reason = "LIMIT_OFFSET_TOO_FAR"
                     self._reject(reason)
                     return False, reason, None
                 p_lim = float(plan["limit_price"])
@@ -1307,6 +1608,9 @@ class ScalpSimEngine:
                     self._reject("REJECT_HTF_POOL_ROOM")
                     return False, "REJECT_HTF_POOL_ROOM", None
 
+        if self.lane_budget.config.enabled and self.lane_budget.config.rolling_pause_reset:
+            self.lane_budget.sync_pause_state(cur_ts)
+
         unit_loss = compute_scalp_loss_at_sl_sats(
             1.0, lev, entry_ref, sl_px, self.fee_rate_open, self.fee_rate_close
         )
@@ -1317,14 +1621,11 @@ class ScalpSimEngine:
             raw_margin = max(1.0, float(margin_sats))
 
         # Aplicar recorte suave 0.5x UNA sola vez antes del gate de LaneBudgetController
-        soft_mult = (
-            self.lane_budget.config.lane_b_soft_risk_mult
-            if (
-                self.lane_budget.config.enabled
-                and self.lane_budget.dd_b >= self.lane_budget.config.lane_b_soft_dd_cut_pct
-            )
-            else 1.0
+        need_soft = self.lane_budget.config.enabled and (
+            self.lane_budget.dd_b >= self.lane_budget.config.lane_b_soft_dd_cut_pct
+            or (self.lane_budget.config.rolling_pause_reset and self.lane_budget.post_pause_half_risk_b)
         )
+        soft_mult = self.lane_budget.config.lane_b_soft_risk_mult if need_soft else 1.0
         cand_margin = max(1, int(round(raw_margin * soft_mult)))
 
         if check_walls and isinstance(liquidity_signal, dict):
@@ -1358,6 +1659,42 @@ class ScalpSimEngine:
         open_sl_risk_b = sum(float(t["loss_at_sl_sats"]) for t in self.running_trades) + sum(
             float(o["loss_at_sl_sats"]) for o in self.pending_orders
         )
+
+        was_clamped = False
+        lcfg = self.lane_budget.config
+        if self.dynamic_risk_clamp and lcfg.enabled:
+            ep_capped = lcfg.rolling_pause_reset and (
+                float(self.lane_budget.dd_b_episode) >= lcfg.lane_b_episode_hard_cap_pct
+            )
+            prot_brake = (
+                float(self.lane_budget.dd_a) >= lcfg.protective_dd_a_max_pct
+                or float(self.lane_budget.dd_global) >= lcfg.protective_dd_global_max_pct
+            )
+            if (
+                not self.lane_budget.is_lane_b_paused(now_ts=cur_ts, side=norm_side)
+                and not ep_capped
+                and not prot_brake
+            ):
+                e_glob = float(self.lane_budget.e_global)
+                dd_b_win = float(self.lane_budget.dd_b)
+                r_avail = max(0.0, lcfg.lane_b_hard_dd_pause_pct - dd_b_win) * e_glob - open_sl_risk_b
+                if lcfg.rolling_pause_reset:
+                    r_ep_avail = (
+                        max(0.0, lcfg.lane_b_episode_hard_cap_pct - float(self.lane_budget.dd_b_episode))
+                        * float(self.lane_budget.episode_peak_b)
+                        - open_sl_risk_b
+                    )
+                    r_avail = min(r_avail, r_ep_avail)
+                r_min = 0.0005 * e_glob
+                if cand_loss_at_sl > r_avail and r_avail >= r_min:
+                    clamped_margin = int(math.floor(r_avail / max(1e-9, unit_loss)))
+                    if clamped_margin >= 1 and (clamped_margin * lev) >= 250:
+                        cand_margin = clamped_margin
+                        cand_loss_at_sl = compute_scalp_loss_at_sl_sats(
+                            cand_margin, lev, entry_ref, sl_px, self.fee_rate_open, self.fee_rate_close
+                        )
+                        was_clamped = True
+
         avail_bal = max(0.0, float(self.lane_budget.e_global) - open_margin_b)
 
         decision = self.lane_budget.evaluate_lane_b_entry(
@@ -1376,6 +1713,8 @@ class ScalpSimEngine:
             self._reject(decision.reason)
             return False, decision.reason, None
 
+        if was_clamped:
+            self.clamped_entries += 1
         self._seq_id += 1
         order_rec = {
             "id": f"scalp-{self._seq_id}",
@@ -1390,6 +1729,7 @@ class ScalpSimEngine:
             "invalidation_price": p_inv,
             "ttl_sec": ttl_val,
             "loss_at_sl_sats": cand_loss_at_sl,
+            "risk_clamped": was_clamped,
             "created_at": cur_ts,
             "created_bar_idx": cur_bar,
         }
@@ -1451,22 +1791,49 @@ class ScalpSimEngine:
         # (3) HardFloorGuardian sobre equidad MTM global al cierre de t
         self._evaluate_guardian(ts_f, c_f)
 
-        # (4) Señales y envío únicamente al cierre de t
+        # (4) Señales y envío únicamente al cierre de t con edge-triggering estricto
         if has_more_bars and not self.halted:
-            sig = self._detect_profile_signal(c_f, h_f, l_f, ctx)
-            if sig is not None:
-                cand_side, eff_liq_sig = sig
-                self.submit_signal(
-                    side=cand_side,
-                    spot_price=c_f,
-                    atr_5m=atr_5m,
-                    liquidity_signal=eff_liq_sig,
-                    hierarchy=ctx.get("hierarchy"),
-                    bar_idx=b_idx,
-                    ts=ts_f,
-                    enforce_cooldown=True,
-                    check_walls=True,
-                )
+            raw_sig = self._detect_profile_signal(c_f, h_f, l_f, ctx)
+            if raw_sig is None:
+                self._edge_latch_side = None
+            else:
+                cand_side, eff_liq_sig = raw_sig
+                swept_lv = float(eff_liq_sig.get("swept_level") or 0.0) if isinstance(eff_liq_sig, dict) else 0.0
+                if self.profile.use_vwap_td9:
+                    anchor_key = f"VWAP_TD9:{int(ts_f // 900)}"
+                    dedup_window = 900.0
+                elif swept_lv > 0.0:
+                    tf_s = str(eff_liq_sig.get("timeframe") or "5m")
+                    lvl_bucket = round(swept_lv / max(1.0, 0.25 * atr_5m))
+                    anchor_key = f"SWEEP:{tf_s}:{lvl_bucket}"
+                    dedup_window = 2700.0 if tf_s == "15m" else 900.0
+                else:
+                    tf_s = (
+                        str((eff_liq_sig or {}).get("timeframe") or "5m")
+                        if isinstance(eff_liq_sig, dict)
+                        else "5m"
+                    )
+                    anchor_key = f"LIQ:{tf_s}:{int(ts_f // 300)}"
+                    dedup_window = 600.0
+
+                if (
+                    self._edge_latch_side != cand_side
+                    and (ts_f - self._edge_anchor_ts.get((cand_side, anchor_key), -1e18)) >= dedup_window
+                ):
+                    self._edge_latch_side = cand_side
+                    self._edge_anchor_ts[(cand_side, anchor_key)] = ts_f
+                    self.submit_signal(
+                        side=cand_side,
+                        spot_price=c_f,
+                        atr_5m=atr_5m,
+                        liquidity_signal=eff_liq_sig,
+                        hierarchy=ctx.get("hierarchy"),
+                        bar_idx=b_idx,
+                        ts=ts_f,
+                        enforce_cooldown=True,
+                        check_walls=True,
+                        context=ctx,
+                    )
 
     def finalize_episode(self) -> Dict[str, Any]:
         """Cancela órdenes pendientes remanentes y cierra posiciones abiertas al último cierre."""
@@ -1482,21 +1849,42 @@ class ScalpSimEngine:
             self.running_trades.clear()
 
         n_trades = len(self.closed_trades)
-        wins = sum(1 for t in self.closed_trades if t["net_pnl_sats"] > 0.0)
+        win_trades = [t for t in self.closed_trades if float(t["net_pnl_sats"]) > 0.0]
+        loss_trades = [t for t in self.closed_trades if float(t["net_pnl_sats"]) <= 0.0]
+        wins = len(win_trades)
         losses = n_trades - wins
+        gross_pnl_sats = sum(float(t["gross_pnl_sats"]) for t in self.closed_trades)
         net_profit_sats = sum(float(t["net_pnl_sats"]) for t in self.closed_trades)
-        gross_win_sats = sum(float(t["net_pnl_sats"]) for t in self.closed_trades if t["net_pnl_sats"] > 0.0)
-        gross_loss_sats = sum(abs(float(t["net_pnl_sats"])) for t in self.closed_trades if t["net_pnl_sats"] < 0.0)
+        gross_win_sats = sum(float(t["net_pnl_sats"]) for t in win_trades)
+        gross_loss_sats = sum(abs(float(t["net_pnl_sats"])) for t in self.closed_trades if float(t["net_pnl_sats"]) < 0.0)
         total_fees_sats = sum(float(t["fees_sats"]) for t in self.closed_trades)
         total_funding_sats = sum(float(t["funding_sats"]) for t in self.closed_trades)
         total_cost_sats = sum(float(t["c_rt_sats"]) for t in self.closed_trades)
         fer = compute_fer(net_profit_sats, total_cost_sats)
         fill_pct = (self.orders_filled / self.orders_submitted * 100.0) if self.orders_submitted > 0 else 0.0
 
+        avg_win_net_sats = (gross_win_sats / wins) if wins > 0 else 0.0
+        avg_loss_net_sats = (sum(float(t["net_pnl_sats"]) for t in loss_trades) / losses) if losses > 0 else 0.0
+        avg_win_gross_pct = (sum(float(t["gross_pct"]) for t in win_trades) / wins) if wins > 0 else 0.0
+        avg_loss_gross_pct = (sum(float(t["gross_pct"]) for t in loss_trades) / losses) if losses > 0 else 0.0
+
+        exit_reasons: Dict[str, int] = {"TP": 0, "SL": 0, "DEF_SCALP_LOCK": 0, "EOD": 0}
+        for t in self.closed_trades:
+            cr = str(t.get("close_reason") or "")
+            if cr == "TAKE_PROFIT":
+                exit_reasons["TP"] += 1
+            elif cr in ("STOP_LOSS", "LIQUIDATION"):
+                exit_reasons["SL"] += 1
+            elif cr == "DEF_SCALP_LOCK":
+                exit_reasons["DEF_SCALP_LOCK"] += 1
+            else:
+                exit_reasons["EOD"] += 1
+
         return {
             "n_trades": n_trades,
             "wins": wins,
             "losses": losses,
+            "gross_pnl_sats": gross_pnl_sats,
             "net_profit_sats": net_profit_sats,
             "gross_win_sats": gross_win_sats,
             "gross_loss_sats": gross_loss_sats,
@@ -1505,6 +1893,11 @@ class ScalpSimEngine:
             "total_cost_sats": total_cost_sats,
             "fer": fer,
             "fill_pct": fill_pct,
+            "avg_win_net_sats": avg_win_net_sats,
+            "avg_loss_net_sats": avg_loss_net_sats,
+            "avg_win_gross_pct": avg_win_gross_pct,
+            "avg_loss_gross_pct": avg_loss_gross_pct,
+            "exit_reasons": exit_reasons,
             "signals_total": self.signals_total,
             "orders_submitted": self.orders_submitted,
             "orders_filled": self.orders_filled,
@@ -1513,6 +1906,8 @@ class ScalpSimEngine:
             "cancelled_ttl": self.cancelled_ttl,
             "cancelled_runaway": self.cancelled_runaway,
             "cancelled_invalidated": self.cancelled_invalidated,
+            "clamped_entries": int(self.clamped_entries),
+            "pause_reanchors": int(getattr(self.lane_budget, "reanchor_count_b", 0)),
             "max_drawdown_pct": round(self.max_seen_dd_global * 100.0, 4),
             "dd_b_pct": round(self.max_seen_dd_b * 100.0, 4),
             "dd_a_pct": round(self.max_seen_dd_a * 100.0, 4),
@@ -1537,8 +1932,20 @@ class ScalpSimEngine:
             builder.reset()
 
         for idx, step_item in enumerate(steps):
-            ts, o, h, l, c, v, ind_5m, ind_15m, perception = _extract_bar_fields(step_item)
-            ctx = builder.step(ts, o, h, l, c, volume=v, ind_5m=ind_5m, ind_15m=ind_15m, perception=perception)
+            ts, o, h, l, c, v, ind_5m, ind_15m, ind_1h, ind_4h, perception = _extract_bar_fields_full(step_item)
+            ctx = builder.step(
+                ts,
+                o,
+                h,
+                l,
+                c,
+                volume=v,
+                ind_5m=ind_5m,
+                ind_15m=ind_15m,
+                perception=perception,
+                ind_1h=ind_1h,
+                ind_4h=ind_4h,
+            )
             self.process_bar(
                 bar_idx=idx,
                 ts=ts,
@@ -1576,8 +1983,20 @@ def run_scalp_cells_on_block(
     builder = CausalScalpContextBuilder()
 
     for idx, step_item in enumerate(steps):
-        ts, o, h, l, c, v, ind_5m, ind_15m, perception = _extract_bar_fields(step_item)
-        ctx = builder.step(ts, o, h, l, c, volume=v, ind_5m=ind_5m, ind_15m=ind_15m, perception=perception)
+        ts, o, h, l, c, v, ind_5m, ind_15m, ind_1h, ind_4h, perception = _extract_bar_fields_full(step_item)
+        ctx = builder.step(
+            ts,
+            o,
+            h,
+            l,
+            c,
+            volume=v,
+            ind_5m=ind_5m,
+            ind_15m=ind_15m,
+            perception=perception,
+            ind_1h=ind_1h,
+            ind_4h=ind_4h,
+        )
         has_more = idx < (n_steps - 1)
         for _, eng in items:
             eng.process_bar(

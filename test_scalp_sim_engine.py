@@ -8,6 +8,7 @@ con simulation/run_phase5b_v2_lab.py.
 """
 from __future__ import annotations
 
+import inspect
 import math
 import os
 import subprocess
@@ -835,22 +836,31 @@ class TestProfilesAndCLIIntegration(unittest.TestCase):
     """7. Perfiles congelados, integración run_scalp_cells_on_block, _format_table y CLI."""
 
     def test_all_four_profiles_strictly_inside_bounds(self):
-        expected = ("SCALP_SWEEP_TIGHT", "SCALP_SWEEP_STD", "SCALP_VWAP_TD9", "SCALP_SWEEP_EXT")
+        expected = (
+            "SCALP_SWEEP_TIGHT",
+            "SCALP_SWEEP_STD",
+            "SCALP_VWAP_TD9",
+            "SCALP_SWEEP_WIDE",
+            "SCALP_SWEEP_EXT",
+        )
         self.assertEqual(SCALP_PROFILE_ORDER, expected)
         self.assertEqual(set(SCALP_PROFILES.keys()), set(expected))
 
         for name in expected:
             cfg = get_scalp_profile(name)
-            self.assertGreaterEqual(cfg.min_sl_pct, 0.0045 - 1e-12)
+            self.assertGreaterEqual(cfg.min_sl_pct, 0.0055 - 1e-12)
             self.assertLessEqual(cfg.max_sl_pct, 0.0065 + 1e-12)
             self.assertLessEqual(cfg.min_sl_pct, cfg.max_sl_pct)
 
-            self.assertGreaterEqual(cfg.min_tp_pct, 0.0095 - 1e-12)
+            self.assertGreaterEqual(cfg.min_tp_pct, 0.0125 - 1e-12)
             self.assertLessEqual(cfg.max_tp_pct, 0.0160 + 1e-12)
             self.assertLessEqual(cfg.min_tp_pct, cfg.max_tp_pct)
 
-            self.assertGreaterEqual(cfg.target_rr, 1.9 - 1e-12)
+            self.assertGreaterEqual(cfg.target_rr, 2.1 - 1e-12)
             self.assertLessEqual(cfg.target_rr, 2.5 + 1e-12)
+
+            # Fricción relativa c / TP <= 13% @ 16 bps (0.0016)
+            self.assertLessEqual(0.0016 / cfg.min_tp_pct, 0.13 + 1e-9)
 
             eng = ScalpSimEngine(profile=name, exec_mode="LIMIT")
             for atr_val in (1.0, 200.0, 5000.0):
@@ -858,9 +868,9 @@ class TestProfilesAndCLIIntegration(unittest.TestCase):
                     sl_px, tp_px = eng._compute_clamped_bracket(side, 70000.0, atr_val)
                     sl_pct = abs(70000.0 - sl_px) / 70000.0
                     tp_pct = abs(tp_px - 70000.0) / 70000.0
-                    self.assertGreaterEqual(sl_pct, 0.0045 - 1e-4)
+                    self.assertGreaterEqual(sl_pct, 0.0055 - 1e-4)
                     self.assertLessEqual(sl_pct, 0.0065 + 1e-4)
-                    self.assertGreaterEqual(tp_pct, 0.0095 - 1e-4)
+                    self.assertGreaterEqual(tp_pct, 0.0125 - 1e-4)
                     self.assertLessEqual(tp_pct, 0.0160 + 1e-4)
 
     def test_run_scalp_cells_on_block_and_format_table(self):
@@ -885,7 +895,7 @@ class TestProfilesAndCLIIntegration(unittest.TestCase):
         candles.append(Candle(timestamp=t0 + 65 * 60.0, open=70030.0, high=70035.0, low=69950.0, close=69990.0, volume=18.0))
         # Barra 66 (t+1) hace pullback por encima de invalidación (69,823) para llenar LIMIT (~69,914)
         candles.append(Candle(timestamp=t0 + 66 * 60.0, open=69990.0, high=70000.0, low=69895.0, close=69985.0, volume=18.0))
-        # Barras 67..90: expansión alcista hacia TP (+1.3%)
+        # Barras 67..90: expansión alcista hacia TP (+1.3%..+1.7%)
         for j in range(67, 91):
             px = 70000.0 + (j - 66) * 50.0
             candles.append(
@@ -917,6 +927,8 @@ class TestProfilesAndCLIIntegration(unittest.TestCase):
             self.assertIn("fer", res)
             self.assertIn("fill_pct", res)
             self.assertIn("total_cost_sats", res)
+            self.assertIn("gross_pnl_sats", res)
+            self.assertIn("exit_reasons", res)
 
         # Alimentar CellAccumulator en directorio temporal para verificar _format_table
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -938,6 +950,7 @@ class TestProfilesAndCLIIntegration(unittest.TestCase):
                 is_m16=True,
                 oos_month_bucket="2025-02",
             )
+            rec_params = inspect.signature(CellAccumulator.record_block).parameters
             final_rows = []
             for cid, res in results.items():
                 exec_m = cid.split("|")[-1]
@@ -951,6 +964,11 @@ class TestProfilesAndCLIIntegration(unittest.TestCase):
                     initial_balance=100_000,
                     params={"profile": "SCALP_SWEEP_TIGHT", "exec_mode": exec_m},
                 )
+                extra_kw = {}
+                if "gross_pnl_sats" in rec_params:
+                    extra_kw["gross_pnl_sats"] = float(res["gross_pnl_sats"])
+                if "exit_reasons" in rec_params:
+                    extra_kw["exit_reasons"] = dict(res["exit_reasons"])
                 for d_blk in (desc_oos, desc_m16):
                     acc.record_block(
                         desc=d_blk,
@@ -965,11 +983,26 @@ class TestProfilesAndCLIIntegration(unittest.TestCase):
                         cost_sats=float(res["total_cost_sats"]),
                         submitted=int(res["orders_submitted"]),
                         filled=int(res["orders_filled"]),
+                        **extra_kw,
                     )
                 final_rows.append(acc.finalize())
 
             table_str = _format_table(final_rows)
-            for col in ("Fill%", "FER", "PF", "OOS_sin_M16", "MaxDD%", "WR%", "Net_18M", "OOS_12M"):
+            for col in (
+                "Fill%",
+                "FER",
+                "PF",
+                "OOS_sin_M16",
+                "MaxDD%",
+                "WR%",
+                "Net_18M",
+                "OOS_12M",
+                "GrossPnL",
+                "AvgW",
+                "AvgL",
+                "RR_net",
+                "ExitSplit",
+            ):
                 self.assertIn(col, table_str)
             for cid in results:
                 self.assertIn(cid, table_str)
@@ -982,6 +1015,26 @@ class TestProfilesAndCLIIntegration(unittest.TestCase):
         self.assertEqual(args.exec_modes, "LIMIT,MARKET")
         self.assertEqual(args.scalp_profiles, ",".join(SCALP_PROFILE_ORDER))
 
+        args_ablation = parser.parse_args(
+            [
+                "--mode",
+                "scalping",
+                "--scope",
+                "fold1",
+                "--lock-modes",
+                "pure_sl_tp,delayed_75",
+                "--macro-filters",
+                "off,counter_block,range_only",
+                "--no-rolling-pause-reset",
+            ]
+        )
+        self.assertEqual(args_ablation.lock_modes, "pure_sl_tp,delayed_75")
+        self.assertEqual(args_ablation.macro_filters, "off,counter_block,range_only")
+        self.assertFalse(args_ablation.rolling_pause_reset)
+
+        args_rpr = parser.parse_args(["--mode", "scalping", "--rolling-pause-reset"])
+        self.assertTrue(args_rpr.rolling_pause_reset)
+
         proc = subprocess.run(
             [sys.executable, "-B", "simulation/run_phase5b_v2_lab.py", "--help"],
             capture_output=True,
@@ -989,8 +1042,589 @@ class TestProfilesAndCLIIntegration(unittest.TestCase):
             check=False,
         )
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
-        for token in ("scalping", "--mode", "--scalp-profiles", "--exec-modes"):
+        for token in (
+            "scalping",
+            "--mode",
+            "--scalp-profiles",
+            "--exec-modes",
+            "--lock-modes",
+            "--macro-filters",
+            "--rolling-pause-reset",
+            "--no-rolling-pause-reset",
+        ):
             self.assertIn(token, proc.stdout)
+
+
+class TestPhase1B2AblationAndFixes(unittest.TestCase):
+    """8. Certificación Fase 1B.2: modos de lock, clamping 0-deadlock, re-anchor, filtro macro causal, flancos y contabilidad."""
+
+    def test_lock_modes_pure_sl_tp_vs_delayed_75_vs_legacy(self):
+        t0 = 1700000000.0
+
+        def _open_long_trade(lock_mode: str) -> ScalpSimEngine:
+            eng = ScalpSimEngine(
+                profile="SCALP_SWEEP_STD",
+                exec_mode="LIMIT",
+                lock_mode=lock_mode,
+                fee_rt_bps=16.0,
+                stress_config=MicrostructureStressConfig.s0_nominal(),
+                initial_balance_sats=100_000,
+            )
+            ok, reason, _ = eng.submit_signal(
+                side="b",
+                spot_price=70050.0,
+                limit_price=70000.0,
+                sl_price=69600.0,
+                tp_price=71000.0,
+                invalidation_price=69400.0,
+                ttl_sec=600.0,
+                bar_idx=0,
+                ts=t0,
+            )
+            self.assertTrue(ok, msg=reason)
+            eng.process_bar(1, t0 + 60.0, 70020.0, 70030.0, 69999.5, 70010.0, context=_neutral_ctx())
+            self.assertEqual(len(eng.running_trades), 1)
+            return eng
+
+        # 1) pure_sl_tp: jamás mueve el stop aunque alcance 80% de TP (2.0R) y retroceda a 69,900
+        eng_pure = _open_long_trade("pure_sl_tp")
+        eng_pure.process_bar(2, t0 + 120.0, 70010.0, 70820.0, 70000.0, 70800.0, context=_neutral_ctx())
+        self.assertEqual(len(eng_pure.running_trades), 1)
+        self.assertEqual(eng_pure.running_trades[0]["sl_price"], 69600.0)
+        self.assertFalse(eng_pure.running_trades[0].get("lock_active", False))
+
+        eng_pure.process_bar(3, t0 + 180.0, 70800.0, 70810.0, 69900.0, 69920.0, context=_neutral_ctx())
+        self.assertEqual(len(eng_pure.running_trades), 1)
+        self.assertEqual(len(eng_pure.closed_trades), 0)
+        self.assertEqual(eng_pure.running_trades[0]["sl_price"], 69600.0)
+
+        eng_pure.process_bar(
+            4, t0 + 240.0, 69920.0, 71050.0, 69910.0, 71020.0, context=_neutral_ctx(), has_more_bars=False
+        )
+        self.assertEqual(len(eng_pure.closed_trades), 1)
+        self.assertEqual(eng_pure.closed_trades[0]["close_reason"], "TAKE_PROFIT")
+        ep_pure = eng_pure.finalize_episode()
+        self.assertEqual(ep_pure["exit_reasons"]["TP"], 1)
+        self.assertEqual(ep_pure["exit_reasons"]["DEF_SCALP_LOCK"], 0)
+
+        # 2) delayed_75: inactivo en 70% de TP (70,700), activo en >= 75% de TP (70,760) asegurando > +0.40*TP neto sobre fees
+        eng_d75 = _open_long_trade("delayed_75")
+        eng_d75.process_bar(2, t0 + 120.0, 70010.0, 70710.0, 70000.0, 70700.0, context=_neutral_ctx())
+        tr_d75 = eng_d75.running_trades[0]
+        self.assertEqual(tr_d75["sl_price"], 69600.0)
+        self.assertFalse(tr_d75["lock_active"])
+
+        eng_d75.process_bar(3, t0 + 180.0, 70700.0, 70780.0, 70690.0, 70760.0, context=_neutral_ctx())
+        self.assertTrue(tr_d75["lock_active"])
+        locked_sl = float(tr_d75["sl_price"])
+        self.assertGreater(locked_sl, 70400.0)  # > entry + 0.40 * tp_dist (jamás BE 0%)
+
+        f_rate = 16.0 / 20000.0
+        pnl_at_lock = compute_scalp_inverse_pnl(
+            "b", tr_d75["margin_sats"], tr_d75["leverage"], 70000.0, locked_sl, f_rate, f_rate, 0.0
+        )
+        tp_gross = compute_scalp_inverse_pnl(
+            "b", tr_d75["margin_sats"], tr_d75["leverage"], 70000.0, 71000.0, 0.0, 0.0, 0.0
+        )["gross_pnl_sats"]
+        self.assertGreater(pnl_at_lock["net_pnl_sats"], 0.40 * tp_gross)
+
+        eng_d75.process_bar(
+            4,
+            t0 + 240.0,
+            70750.0,
+            70760.0,
+            locked_sl - 10.0,
+            locked_sl - 5.0,
+            context=_neutral_ctx(),
+            has_more_bars=False,
+        )
+        self.assertEqual(len(eng_d75.closed_trades), 1)
+        self.assertEqual(eng_d75.closed_trades[0]["close_reason"], "DEF_SCALP_LOCK")
+        self.assertGreater(eng_d75.closed_trades[0]["net_pnl_sats"], 0.0)
+        ep_d75 = eng_d75.finalize_episode()
+        self.assertEqual(ep_d75["exit_reasons"]["DEF_SCALP_LOCK"], 1)
+
+        # 3) legacy: avance temprano de 1.2R (70,480 < 0.75 * TP) sí activa lock_active
+        eng_leg = _open_long_trade("legacy")
+        eng_leg.process_bar(2, t0 + 120.0, 70010.0, 70500.0, 70000.0, 70480.0, context=_neutral_ctx())
+        self.assertTrue(eng_leg.running_trades[0]["lock_active"])
+        self.assertGreater(eng_leg.running_trades[0]["sl_price"], 69600.0)
+
+    def test_zero_deadlock_dynamic_risk_clamping_at_1_40pct_dd(self):
+        t0 = 1700000000.0
+        eng = ScalpSimEngine(
+            profile="SCALP_SWEEP_STD",
+            exec_mode="LIMIT",
+            initial_balance_sats=100_000,
+            dynamic_risk_clamp=True,
+        )
+        eng.lane_budget.record_lane_b_pnl(-1_400.0, now_ts=t0 - 60.0, side="s")
+        self.assertAlmostEqual(eng.lane_budget.dd_b, 0.0140, places=6)
+        self.assertAlmostEqual(eng.lane_budget.e_global, 98_600.0, places=6)
+
+        cap = (0.0150 - 0.0140) * 98_600.0  # 98.60 sats (0.10% * E_global)
+        self.assertAlmostEqual(cap, 98.60, places=6)
+
+        ok, reason, order = eng.submit_signal(
+            side="b",
+            spot_price=70050.0,
+            limit_price=70000.0,
+            sl_price=69600.0,
+            tp_price=71000.0,
+            invalidation_price=69400.0,
+            bar_idx=0,
+            ts=t0,
+        )
+        self.assertTrue(ok, msg=reason)
+        self.assertEqual(reason, "SUBMITTED")
+        self.assertIsNotNone(order)
+        self.assertLessEqual(order["loss_at_sl_sats"], cap + 1e-9)
+        self.assertGreater(order["loss_at_sl_sats"], 0.80 * cap)
+        self.assertEqual(eng.clamped_entries, 1)
+
+        # Contraste directo: sin clamping dinámico, el mismo estado rechaza con LANE_B_OPEN_SL_RISK_CAP
+        eng_noclamp = ScalpSimEngine(
+            profile="SCALP_SWEEP_STD",
+            exec_mode="LIMIT",
+            initial_balance_sats=100_000,
+            dynamic_risk_clamp=False,
+        )
+        eng_noclamp.lane_budget.record_lane_b_pnl(-1_400.0, now_ts=t0 - 60.0, side="s")
+        ok_nc, reason_nc, _ = eng_noclamp.submit_signal(
+            side="b",
+            spot_price=70050.0,
+            limit_price=70000.0,
+            sl_price=69600.0,
+            tp_price=71000.0,
+            invalidation_price=69400.0,
+            bar_idx=0,
+            ts=t0,
+        )
+        self.assertFalse(ok_nc)
+        self.assertEqual(reason_nc, "LANE_B_OPEN_SL_RISK_CAP")
+
+    def test_post_pause_window_reanchor_0_5x_and_hard_caps(self):
+        t0 = 1700000000.0
+
+        eng_clean = ScalpSimEngine(
+            profile="SCALP_SWEEP_STD",
+            exec_mode="LIMIT",
+            initial_balance_sats=100_000,
+        )
+        ok_c, _, ord_clean = eng_clean.submit_signal(
+            side="b",
+            spot_price=70050.0,
+            limit_price=70000.0,
+            sl_price=69600.0,
+            tp_price=71000.0,
+            invalidation_price=69400.0,
+            bar_idx=0,
+            ts=t0,
+        )
+        self.assertTrue(ok_c)
+        base_margin = ord_clean["margin_sats"]
+
+        eng = ScalpSimEngine(
+            profile="SCALP_SWEEP_STD",
+            exec_mode="LIMIT",
+            initial_balance_sats=100_000,
+            rolling_pause_reset=True,
+        )
+        eng.lane_budget.record_lane_b_pnl(-1_600.0, now_ts=t0, side="b")
+        self.assertGreaterEqual(eng.lane_budget.dd_b, 0.0160 - 1e-9)
+
+        # Durante las 24h está pausado
+        ok_p, r_p, _ = eng.submit_signal(
+            side="b",
+            spot_price=70050.0,
+            limit_price=70000.0,
+            sl_price=69600.0,
+            tp_price=71000.0,
+            invalidation_price=69400.0,
+            bar_idx=1,
+            ts=t0 + 3600.0,
+        )
+        self.assertFalse(ok_p)
+        self.assertEqual(r_p, "LANE_B_PAUSED_24H")
+
+        # Tras expirar las 24h: re-anchor a 98,400, dd_b == 0.0, reanchor_count_b == 1 y sizing 0.5x
+        t1 = t0 + 86_401.0
+        ok_1, r_1, order = eng.submit_signal(
+            side="b",
+            spot_price=70050.0,
+            limit_price=70000.0,
+            sl_price=69600.0,
+            tp_price=71000.0,
+            invalidation_price=69400.0,
+            bar_idx=2,
+            ts=t1,
+        )
+        self.assertTrue(ok_1, msg=r_1)
+        self.assertAlmostEqual(eng.lane_budget.dd_b, 0.0, places=9)
+        self.assertAlmostEqual(eng.lane_budget.peak_b, 98_400.0, places=6)
+        self.assertEqual(eng.lane_budget.reanchor_count_b, 1)
+        ratio = order["margin_sats"] / base_margin
+        self.assertGreater(ratio, 0.44)
+        self.assertLess(ratio, 0.55)
+
+        # Expirar orden pendiente por TTL antes de probar el techo duro de episodio
+        eng.process_bar(3, t1 + 1000.0, 70050.0, 70060.0, 70040.0, 70050.0, context=_neutral_ctx())
+        self.assertEqual(len(eng.pending_orders), 0)
+
+        # Techo duro DD_B_episode_hard_cap = 3.00% incluso si A ganó +2,500 (dd_global < 2.20%)
+        eng.lane_budget.record_lane_a_pnl(2_500.0)
+        eng.lane_budget.record_lane_b_pnl(-1_500.0, now_ts=t1 + 1200.0, side="s")
+        self.assertAlmostEqual(eng.lane_budget.e_b, 96_900.0, places=6)
+
+        t2 = t1 + 90_000.0
+        ok_ep, r_ep, _ = eng.submit_signal(
+            side="b",
+            spot_price=70050.0,
+            limit_price=70000.0,
+            sl_price=69600.0,
+            tp_price=71000.0,
+            invalidation_price=69400.0,
+            bar_idx=4,
+            ts=t2,
+        )
+        self.assertFalse(ok_ep)
+        self.assertEqual(r_ep, "LANE_B_EPISODE_HARD_CAP")
+
+        # Freno global DD_global >= 2.20% cuando dd_b_episode = 1.60% < 3.00% pero A pierde -700 sats
+        eng_glob = ScalpSimEngine(
+            profile="SCALP_SWEEP_STD",
+            exec_mode="LIMIT",
+            initial_balance_sats=100_000,
+            rolling_pause_reset=True,
+        )
+        eng_glob.lane_budget.record_lane_b_pnl(-1_600.0, now_ts=t0, side="b")
+        eng_glob.lane_budget.record_lane_a_pnl(-700.0)
+        ok_g, r_g, _ = eng_glob.submit_signal(
+            side="b",
+            spot_price=70050.0,
+            limit_price=70000.0,
+            sl_price=69600.0,
+            tp_price=71000.0,
+            invalidation_price=69400.0,
+            bar_idx=1,
+            ts=t0 + 86_401.0,
+        )
+        self.assertFalse(ok_g)
+        self.assertEqual(r_g, "LANE_B_PROTECTIVE_DD_BRAKE")
+
+    def test_causal_macro_filter_counter_block_and_range_only_no_lookahead(self):
+        t0 = 1700006400.0  # múltiplo exacto de 14,400s (4h), 3,600s (1h) y 300s (5m)
+
+        def _eval_macro(macro_filter: str, side: str, ind_1h: dict, ind_4h: dict, perception: dict | None = None):
+            eng = ScalpSimEngine(
+                profile="SCALP_SWEEP_STD",
+                exec_mode="LIMIT",
+                macro_filter=macro_filter,
+            )
+            swept = 69960.0 if side == "b" else 70040.0
+            wick = 69850.0 if side == "b" else 70150.0
+            ctx = _sweep_ctx(side, spot=70000.0, atr_5m=150.0, swept_level=swept, wick_extreme=wick)
+            ctx["liquidity_signal"] = dict(ctx["liquidity_signal"], timeframe="15m")
+            ctx["ind_1h"] = dict(ind_1h)
+            ctx["ind_4h"] = dict(ind_4h)
+            if perception is not None:
+                ctx["perception"] = dict(perception)
+            eng.process_bar(0, t0, 70000.0, 70040.0, 69960.0, 70000.0, context=ctx)
+            if eng.orders_submitted == 1:
+                return True, "SUBMITTED", eng
+            reason = next(iter(eng.rejected_reasons.keys()), "")
+            return False, reason, eng
+
+        bull_1h = {
+            "regime": "TREND_BULL",
+            "market_regime": "VOLATILITY_EXPANSION",
+            "ema_score": 1.0,
+            "ema9": 70500.0,
+            "ema21": 70000.0,
+            "adx": 30.0,
+        }
+        bull_4h = {
+            "regime": "TREND_BULL",
+            "ema_score": 1.0,
+            "ema9": 70400.0,
+            "ema21": 69800.0,
+        }
+
+        # Contexto alcista fuerte 1h/4h
+        ok_cb_s, r_cb_s, _ = _eval_macro("counter_block", "s", bull_1h, bull_4h)
+        self.assertFalse(ok_cb_s)
+        self.assertEqual(r_cb_s, "MACRO_COUNTER_BLOCK")
+
+        ok_cb_b, r_cb_b, _ = _eval_macro("counter_block", "b", bull_1h, bull_4h)
+        self.assertTrue(ok_cb_b, msg=r_cb_b)
+
+        for s_side in ("b", "s"):
+            ok_ro, r_ro, _ = _eval_macro("range_only", s_side, bull_1h, bull_4h)
+            self.assertFalse(ok_ro)
+            self.assertEqual(r_ro, "MACRO_NOT_RANGE")
+
+            ok_off, r_off, _ = _eval_macro("off", s_side, bull_1h, bull_4h)
+            self.assertTrue(ok_off, msg=r_off)
+
+        # Contexto bajista fuerte 1h/4h
+        bear_1h = {
+            "regime": "TREND_BEAR",
+            "market_regime": "VOLATILITY_EXPANSION",
+            "ema_score": -1.0,
+            "ema9": 69500.0,
+            "ema21": 70000.0,
+            "adx": 30.0,
+        }
+        bear_4h = {
+            "regime": "TREND_BEAR",
+            "ema_score": -1.0,
+            "ema9": 69600.0,
+            "ema21": 70200.0,
+        }
+        ok_bear_b, r_bear_b, _ = _eval_macro("counter_block", "b", bear_1h, bear_4h)
+        self.assertFalse(ok_bear_b)
+        self.assertEqual(r_bear_b, "MACRO_COUNTER_BLOCK")
+
+        ok_bear_s, r_bear_s, _ = _eval_macro("counter_block", "s", bear_1h, bear_4h)
+        self.assertTrue(ok_bear_s, msg=r_bear_s)
+
+        # EXTREME_VOLATILITY bloquea en ambos filtros
+        ext_1h = {
+            "regime": "EXTREME_VOLATILITY",
+            "market_regime": "EXTREME_VOLATILITY",
+            "ema_score": 0.0,
+            "ema9": 70000.0,
+            "ema21": 70000.0,
+            "adx": 45.0,
+        }
+        ext_4h = {"regime": "EXTREME_VOLATILITY", "ema_score": 0.0, "ema9": 70000.0, "ema21": 70000.0}
+        ext_perc = {"market_regime": "EXTREME_VOLATILITY"}
+        for filt in ("counter_block", "range_only"):
+            for s_side in ("b", "s"):
+                ok_ev, r_ev, _ = _eval_macro(filt, s_side, ext_1h, ext_4h, perception=ext_perc)
+                self.assertFalse(ok_ev)
+                self.assertEqual(r_ev, "MACRO_EXTREME_VOL")
+
+        # Cero lookahead en secuencia cruda Candle: 3h planas en rango (0..179) seguidas de expansión alcista futura (180..299)
+        candles_180: list[Candle] = []
+        for i in range(170):
+            ts = t0 + i * 60.0
+            base = 70000.0 + 15.0 * math.sin(i / 4.0)
+            high = 70120.0 if (i in (12, 27, 42, 72, 102, 132)) else base + 55.0
+            low = 69880.0 if (i in (18, 33, 48, 78, 108, 138)) else base - 55.0
+            candles_180.append(Candle(timestamp=ts, open=base, high=high, low=low, close=base, volume=12.0))
+
+        # Minutos 170..174: barrido bajista sobre el pool 70,120 hasta 70,165 y reclaim en 70,065
+        candles_180.append(Candle(timestamp=t0 + 170 * 60.0, open=70040.0, high=70140.0, low=70010.0, close=70070.0, volume=25.0))
+        candles_180.append(Candle(timestamp=t0 + 171 * 60.0, open=70070.0, high=70165.0, low=70030.0, close=70060.0, volume=30.0))
+        candles_180.append(Candle(timestamp=t0 + 172 * 60.0, open=70060.0, high=70080.0, low=70020.0, close=70055.0, volume=25.0))
+        candles_180.append(Candle(timestamp=t0 + 173 * 60.0, open=70055.0, high=70075.0, low=70025.0, close=70060.0, volume=20.0))
+        candles_180.append(Candle(timestamp=t0 + 174 * 60.0, open=70060.0, high=70080.0, low=70035.0, close=70065.0, volume=20.0))
+        # Minutos 175..179: sigue en rango plano ~70,060 justo hasta minuto 179
+        candles_180.append(Candle(timestamp=t0 + 175 * 60.0, open=70065.0, high=70085.0, low=70030.0, close=70060.0, volume=18.0))
+        for i in range(176, 180):
+            ts = t0 + i * 60.0
+            candles_180.append(Candle(timestamp=ts, open=70060.0, high=70080.0, low=70030.0, close=70055.0, volume=15.0))
+        self.assertEqual(len(candles_180), 180)
+
+        # Barras futuras > 179 (180..299): tendencia alcista limpia (+12 USD/min hasta ~71,500 -> TREND_BULL 1h)
+        candles_with_future_bull = list(candles_180)
+        for j in range(180, 300):
+            ts = t0 + j * 60.0
+            px = 70055.0 + (j - 179) * 12.0
+            candles_with_future_bull.append(
+                Candle(timestamp=ts, open=px - 10.0, high=px + 15.0, low=px - 15.0, close=px, volume=40.0)
+            )
+
+        # 1) Verificación directa al minuto 179: el builder causal solo vio 0..179 (RANGE) sin contaminarse por 180..299
+        from simulation.scalp_sim_engine import CausalScalpContextBuilder
+        builder_causal = CausalScalpContextBuilder()
+        live_ctx_179 = {}
+        for idx in range(180):
+            c_bar = candles_with_future_bull[idx]
+            live_ctx_179 = builder_causal.step(
+                c_bar.timestamp, c_bar.open, c_bar.high, c_bar.low, c_bar.close, volume=c_bar.volume
+            )
+        self.assertEqual(live_ctx_179["ind_1h"]["regime"], "RANGE")
+        self.assertEqual(live_ctx_179["ind_4h"]["regime"], "RANGE")
+
+        c_179 = candles_with_future_bull[179]
+        for filt in ("range_only", "counter_block"):
+            eng_causal = ScalpSimEngine(profile="SCALP_SWEEP_STD", exec_mode="LIMIT", macro_filter=filt)
+            ctx_179 = _sweep_ctx("s", spot=70000.0, atr_5m=150.0, swept_level=70040.0, wick_extreme=70095.0)
+            ctx_179["liquidity_signal"] = dict(ctx_179["liquidity_signal"], timeframe="15m")
+            ctx_179["ind_1h"] = live_ctx_179["ind_1h"]
+            ctx_179["ind_4h"] = live_ctx_179["ind_4h"]
+            eng_causal.process_bar(179, c_179.timestamp, c_179.open, c_179.high, c_179.low, c_179.close, context=ctx_179)
+            self.assertEqual(eng_causal.orders_submitted, 1, msg=f"Blocked at min 179 for {filt}: {eng_causal.rejected_reasons}")
+
+        # Y tras cerrar las horas futuras alcistas (180..299), el mismo builder causal pasa a TREND_BULL y bloquea SHORT
+        live_ctx_299 = {}
+        for idx in range(180, 300):
+            c_bar = candles_with_future_bull[idx]
+            live_ctx_299 = builder_causal.step(
+                c_bar.timestamp, c_bar.open, c_bar.high, c_bar.low, c_bar.close, volume=c_bar.volume
+            )
+        self.assertEqual(live_ctx_299["ind_1h"]["regime"], "TREND_BULL")
+        eng_after_bull = ScalpSimEngine(profile="SCALP_SWEEP_STD", exec_mode="LIMIT", macro_filter="counter_block")
+        ctx_299 = _sweep_ctx("s", spot=71495.0, atr_5m=150.0, swept_level=71535.0, wick_extreme=71590.0)
+        ctx_299["liquidity_signal"] = dict(ctx_299["liquidity_signal"], timeframe="15m")
+        ctx_299["ind_1h"] = live_ctx_299["ind_1h"]
+        ctx_299["ind_4h"] = live_ctx_299["ind_4h"]
+        c_299 = candles_with_future_bull[299]
+        eng_after_bull.process_bar(299, c_299.timestamp, c_299.open, c_299.high, c_299.low, c_299.close, context=ctx_299)
+        self.assertEqual(eng_after_bull.orders_submitted, 0)
+        self.assertEqual(eng_after_bull.rejected_reasons["MACRO_COUNTER_BLOCK"], 1)
+
+        # 2) Paridad exacta de decisiones hasta t=179 en run_scalp_cells_on_block con vs sin barras futuras
+        res_180 = run_scalp_cells_on_block(
+            candles_180,
+            {
+                "ro": ScalpSimEngine(profile="SCALP_SWEEP_TIGHT", exec_mode="LIMIT", macro_filter="range_only"),
+                "cb": ScalpSimEngine(profile="SCALP_SWEEP_TIGHT", exec_mode="LIMIT", macro_filter="counter_block"),
+            },
+            initial_balance=100_000,
+        )
+        res_300 = run_scalp_cells_on_block(
+            candles_with_future_bull,
+            {
+                "ro": ScalpSimEngine(profile="SCALP_SWEEP_TIGHT", exec_mode="LIMIT", macro_filter="range_only"),
+                "cb": ScalpSimEngine(profile="SCALP_SWEEP_TIGHT", exec_mode="LIMIT", macro_filter="counter_block"),
+            },
+            initial_balance=100_000,
+        )
+        for k in ("ro", "cb"):
+            self.assertGreaterEqual(res_180[k]["orders_submitted"], 1, msg=res_180[k])
+            self.assertGreaterEqual(res_300[k]["orders_submitted"], res_180[k]["orders_submitted"])
+
+    def test_edge_triggering_single_signal_and_clean_limit_offset_counter(self):
+        t0 = 1700000000.0
+        eng = ScalpSimEngine(profile="SCALP_SWEEP_STD", exec_mode="LIMIT")
+        ctx_b = _sweep_ctx("b", spot=70000.0, atr_5m=150.0, swept_level=69960.0, wick_extreme=69850.0)
+        ctx_b["liquidity_signal"] = dict(ctx_b["liquidity_signal"], timeframe="15m")
+
+        # 10 velas consecutivas con condición de barrido idéntica -> exactamente 1 señal en el flanco
+        for i in range(10):
+            eng.process_bar(i, t0 + i * 60.0, 70005.0, 70020.0, 70000.0, 70000.0, context=ctx_b)
+        self.assertEqual(eng.signals_total, 1)
+
+        # 2 velas neutrales rearman el detector y un barrido en el lado opuesto dispara la 2da señal
+        eng.process_bar(10, t0 + 10 * 60.0, 70000.0, 70010.0, 69990.0, 70000.0, context=_neutral_ctx())
+        eng.process_bar(11, t0 + 11 * 60.0, 70000.0, 70010.0, 69990.0, 70000.0, context=_neutral_ctx())
+        self.assertEqual(eng.signals_total, 1)
+
+        ctx_s = _sweep_ctx("s", spot=70000.0, atr_5m=150.0, swept_level=70040.0, wick_extreme=70150.0)
+        ctx_s["liquidity_signal"] = dict(ctx_s["liquidity_signal"], timeframe="15m")
+        eng.process_bar(12, t0 + 12 * 60.0, 69995.0, 70000.0, 69980.0, 70000.0, context=ctx_s)
+        self.assertEqual(eng.signals_total, 2)
+
+        # Conteo limpio de LIMIT_OFFSET_TOO_FAR sin floats interpolados en las claves
+        eng_off = ScalpSimEngine(profile="SCALP_SWEEP_STD", exec_mode="LIMIT")
+        liq_far = {
+            "liquidity_score": 0.65,
+            "swept_level": 70000.0,
+            "wick_extreme": 69900.0,
+            "timeframe": "5m",
+        }
+        for idx, spot in enumerate((71000.0, 71050.0, 71120.0)):
+            ok, reason, _ = eng_off.submit_signal(
+                side="b",
+                spot_price=spot,
+                atr_5m=100.0,
+                liquidity_signal=liq_far,
+                bar_idx=idx,
+                ts=t0 + idx * 60.0,
+            )
+            self.assertFalse(ok)
+            self.assertEqual(reason, "LIMIT_OFFSET_TOO_FAR")
+
+        self.assertEqual(dict(eng_off.rejected_reasons), {"LIMIT_OFFSET_TOO_FAR": 3})
+        for key in eng_off.rejected_reasons:
+            self.assertNotIn("(", key)
+            self.assertNotIn(".", key)
+
+    def test_accounting_identity_gross_pnl_and_exit_reasons(self):
+        t0 = 1700000000.0
+        eng = ScalpSimEngine(
+            profile="SCALP_SWEEP_STD",
+            exec_mode="LIMIT",
+            lock_mode="pure_sl_tp",
+            fee_rt_bps=16.0,
+            stress_config=MicrostructureStressConfig.s0_nominal(),
+            initial_balance_sats=100_000,
+        )
+
+        # Trade 1: LONG cerrado por TAKE_PROFIT
+        ok1, r1, _ = eng.submit_signal(
+            side="b",
+            spot_price=70050.0,
+            limit_price=70000.0,
+            sl_price=69600.0,
+            tp_price=71000.0,
+            invalidation_price=69400.0,
+            ttl_sec=600.0,
+            margin_sats=1000.0,
+            leverage=25,
+            bar_idx=0,
+            ts=t0,
+        )
+        self.assertTrue(ok1, msg=r1)
+        eng.process_bar(1, t0 + 60.0, 70020.0, 70030.0, 69999.5, 70010.0, context=_neutral_ctx())
+        eng.process_bar(2, t0 + 120.0, 70010.0, 71050.0, 70000.0, 71020.0, context=_neutral_ctx())
+        self.assertEqual(len(eng.closed_trades), 1)
+        self.assertEqual(eng.closed_trades[0]["close_reason"], "TAKE_PROFIT")
+
+        # Trade 2: SHORT cerrado por STOP_LOSS
+        ok2, r2, _ = eng.submit_signal(
+            side="s",
+            spot_price=70950.0,
+            limit_price=71000.0,
+            sl_price=71400.0,
+            tp_price=70000.0,
+            invalidation_price=71600.0,
+            ttl_sec=600.0,
+            margin_sats=1000.0,
+            leverage=25,
+            bar_idx=2,
+            ts=t0 + 120.0,
+        )
+        self.assertTrue(ok2, msg=r2)
+        eng.process_bar(3, t0 + 180.0, 70980.0, 71000.5, 70970.0, 70990.0, context=_neutral_ctx())
+        eng.process_bar(4, t0 + 240.0, 70990.0, 71450.0, 70980.0, 71420.0, context=_neutral_ctx())
+        self.assertEqual(len(eng.closed_trades), 2)
+        self.assertEqual(eng.closed_trades[1]["close_reason"], "STOP_LOSS")
+
+        # Trade 3: LONG abierto que cierra por EPISODE_END al llamar finalize_episode()
+        ok3, r3, _ = eng.submit_signal(
+            side="b",
+            spot_price=70050.0,
+            limit_price=70000.0,
+            sl_price=69600.0,
+            tp_price=71000.0,
+            invalidation_price=69400.0,
+            ttl_sec=600.0,
+            margin_sats=1000.0,
+            leverage=25,
+            bar_idx=4,
+            ts=t0 + 240.0,
+        )
+        self.assertTrue(ok3, msg=r3)
+        eng.process_bar(5, t0 + 300.0, 70020.0, 70280.0, 69999.5, 70250.0, context=_neutral_ctx())
+        self.assertEqual(len(eng.running_trades), 1)
+
+        summary = eng.finalize_episode()
+        self.assertEqual(summary["n_trades"], 3)
+        self.assertEqual(eng.closed_trades[2]["close_reason"], "EPISODE_END")
+        self.assertLess(
+            abs(summary["gross_pnl_sats"] - (summary["net_profit_sats"] + summary["total_cost_sats"])),
+            1e-6,
+        )
+        self.assertEqual(summary["exit_reasons"], {"TP": 1, "SL": 1, "DEF_SCALP_LOCK": 0, "EOD": 1})
+        self.assertEqual(sum(summary["exit_reasons"].values()), summary["n_trades"])
+        self.assertGreater(summary["avg_win_net_sats"], 0.0)
+        self.assertLess(summary["avg_loss_net_sats"], 0.0)
+        self.assertGreater(summary["avg_win_gross_pct"], 0.0)
+        self.assertLess(summary["avg_loss_gross_pct"], 0.0)
 
 
 if __name__ == "__main__":

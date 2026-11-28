@@ -38,6 +38,11 @@ from simulation.scalp_sim_engine import (
     ScalpSimEngine,
     run_scalp_cells_on_block,
 )
+try:
+    from simulation.scalp_sim_engine import VALID_LOCK_MODES, VALID_MACRO_FILTERS
+except ImportError:
+    VALID_LOCK_MODES = ("legacy", "pure_sl_tp", "delayed_75")
+    VALID_MACRO_FILTERS = ("off", "counter_block", "range_only")
 from simulation.sim_lnm_exchange import MicrostructureStressConfig
 from simulation.sim_training_environment import SimTrainingEnvironment
 
@@ -89,6 +94,13 @@ class CellAccumulator:
     total_cost_sats: float = 0.0
     orders_submitted: int = 0
     orders_filled: int = 0
+    gross_pnl_sats_sum: float = 0.0
+    win_gross_pct_sum: float = 0.0
+    loss_gross_pct_sum: float = 0.0
+    clamped_entries: int = 0
+    exit_reasons: Dict[str, int] = field(
+        default_factory=lambda: {"TP": 0, "SL": 0, "DEF_SCALP_LOCK": 0, "EOD": 0}
+    )
 
     oos_bucket_net: Dict[str, int] = field(default_factory=dict)
     monthly_rows: List[Dict[str, Any]] = field(default_factory=list)
@@ -111,6 +123,11 @@ class CellAccumulator:
         submitted: int = 0,
         filled: int = 0,
         extra: Optional[Dict[str, Any]] = None,
+        gross_pnl_sats: Optional[float] = None,
+        exit_reasons: Optional[Dict[str, int]] = None,
+        clamped_entries: int = 0,
+        avg_win_gross_pct: float = 0.0,
+        avg_loss_gross_pct: float = 0.0,
     ) -> None:
         self.n_blocks += 1
         self.total_trades += n_trades
@@ -121,6 +138,22 @@ class CellAccumulator:
         self.total_cost_sats += float(cost_sats)
         self.orders_submitted += int(submitted)
         self.orders_filled += int(filled)
+
+        eff_gross = (
+            float(gross_pnl_sats)
+            if gross_pnl_sats is not None
+            else (float(net_sats) + float(cost_sats))
+        )
+        self.gross_pnl_sats_sum += eff_gross
+        losses_blk = max(0, int(n_trades) - int(wins))
+        self.win_gross_pct_sum += int(wins) * float(avg_win_gross_pct)
+        self.loss_gross_pct_sum += losses_blk * float(avg_loss_gross_pct)
+        self.clamped_entries += int(clamped_entries)
+        if isinstance(exit_reasons, dict):
+            for ex_k in ("TP", "SL", "DEF_SCALP_LOCK", "EOD"):
+                self.exit_reasons[ex_k] = self.exit_reasons.get(ex_k, 0) + int(
+                    exit_reasons.get(ex_k, 0)
+                )
 
         if desc.is_oos_12m:
             self.oos_12m_trades += n_trades
@@ -182,6 +215,25 @@ class CellAccumulator:
             if self.orders_submitted > 0
             else 0.0
         )
+        total_losses = max(0, self.total_trades - self.total_wins)
+        avg_w = round(self.gross_win / self.total_wins, 2) if self.total_wins > 0 else 0.0
+        avg_l = round(-self.gross_loss / total_losses, 2) if total_losses > 0 else 0.0
+        rr_net = round(avg_w / abs(avg_l), 3) if avg_l < 0.0 else 0.0
+        avg_w_gpct = (
+            round(self.win_gross_pct_sum / self.total_wins, 4)
+            if self.total_wins > 0
+            else 0.0
+        )
+        avg_l_gpct = (
+            round(self.loss_gross_pct_sum / total_losses, 4)
+            if total_losses > 0
+            else 0.0
+        )
+        exit_split = (
+            f"{self.exit_reasons.get('TP', 0)}/"
+            f"{self.exit_reasons.get('SL', 0)}/"
+            f"{self.exit_reasons.get('DEF_SCALP_LOCK', 0)}"
+        )
 
         out: Dict[str, Any] = {
             "cell_id": self.cell_id,
@@ -196,9 +248,16 @@ class CellAccumulator:
             "N": self.total_trades,
             "N_mes": n_per_month,
             "WR_pct": wr_pct,
+            "GrossPnL": int(round(self.gross_pnl_sats_sum)),
+            "gross_pnl_sats": round(self.gross_pnl_sats_sum, 2),
             "Net_18M": self.total_net,
             "OOS_12M": self.oos_12m_net,
             "OOS_sin_M16": oos_sin_m16,
+            "AvgW": avg_w,
+            "AvgL": avg_l,
+            "RR_net": rr_net,
+            "avg_win_gross_pct": avg_w_gpct,
+            "avg_loss_gross_pct": avg_l_gpct,
             "PF": None if pf_raw == float("inf") else round(pf_raw, 3),
             "PF_raw": pf_raw,
             "PF_OOS12M": None if pf_oos_raw == float("inf") else round(pf_oos_raw, 3),
@@ -208,6 +267,9 @@ class CellAccumulator:
             "orders_submitted": self.orders_submitted,
             "orders_filled": self.orders_filled,
             "total_cost_sats": round(self.total_cost_sats, 2),
+            "exit_reasons": dict(self.exit_reasons),
+            "ExitSplit": exit_split,
+            "clamped_entries": self.clamped_entries,
             "MaxDD_pct": round(self.max_dd_pct, 2),
             "DD_ge_45": self.dd_ge_45,
             "DDG": self.ddg,
@@ -1136,39 +1198,89 @@ def _run_scalping_mode(
     exec_modes: List[str],
     initial_balance: int,
     quiet: bool = True,
+    lock_modes: Optional[List[str]] = None,
+    macro_filters: Optional[List[str]] = None,
+    rolling_pause_reset: bool = True,
 ) -> List[Dict[str, Any]]:
-    cells: List[Tuple[CellAccumulator, MicrostructureStressConfig, float, str, str]] = []
+    eff_lock_modes = (
+        list(lock_modes) if lock_modes is not None else ["pure_sl_tp", "delayed_75"]
+    )
+    eff_macro_filters = (
+        list(macro_filters)
+        if macro_filters is not None
+        else ["off", "counter_block", "range_only"]
+    )
+    cells: List[
+        Tuple[
+            CellAccumulator,
+            MicrostructureStressConfig,
+            float,
+            str,
+            str,
+            str,
+            str,
+        ]
+    ] = []
     for sc_name, sc_cfg in scenarios:
         for fee_bps in fee_rt_list:
             taker_fee = (fee_bps / 2.0) / 10000.0
             for prof_name in profiles:
                 for exec_mode in exec_modes:
-                    cid = f"scalp|{sc_name}|{fee_bps:g}bps|{prof_name}|{exec_mode}"
-                    acc = CellAccumulator(
-                        cell_id=cid,
-                        mode="scalping",
-                        scope=scope,
-                        scenario=sc_name,
-                        fee_rt_bps=fee_bps,
-                        taker_fee_rate=taker_fee,
-                        initial_balance=initial_balance,
-                        params={
-                            "profile": prof_name,
-                            "exec_mode": exec_mode,
-                            "fee_rt_bps": fee_bps,
-                        },
-                    )
-                    cells.append((acc, sc_cfg, fee_bps, prof_name, exec_mode))
+                    for lock_mode in eff_lock_modes:
+                        for macro_filter in eff_macro_filters:
+                            cid = (
+                                f"scalp|{sc_name}|{fee_bps:g}bps|{prof_name}|"
+                                f"{exec_mode}|{lock_mode}|{macro_filter}"
+                            )
+                            acc = CellAccumulator(
+                                cell_id=cid,
+                                mode="scalping",
+                                scope=scope,
+                                scenario=sc_name,
+                                fee_rt_bps=fee_bps,
+                                taker_fee_rate=taker_fee,
+                                initial_balance=initial_balance,
+                                params={
+                                    "profile": prof_name,
+                                    "exec_mode": exec_mode,
+                                    "fee_rt_bps": fee_bps,
+                                    "lock_mode": lock_mode,
+                                    "macro_filter": macro_filter,
+                                    "rolling_pause_reset": bool(rolling_pause_reset),
+                                },
+                            )
+                            cells.append(
+                                (
+                                    acc,
+                                    sc_cfg,
+                                    fee_bps,
+                                    prof_name,
+                                    exec_mode,
+                                    lock_mode,
+                                    macro_filter,
+                                )
+                            )
 
     for desc, blk in _iter_streamed_blocks(descs, quiet=quiet):
         engines_by_id: Dict[str, ScalpSimEngine] = {}
-        for acc, sc_cfg, fee_bps, prof_name, exec_mode in cells:
+        for (
+            acc,
+            sc_cfg,
+            fee_bps,
+            prof_name,
+            exec_mode,
+            lock_mode,
+            macro_filter,
+        ) in cells:
             engines_by_id[acc.cell_id] = ScalpSimEngine(
                 profile=prof_name,
                 exec_mode=exec_mode,
                 fee_rt_bps=fee_bps,
                 stress_config=sc_cfg,
                 initial_balance_sats=initial_balance,
+                lock_mode=lock_mode,
+                macro_filter=macro_filter,
+                rolling_pause_reset=rolling_pause_reset,
             )
 
         block_results = run_scalp_cells_on_block(
@@ -1177,7 +1289,7 @@ def _run_scalping_mode(
             initial_balance=initial_balance,
         )
 
-        for acc, _, _, _, _ in cells:
+        for acc, _, _, _, _, _, _ in cells:
             res = block_results.get(acc.cell_id, {})
             cost_sats = float(res.get("total_cost_sats", res.get("cost_sats", 0.0)))
             submitted = int(res.get("orders_submitted", res.get("submitted", 0)))
@@ -1187,18 +1299,30 @@ def _run_scalping_mode(
                 "cancelled_runaway",
                 "cancelled_invalidated",
                 "signals_total",
+                "clamped_entries",
+                "pause_reanchors",
             ):
                 acc.extra_counters[k] += int(res.get(k, 0))
             rejected_reasons = res.get("rejected_reasons") or {}
             if isinstance(rejected_reasons, dict):
                 for r_key, r_cnt in rejected_reasons.items():
-                    acc.extra_counters[f"rejected:{r_key}"] += int(r_cnt)
+                    norm_r_key = (
+                        "LIMIT_OFFSET_TOO_FAR"
+                        if str(r_key).startswith("LIMIT_OFFSET_TOO_FAR")
+                        else str(r_key)
+                    )
+                    acc.extra_counters[f"rejected:{norm_r_key}"] += int(r_cnt)
+
+            raw_net_f = float(res.get("net_profit_sats", res.get("net_sats", 0.0)))
+            blk_gross_pnl = float(res.get("gross_pnl_sats", raw_net_f + cost_sats))
+            blk_exit_reasons = res.get("exit_reasons")
+            blk_clamped = int(res.get("clamped_entries", 0))
 
             acc.record_block(
                 desc=desc,
                 n_trades=int(res.get("n_trades", 0)),
                 wins=int(res.get("wins", 0)),
-                net_sats=int(round(float(res.get("net_profit_sats", res.get("net_sats", 0))))),
+                net_sats=int(round(raw_net_f)),
                 b_win=int(round(float(res.get("gross_win_sats", res.get("b_win", 0))))),
                 b_loss=int(round(float(res.get("gross_loss_sats", res.get("b_loss", 0))))),
                 dd_pct=float(res.get("max_drawdown_pct", res.get("dd_pct", 0.0))),
@@ -1209,18 +1333,30 @@ def _run_scalping_mode(
                 filled=filled,
                 extra={
                     "cost_sats": round(cost_sats, 2),
+                    "gross_pnl_sats": round(blk_gross_pnl, 2),
                     "orders_submitted": submitted,
                     "orders_filled": filled,
                     "signals_total": int(res.get("signals_total", 0)),
                     "cancelled_ttl": int(res.get("cancelled_ttl", 0)),
                     "cancelled_runaway": int(res.get("cancelled_runaway", 0)),
                     "cancelled_invalidated": int(res.get("cancelled_invalidated", 0)),
+                    "clamped_entries": blk_clamped,
+                    "exit_reasons": (
+                        dict(blk_exit_reasons)
+                        if isinstance(blk_exit_reasons, dict)
+                        else {"TP": 0, "SL": 0, "DEF_SCALP_LOCK": 0, "EOD": 0}
+                    ),
                 },
+                gross_pnl_sats=blk_gross_pnl,
+                exit_reasons=blk_exit_reasons,
+                clamped_entries=blk_clamped,
+                avg_win_gross_pct=float(res.get("avg_win_gross_pct", 0.0)),
+                avg_loss_gross_pct=float(res.get("avg_loss_gross_pct", 0.0)),
             )
 
         del engines_by_id
 
-    return [acc.finalize() for acc, _, _, _, _ in cells]
+    return [acc.finalize() for acc, _, _, _, _, _, _ in cells]
 
 
 def _format_table(rows: List[Dict[str, Any]]) -> str:
@@ -1235,11 +1371,16 @@ def _format_table(rows: List[Dict[str, Any]]) -> str:
             "N/mes",
             "WR%",
             "Fill%",
+            "GrossPnL",
             "Net_18M",
             "OOS_12M",
             "OOS_sin_M16",
+            "AvgW",
+            "AvgL",
+            "RR_net",
             "PF",
             "FER",
+            "ExitSplit",
             "MaxDD%",
             "DD>=4.5%",
             "DDG",
@@ -1257,11 +1398,16 @@ def _format_table(rows: List[Dict[str, Any]]) -> str:
                     f"{r['N_mes']:.2f}",
                     f"{r['WR_pct']:.1f}%",
                     f"{r.get('Fill_pct', 0.0):.1f}%",
+                    f"{int(r.get('GrossPnL', round(r.get('Net_18M', 0) + r.get('total_cost_sats', 0.0)))):+d}",
                     f"{r['Net_18M']:+d}",
                     f"{r['OOS_12M']:+d}",
                     f"{r['OOS_sin_M16']:+d}",
+                    f"{float(r.get('AvgW', 0.0)):+.1f}",
+                    f"{float(r.get('AvgL', 0.0)):+.1f}",
+                    f"{float(r.get('RR_net', 0.0)):.2f}",
                     pf_str,
                     f"{r.get('FER', 0.0):.3f}",
+                    str(r.get("ExitSplit", "0/0/0")),
                     f"{r['MaxDD_pct']:.2f}%",
                     f"{r['DD_ge_45']}/{r['blocks']}",
                     str(r["DDG"]),
@@ -1365,6 +1511,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--short-exp-anchor", choices=["sl_dist", "raw_atr", "both"], default="sl_dist")
     parser.add_argument("--scalp-profiles", default=",".join(SCALP_PROFILE_ORDER))
     parser.add_argument("--exec-modes", default="LIMIT,MARKET")
+    parser.add_argument(
+        "--lock-modes",
+        default="pure_sl_tp,delayed_75",
+        help="Modos DEF_SCALP_LOCK para scalping: legacy,pure_sl_tp,delayed_75 (default: pure_sl_tp,delayed_75).",
+    )
+    parser.add_argument(
+        "--macro-filters",
+        default="off,counter_block,range_only",
+        help="Filtros macro para scalping: off,counter_block,range_only (default: off,counter_block,range_only).",
+    )
+    parser.add_argument(
+        "--rolling-pause-reset",
+        dest="rolling_pause_reset",
+        action="store_true",
+        default=True,
+        help="Re-ancla el peak de pausa intradía de Carril B tras vencer la pausa (default: True).",
+    )
+    parser.add_argument(
+        "--no-rolling-pause-reset",
+        dest="rolling_pause_reset",
+        action="store_false",
+        help="Desactiva el re-anclaje rolling del peak de pausa intradía de Carril B.",
+    )
     parser.add_argument("--json-out", default="")
     parser.add_argument("--cache-dir", default=DEFAULT_CACHE_DIR)
     parser.add_argument("--initial-balance", type=int, default=DEFAULT_INITIAL_BALANCE)
@@ -1397,6 +1566,33 @@ def main(argv: Optional[List[str]] = None) -> int:
     anchors = ["sl_dist", "raw_atr"] if args.short_exp_anchor == "both" else [args.short_exp_anchor]
     scalp_profiles = _parse_csv_strs(args.scalp_profiles, "--scalp-profiles", upper=False)
     exec_modes = _parse_csv_strs(args.exec_modes, "--exec-modes", upper=True)
+    lock_modes: List[str] = []
+    macro_filters: List[str] = []
+    if args.mode == "scalping":
+        lock_modes = list(
+            dict.fromkeys(
+                m.lower()
+                for m in _parse_csv_strs(args.lock_modes, "--lock-modes", upper=False)
+            )
+        )
+        macro_filters = list(
+            dict.fromkeys(
+                m.lower()
+                for m in _parse_csv_strs(args.macro_filters, "--macro-filters", upper=False)
+            )
+        )
+        unknown_locks = [m for m in lock_modes if m not in VALID_LOCK_MODES]
+        if unknown_locks:
+            raise ValueError(
+                f"Valor(es) desconocido(s) en --lock-modes: {unknown_locks}. "
+                f"Permitidos: {list(VALID_LOCK_MODES)}"
+            )
+        unknown_macros = [m for m in macro_filters if m not in VALID_MACRO_FILTERS]
+        if unknown_macros:
+            raise ValueError(
+                f"Valor(es) desconocido(s) en --macro-filters: {unknown_macros}. "
+                f"Permitidos: {list(VALID_MACRO_FILTERS)}"
+            )
 
     descs = _discover_block_descs(args.scope, args.cache_dir)
     seed_brain = os.path.join(args.cache_dir, "q_brain_s2_clean_seed.json")
@@ -1451,6 +1647,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             exec_modes=exec_modes,
             initial_balance=args.initial_balance,
             quiet=args.quiet,
+            lock_modes=lock_modes,
+            macro_filters=macro_filters,
+            rolling_pause_reset=args.rolling_pause_reset,
         )
     else:
         results = _run_lane_b_mode(
@@ -1480,6 +1679,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.mode == "scalping":
             payload["scalp_profiles"] = scalp_profiles
             payload["exec_modes"] = exec_modes
+            payload["lock_modes"] = lock_modes
+            payload["macro_filters"] = macro_filters
+            payload["rolling_pause_reset"] = bool(args.rolling_pause_reset)
         _atomic_write_json(args.json_out, payload)
         print(f"[JSON] Escrito atómicamente en {args.json_out}")
 
