@@ -167,6 +167,12 @@ class SimTrainingEnvironment:
         be_stage1_r: float = 0.80,
         structural_td9_trailing_enabled: bool = False,
         stress_config: Optional[MicrostructureStressConfig] = None,
+        short_exp_anchor_raw_atr: bool = False,
+        unlock_transition_regime: bool = False,
+        unlock_range_regime: bool = False,
+        unlock_neutral_ema: bool = False,
+        forced_edge_loss_only: bool = False,
+        forced_edge_min_loss_atr: float = 0.35,
     ):
         self.candidate_brain_file = str(candidate_brain_file)
         self.candidate_hedge_file = str(candidate_hedge_file)
@@ -187,6 +193,12 @@ class SimTrainingEnvironment:
         self.be_stage1_r = float(be_stage1_r)
         self.structural_td9_trailing_enabled = bool(structural_td9_trailing_enabled)
         self.stress_config: Optional[MicrostructureStressConfig] = stress_config
+        self.short_exp_anchor_raw_atr: bool = bool(short_exp_anchor_raw_atr)
+        self.unlock_transition_regime: bool = bool(unlock_transition_regime)
+        self.unlock_range_regime: bool = bool(unlock_range_regime)
+        self.unlock_neutral_ema: bool = bool(unlock_neutral_ema)
+        self.forced_edge_loss_only: bool = bool(forced_edge_loss_only)
+        self.forced_edge_min_loss_atr: float = float(forced_edge_min_loss_atr)
         self.side_brake = SideStreakBrakeStore(
             env_mode="sim",
             persist_to_disk=False,
@@ -645,7 +657,33 @@ class SimTrainingEnvironment:
                     min_physical_loss = max(30, int(round(0.04 * t_margin)))
 
                     allow_forced_edge_exit = True
-                    if self.fe_off_trend and (act_id in (1, 5) or strat_cfg.get("style") == "TREND"):
+                    is_trend_trade = (act_id in (1, 5) or strat_cfg.get("style") == "TREND")
+                    if self.forced_edge_loss_only and is_trend_trade:
+                        open_fee_f = float(live_t.get("entry_fee_sats") or (t_notional * self.exchange.taker_fee_rate))
+                        close_fee_f = (
+                            float(t_notional)
+                            * ((entry_p / max(1.0, float(c.close))) if self.inverse_contract_math else 1.0)
+                            * self.exchange.taker_fee_rate
+                        )
+                        unrealized_net_pnl_sats = float(gross_pl_sats) - open_fee_f - close_fee_f - carry_f
+                        fee_off_fe = entry_p * ((2.4 * self.exchange.taker_fee_rate) + (carry_f / max(1.0, notional_f)))
+                        cur_sl_fe = float(live_t.get("stoploss", 0.0))
+                        be_or_trail_active = (
+                            bool(live_meta.get("sl_locked"))
+                            or bool(live_meta.get("sl_is_trailing_lock"))
+                            or bool(live_meta.get("trail_stage2"))
+                            or (is_long and cur_sl_fe > (entry_p + fee_off_fe * 0.8))
+                            or ((not is_long) and cur_sl_fe > 0.0 and cur_sl_fe < (entry_p - fee_off_fe * 0.8))
+                        )
+                        if be_or_trail_active:
+                            allow_forced_edge_exit = False
+                        elif unrealized_net_pnl_sats >= 0.0 or (-pnl_atr) <= self.forced_edge_min_loss_atr:
+                            allow_forced_edge_exit = False
+                        elif trade_age_sec < 90.0 and pnl_atr > -0.85:
+                            allow_forced_edge_exit = False
+                        elif gross_pl_sats > -min_physical_loss:
+                            allow_forced_edge_exit = False
+                    elif self.fe_off_trend and is_trend_trade:
                         allow_forced_edge_exit = False
                     # Regla 1: Prohibir FORCED EDGE EXIT en los primeros 90s salvo colapso físico severo
                     elif trade_age_sec < 90.0 and pnl_atr > -0.85:
@@ -1029,6 +1067,23 @@ class SimTrainingEnvironment:
             q_vec = self.brain.get_state_q_values(curr_state_key)
             entry_dispatched = False
 
+            any_regime_unlock = (
+                self.unlock_transition_regime
+                or self.unlock_range_regime
+                or self.unlock_neutral_ema
+            )
+            state_unlocked = False
+            if any_regime_unlock:
+                parts_u = str(curr_state_key).split("|")
+                u_seg1 = parts_u[0] if len(parts_u) > 0 else "RANGE_NORMAL"
+                u_seg5 = parts_u[4] if len(parts_u) > 4 else "EMA_TRANS"
+                is_range_unlocked = self.unlock_range_regime and (u_seg1 in ("RANGE_NORMAL", "RANGE_SQUEEZE"))
+                is_transition_unlocked = self.unlock_transition_regime and (
+                    u_seg1 == "CHOP_HIGHVOL" or u_seg5 in ("BEAR_RALLY", "BULL_DIP")
+                )
+                is_neutral_ema_unlocked = self.unlock_neutral_ema and (u_seg5 == "EMA_TRANS")
+                state_unlocked = is_range_unlocked or is_transition_unlocked or is_neutral_ema_unlocked
+
             # Construir orden de evaluación de candidatos alineados con el régimen
             if is_exploring:
                 cand_order = list(range(1, 9))
@@ -1043,6 +1098,13 @@ class SimTrainingEnvironment:
                         cand_order = []
                     else:
                         cand_order = [top_acts[0]]
+                if state_unlocked and not any(a in (1, 5) for a in cand_order):
+                    ema9_5u = float(ind_5m.get("ema9", 0.0))
+                    ema21_5u = float(ind_5m.get("ema21", 0.0))
+                    if ema9_5u > ema21_5u and u_seg1 != "TREND_BEAR" and u_seg5 != "FULL_BEAR":
+                        cand_order = [1]
+                    elif ema9_5u < ema21_5u and u_seg1 != "TREND_BULL" and u_seg5 != "FULL_BULL":
+                        cand_order = [5]
             else:
                 ranked_by_q = sorted(range(1, 9), key=lambda a: float(q_vec[a]) if a < len(q_vec) else -1.0, reverse=True)
                 cand_order = []
@@ -1051,6 +1113,14 @@ class SimTrainingEnvironment:
                 for a in ranked_by_q:
                     if a not in cand_order:
                         cand_order.append(a)
+
+            if state_unlocked:
+                q_vec_eval = list(q_vec)
+                for a_u in cand_order:
+                    if a_u in (1, 5) and a_u < len(q_vec_eval):
+                        q_vec_eval[a_u] = max(float(q_vec_eval[a_u]), 0.065)
+            else:
+                q_vec_eval = q_vec
 
             prot = self.floor_guardian.evaluate_protection(
                 equity=self.exchange.equity_sats,
@@ -1087,7 +1157,7 @@ class SimTrainingEnvironment:
                 evaluated_acts = set()
                 for cand_a in cand_order:
                     action, _ = SatsExpectancyGate.filter_and_rank_action(
-                        cand_a, curr_state_key, q_vec, self.brain.strategies, perception,
+                        cand_a, curr_state_key, q_vec_eval, self.brain.strategies, perception,
                         recovery_mode=(current_dd >= 0.035), current_dd_pct=current_dd,
                         explorer_mode=False,
                         deterministic_trend_policy=self.deterministic_trend_policy,
@@ -1099,15 +1169,27 @@ class SimTrainingEnvironment:
                     if self.deterministic_trend_policy:
                         if action not in (1, 5):
                             continue
-                        if seg1 in ("RANGE_NORMAL", "RANGE_SQUEEZE", "CHOP_HIGHVOL", "EXTREME_VOLATILITY"):
+                        if seg1 == "EXTREME_VOLATILITY":
                             continue
-                        if action == 1 and (seg1 == "TREND_BEAR" or seg5 in ("FULL_BEAR", "BEAR_RALLY")):
+                        if seg1 in ("RANGE_NORMAL", "RANGE_SQUEEZE") and not self.unlock_range_regime:
                             continue
-                        if action == 5 and (seg1 == "TREND_BULL" or seg5 in ("FULL_BULL", "BULL_DIP")):
+                        if seg1 == "CHOP_HIGHVOL" and not self.unlock_transition_regime:
+                            continue
+                        if action == 1 and (
+                            seg1 == "TREND_BEAR"
+                            or seg5 == "FULL_BEAR"
+                            or (seg5 == "BEAR_RALLY" and not self.unlock_transition_regime)
+                        ):
+                            continue
+                        if action == 5 and (
+                            seg1 == "TREND_BULL"
+                            or seg5 == "FULL_BULL"
+                            or (seg5 == "BULL_DIP" and not self.unlock_transition_regime)
+                        ):
                             continue
 
                     if not self.explorer_mode:
-                        q_val = float(q_vec[action]) if action < len(q_vec) else 0.0
+                        q_val = float(q_vec_eval[action]) if action < len(q_vec_eval) else 0.0
                         if q_val <= 0.0:
                             continue
 
@@ -1120,17 +1202,18 @@ class SimTrainingEnvironment:
                             continue
 
                     # Filtro de confluencia microestructural: exigir vela de confirmación y evitar centro de rango sin dirección
+                    skip_mid_chop_filter = bool(self.unlock_neutral_ema and seg5 == "EMA_TRANS")
                     if side == "buy":
                         if float(c.close) <= float(c.open):
                             continue
-                        if "|MID|" in curr_state_key and "|CHOP|" in curr_state_key and float(ind_5m["ema9"]) <= float(ind_5m["ema21"]):
+                        if (not skip_mid_chop_filter) and "|MID|" in curr_state_key and "|CHOP|" in curr_state_key and float(ind_5m["ema9"]) <= float(ind_5m["ema21"]):
                             continue
                         if vel_ema < -0.15:
                             continue
                     else:
                         if float(c.close) >= float(c.open):
                             continue
-                        if "|MID|" in curr_state_key and "|CHOP|" in curr_state_key and float(ind_5m["ema9"]) >= float(ind_5m["ema21"]):
+                        if (not skip_mid_chop_filter) and "|MID|" in curr_state_key and "|CHOP|" in curr_state_key and float(ind_5m["ema9"]) >= float(ind_5m["ema21"]):
                             continue
                         if vel_ema > 0.15:
                             continue
@@ -1141,8 +1224,8 @@ class SimTrainingEnvironment:
                         strat, price, atr, rr_mult=eff_rr_mult
                     )
                     effective_rr = max(1.5, float(strat["rr"]) * eff_rr_mult)
+                    raw_sl_dist = max(atr * float(strat["sl_atr"]), price * 0.0024)
                     if self.deterministic_trend_policy and self.trend_sl_floor_pct > 0.0 and action in (1, 5):
-                        raw_sl_dist = max(atr * float(strat["sl_atr"]), price * 0.0024)
                         floor_dist = price * self.trend_sl_floor_pct
                         if floor_dist > raw_sl_dist:
                             sl_distance = floor_dist
@@ -1155,10 +1238,11 @@ class SimTrainingEnvironment:
                             tp = (price + tp_distance) if side == "buy" else (price - tp_distance)
 
                     sl_dist_pct = abs(price - sl) / max(price, 1.0)
-                    if self.deterministic_trend_policy and self.short_exp_phys_hold and action == 5 and sl_dist_pct <= 0.006505:
+                    short_exp_ref_pct = (raw_sl_dist / max(price, 1.0)) if self.short_exp_anchor_raw_atr else sl_dist_pct
+                    if self.deterministic_trend_policy and self.short_exp_phys_hold and action == 5 and short_exp_ref_pct <= 0.006505:
                         continue
 
-                    q_val_entry = float(q_vec[action]) if action < len(q_vec) else 0.0
+                    q_val_entry = float(q_vec_eval[action]) if action < len(q_vec_eval) else 0.0
                     st_visits_entry = 1 if self.deterministic_trend_policy else int(self.brain.state_visits.get(curr_state_key, 0))
                     eff_style_metrics = None if self.deterministic_trend_policy else self.brain.style_metrics
                     p_hat, p_lcb, _ = SatsExpectancyGate.estimate_bayesian_win_rate(

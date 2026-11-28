@@ -611,8 +611,410 @@ class TestPhase5Bv2LaneIsolation(unittest.TestCase):
             "--short-exp-anchor",
             "--json-out",
             "--cache-dir",
+            "--quiet",
+            "exit_asym",
         ):
             self.assertIn(flag, proc.stdout)
+
+
+class TestPhase5Bv2OptInLabFlags(unittest.TestCase):
+    @staticmethod
+    def _make_precomputed_block(
+        *,
+        candles,
+        regime_5m: str,
+        regime_15m: str,
+        ema9_5m: float,
+        ema21_5m: float,
+        ema_score_5m: float,
+        ema9_1h: float,
+        ema21_1h: float,
+        ema_score_1h: float,
+        atr_5m: float = 200.0,
+        rsi_5m: float = 50.0,
+        bb_pos_5m: float = 0.50,
+        vel_ema_atr: float = 0.0,
+    ):
+        steps = []
+        for c in candles:
+            px = float(c.close)
+            ind_5m = {
+                "price": px,
+                "atr": float(atr_5m),
+                "rsi": float(rsi_5m),
+                "bb_pos": float(bb_pos_5m),
+                "regime": regime_5m,
+                "ema9": float(ema9_5m),
+                "ema21": float(ema21_5m),
+                "ema50": float(ema21_5m),
+                "ema_score": float(ema_score_5m),
+            }
+            ind_15m = {
+                "price": px,
+                "atr": float(atr_5m) * 1.4,
+                "rsi": float(rsi_5m),
+                "bb_pos": float(bb_pos_5m),
+                "regime": regime_15m,
+                "ema9": float(ema9_5m),
+                "ema21": float(ema21_5m),
+                "ema50": float(ema21_5m),
+                "ema_score": float(ema_score_5m),
+            }
+            ind_1h = {
+                "price": px,
+                "atr": float(atr_5m) * 2.5,
+                "rsi": 50.0,
+                "bb_pos": 0.5,
+                "regime": regime_15m,
+                "ema9": float(ema9_1h),
+                "ema21": float(ema21_1h),
+                "ema50": float(ema21_1h),
+                "ema_score": float(ema_score_1h),
+            }
+            ind_4h = {
+                "price": px,
+                "atr": float(atr_5m) * 4.0,
+                "rsi": 50.0,
+                "bb_pos": 0.5,
+                "regime": regime_15m,
+                "ema9": float(ema9_1h),
+                "ema21": float(ema21_1h),
+                "ema50": float(ema21_1h),
+                "ema_score": float(ema_score_1h),
+            }
+            perception = {
+                "price": px,
+                "atr": float(atr_5m),
+                "market_regime": regime_5m,
+                "rsi_5m": float(rsi_5m),
+                "vel_ema_atr": float(vel_ema_atr),
+                "override_side": None,
+            }
+            steps.append((c, ind_5m, ind_15m, ind_1h, ind_4h, perception))
+
+        return {
+            "_precomputed": True,
+            "warmup_bars": 0,
+            "total_len_with_warmup": max(60, len(steps)),
+            "warmup_last_ts": float(candles[0].timestamp) - 60.0,
+            "warmup_state": {
+                "price": float(candles[0].close),
+                "ind_5m": steps[0][1],
+                "ind_15m": steps[0][2],
+                "ind_1h": steps[0][3],
+                "ind_4h": steps[0][4],
+                "perception": steps[0][5],
+                "timestamp": float(candles[0].timestamp) - 60.0,
+            },
+            "steps": steps,
+        }
+
+    def test_forced_edge_loss_only_closes_in_loss_and_never_in_profit(self):
+        import tempfile
+        from unittest.mock import patch
+        from lnm_sniper_v6_advanced import Config
+        from simulation.sim_training_environment import SimTrainingEnvironment
+
+        base_ts = 1700001000.0
+        entry_px = 70000.0
+        atr_val = 200.0
+
+        def _run_case(*, close_px: float, forced_edge_loss_only: bool, min_loss_atr: float, lock_sl: bool = False):
+            candles = [
+                Candle(
+                    timestamp=base_ts + i * 60.0,
+                    open=close_px,
+                    high=close_px + 10.0,
+                    low=close_px - 10.0,
+                    close=close_px,
+                    volume=5.0,
+                )
+                for i in range(6)
+            ]
+            blk = self._make_precomputed_block(
+                candles=candles,
+                regime_5m="TREND_BULL",
+                regime_15m="TREND_BULL",
+                ema9_5m=70100.0,
+                ema21_5m=69900.0,
+                ema_score_5m=0.60,
+                ema9_1h=70200.0,
+                ema21_1h=69800.0,
+                ema_score_1h=0.60,
+                atr_5m=atr_val,
+            )
+            with tempfile.TemporaryDirectory() as td:
+                env = SimTrainingEnvironment(
+                    candidate_brain_file=f"{td}/b.json",
+                    candidate_hedge_file=f"{td}/h.json",
+                    initial_balance_sats=100000,
+                    taker_fee_rate=0.0008,
+                    default_slippage_bps=0.0,
+                    fe_off_trend=True,
+                    forced_edge_loss_only=forced_edge_loss_only,
+                    forced_edge_min_loss_atr=min_loss_atr,
+                )
+                env.reset(blk, initial_balance_sats=100000)
+                tr = env.exchange.open_trade(
+                    side="b",
+                    margin=5000,
+                    leverage=40,
+                    price=entry_px,
+                    stoploss=69000.0,
+                    takeprofit=76000.0,
+                    now=base_ts - 180.0,
+                )
+                self.assertIsNotNone(tr)
+                tid = tr["id"]
+                env.brain.active_trades[tid] = {
+                    "action": 1,
+                    "style": "TREND",
+                    "margin": 5000,
+                    "leverage": 40,
+                    "entry_price": entry_px,
+                    "entry_time": base_ts - 180.0,
+                    "entry_q": 0.065,
+                    "state": "TREND_BULL|MID|LOW_EXP|BULL|FULL_BULL",
+                    "sl_is_trailing_lock": bool(lock_sl),
+                }
+
+                pnl_atr_val = (close_px - entry_px) / atr_val
+                fake_edge = {
+                    "edge_score": min(-0.90, float(Config.EDGE_DEGRADATION_EXIT) - 0.10),
+                    "pnl_atr": pnl_atr_val,
+                }
+                with patch("simulation.sim_training_environment.EdgeMonitor.evaluate_position_edge", return_value=fake_edge):
+                    for _ in range(Config.EDGE_DEGRADATION_PERSISTENCE + 1):
+                        if tid not in env.exchange.running_trades:
+                            break
+                        env.step()
+
+                return list(env.exchange.closed_trades), dict(env.exchange.running_trades)
+
+        # 1) En pérdida (-0.50 ATR, neto < 0): 0.35 ATR cierra con FORCED_EDGE_EXIT; 0.60 ATR NO cierra.
+        closed_035, running_035 = _run_case(
+            close_px=entry_px - 0.50 * atr_val,
+            forced_edge_loss_only=True,
+            min_loss_atr=0.35,
+        )
+        self.assertEqual(len(running_035), 0)
+        self.assertEqual(len(closed_035), 1)
+        self.assertEqual(closed_035[0]["close_reason"], "FORCED_EDGE_EXIT")
+        self.assertLess(closed_035[0]["net_pnl_sats"], 0)
+
+        closed_060, running_060 = _run_case(
+            close_px=entry_px - 0.50 * atr_val,
+            forced_edge_loss_only=True,
+            min_loss_atr=0.60,
+        )
+        self.assertEqual(len(closed_060), 0)
+        self.assertEqual(len(running_060), 1)
+
+        # 2) En ganancia (unrealized_net_pnl_sats >= 0): JAMÁS cierra aunque edge_score=-0.70 persista.
+        closed_profit, running_profit = _run_case(
+            close_px=entry_px + 2.0 * atr_val,
+            forced_edge_loss_only=True,
+            min_loss_atr=0.35,
+        )
+        self.assertEqual(len(closed_profit), 0)
+        self.assertEqual(len(running_profit), 1)
+
+        # 3) Con BE/Trailing lock activo en pérdida (p.ej. gap bajo BE): tampoco interfiere.
+        closed_locked, running_locked = _run_case(
+            close_px=entry_px - 0.50 * atr_val,
+            forced_edge_loss_only=True,
+            min_loss_atr=0.35,
+            lock_sl=True,
+        )
+        self.assertEqual(len(closed_locked), 0)
+        self.assertEqual(len(running_locked), 1)
+
+    def test_short_exp_anchor_raw_atr_blocks_action5_when_floor_elevated(self):
+        import tempfile
+        from simulation.sim_training_environment import SimTrainingEnvironment
+
+        base_ts = 1700002000.0
+        # Vela bajista (close < open) en TREND_BEAR|MID|LOW_EXP|BEAR|FULL_BEAR
+        candles = [
+            Candle(
+                timestamp=base_ts + i * 60.0,
+                open=70020.0,
+                high=70030.0,
+                low=69980.0,
+                close=70000.0,
+                volume=5.0,
+            )
+            for i in range(3)
+        ]
+
+        def _try_open(*, atr_5m: float, short_exp_anchor_raw_atr: bool):
+            blk = self._make_precomputed_block(
+                candles=candles,
+                regime_5m="TREND_BEAR",
+                regime_15m="TREND_BEAR",
+                ema9_5m=69900.0,
+                ema21_5m=70100.0,
+                ema_score_5m=-0.60,
+                ema9_1h=69800.0,
+                ema21_1h=70200.0,
+                ema_score_1h=-0.60,
+                atr_5m=atr_5m,
+                vel_ema_atr=-0.30,
+            )
+            with tempfile.TemporaryDirectory() as td:
+                env = SimTrainingEnvironment(
+                    candidate_brain_file=f"{td}/b.json",
+                    candidate_hedge_file=f"{td}/h.json",
+                    initial_balance_sats=100000,
+                    trend_sl_floor_pct=0.0115,
+                    short_exp_phys_hold=True,
+                    short_exp_anchor_raw_atr=short_exp_anchor_raw_atr,
+                )
+                env.reset(blk, initial_balance_sats=100000)
+                env.step()
+                return len(env.exchange.running_trades), list(env.exchange.running_trades.values())
+
+        # ATR=120 -> raw_sl_dist = max(120*2.0, 70000*0.0024) = 240 -> 240/70000 = 0.003429 <= 0.006505
+        n_sl_dist, _ = _try_open(atr_5m=120.0, short_exp_anchor_raw_atr=False)
+        n_raw_atr_blocked, _ = _try_open(atr_5m=120.0, short_exp_anchor_raw_atr=True)
+        self.assertEqual(n_sl_dist, 1)
+        self.assertEqual(n_raw_atr_blocked, 0)
+
+        # ATR=260 -> raw_sl_dist = 520 -> 520/70000 = 0.007429 > 0.006505 -> permite abrir con piso SL 0.0115
+        n_raw_atr_allowed, trades_ok = _try_open(atr_5m=260.0, short_exp_anchor_raw_atr=True)
+        self.assertEqual(n_raw_atr_allowed, 1)
+        self.assertAlmostEqual(abs(trades_ok[0]["stoploss"] - 70000.0) / 70000.0, 0.0115, places=4)
+
+    def test_default_flags_preserve_exact_behavior_and_regime_unlocks_work(self):
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+        from simulation.run_phase5b_v2_lab import _suppress_episode_noise
+        from simulation.sim_training_environment import SimTrainingEnvironment
+
+        base_ts = 1700003000.0
+        # 1) Paridad bit a bit cuando todos los flags opt-in están en False (default)
+        candles_parity = [
+            Candle(
+                timestamp=base_ts + i * 60.0,
+                open=70000.0 + i * 5.0,
+                high=70040.0 + i * 5.0,
+                low=69980.0 + i * 5.0,
+                close=70020.0 + i * 5.0,
+                volume=5.0,
+            )
+            for i in range(12)
+        ]
+        blk_parity = self._make_precomputed_block(
+            candles=candles_parity,
+            regime_5m="TREND_BULL",
+            regime_15m="TREND_BULL",
+            ema9_5m=70120.0,
+            ema21_5m=69900.0,
+            ema_score_5m=0.60,
+            ema9_1h=70220.0,
+            ema21_1h=69800.0,
+            ema_score_1h=0.60,
+            atr_5m=250.0,
+            vel_ema_atr=0.25,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            env_def = SimTrainingEnvironment(
+                candidate_brain_file=f"{td}/b_def.json",
+                candidate_hedge_file=f"{td}/h_def.json",
+                initial_balance_sats=100000,
+            )
+            self.assertFalse(env_def.short_exp_anchor_raw_atr)
+            self.assertFalse(env_def.unlock_transition_regime)
+            self.assertFalse(env_def.unlock_range_regime)
+            self.assertFalse(env_def.unlock_neutral_ema)
+            self.assertFalse(env_def.forced_edge_loss_only)
+            self.assertAlmostEqual(env_def.forced_edge_min_loss_atr, 0.35)
+
+            env_exp = SimTrainingEnvironment(
+                candidate_brain_file=f"{td}/b_exp.json",
+                candidate_hedge_file=f"{td}/h_exp.json",
+                initial_balance_sats=100000,
+                short_exp_anchor_raw_atr=False,
+                unlock_transition_regime=False,
+                unlock_range_regime=False,
+                unlock_neutral_ema=False,
+                forced_edge_loss_only=False,
+                forced_edge_min_loss_atr=0.35,
+            )
+            res_def = env_def.run_episode(blk_parity, initial_balance=100000)
+            res_exp = env_exp.run_episode(blk_parity, initial_balance=100000)
+            self.assertEqual(res_def["final_equity_sats"], res_exp["final_equity_sats"])
+            self.assertEqual(res_def["net_profit_sats"], res_exp["net_profit_sats"])
+            self.assertEqual(res_def["total_settled_trades"], res_exp["total_settled_trades"])
+            strip_id = lambda rows: [{k: v for k, v in r.items() if k != "id"} for r in rows]
+            self.assertEqual(strip_id(res_def["closed_trades"]), strip_id(res_exp["closed_trades"]))
+
+        # 2) Desbloqueos reales por régimen/EMA frente a bloqueo baseline
+        bull_candles = [
+            Candle(
+                timestamp=base_ts + i * 60.0,
+                open=70000.0,
+                high=70050.0,
+                low=69990.0,
+                close=70030.0,
+                volume=5.0,
+            )
+            for i in range(3)
+        ]
+        cases = [
+            ("unlock_range_regime", "RANGE_NORMAL", "RANGE_NORMAL", 70100.0, 69900.0, 0.60, 70200.0, 69800.0, 0.60, False),
+            ("unlock_transition_regime", "CHOP_HIGHVOL", "CHOP_HIGHVOL", 70100.0, 69900.0, 0.60, 70200.0, 69800.0, 0.60, False),
+            ("unlock_neutral_ema", "VOLATILITY_EXPANSION", "VOLATILITY_EXPANSION", 70100.0, 69900.0, 0.05, 70100.0, 69900.0, 0.05, True),
+        ]
+        for flag_name, r5, r15, e9_5, e21_5, es_5, e9_1h, e21_1h, es_1h, zero_q in cases:
+            blk_u = self._make_precomputed_block(
+                candles=bull_candles,
+                regime_5m=r5,
+                regime_15m=r15,
+                ema9_5m=e9_5,
+                ema21_5m=e21_5,
+                ema_score_5m=es_5,
+                ema9_1h=e9_1h,
+                ema21_1h=e21_1h,
+                ema_score_1h=es_1h,
+                atr_5m=250.0,
+                vel_ema_atr=0.25,
+            )
+            with tempfile.TemporaryDirectory() as td:
+                env_blk = SimTrainingEnvironment(
+                    candidate_brain_file=f"{td}/b0.json",
+                    candidate_hedge_file=f"{td}/h0.json",
+                    initial_balance_sats=100000,
+                )
+                env_un = SimTrainingEnvironment(
+                    candidate_brain_file=f"{td}/b1.json",
+                    candidate_hedge_file=f"{td}/h1.json",
+                    initial_balance_sats=100000,
+                    **{flag_name: True},
+                )
+                env_blk.reset(blk_u, initial_balance_sats=100000)
+                env_un.reset(blk_u, initial_balance_sats=100000)
+                if zero_q:
+                    k_neutral = "VOLATILITY_EXPANSION|MID|LOW_EXP|BULL|EMA_TRANS"
+                    env_blk.brain.q_table[k_neutral] = [0.0] * 9
+                    env_un.brain.q_table[k_neutral] = [0.0] * 9
+                env_blk.step()
+                env_un.step()
+                self.assertEqual(len(env_blk.exchange.running_trades), 0, msg=f"Baseline debía bloquear {flag_name}")
+                self.assertEqual(len(env_un.exchange.running_trades), 1, msg=f"{flag_name}=True debía desbloquear entrada")
+
+        # 3) Filtro --quiet suprime ruido repetitivo pero preserva salida normal
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with _suppress_episode_noise(True):
+                print("[CEREBRO CARGADO SHA-256 (TESTNET)] ruido")
+                print("[LEARNING-SUPERVISOR][WARNING][POLICY_ENTROPY] PARALYSIS_HOLD_FIXATION")
+                print("[10/58] oos_m9 completado (1.2s)")
+        out = buf.getvalue()
+        self.assertNotIn("CEREBRO CARGADO", out)
+        self.assertNotIn("PARALYSIS_HOLD_FIXATION", out)
+        self.assertIn("[10/58] oos_m9 completado", out)
 
 
 if __name__ == "__main__":

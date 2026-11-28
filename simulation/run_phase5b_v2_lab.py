@@ -1,21 +1,25 @@
 # -*- coding: utf-8 -*-
 """
 simulation/run_phase5b_v2_lab.py
-Laboratorio streaming Fase 5B v2 & Aislamiento de Carriles (geometry | regimes | lane_b).
+Laboratorio streaming Fase 5B v2 & Aislamiento de Carriles (geometry | regimes | lane_b | exit_asym).
 Carga estrictamente 1 archivo .pkl a la vez seguido de del blk; gc.collect().
 Solo stdlib + módulos del repositorio; jamás muta cachés WSL ni cerebros del repo.
 """
 import argparse
 from collections import Counter
+import contextlib
 from dataclasses import dataclass, field
 import gc
+import io
 import json
+import logging
 import os
 import pickle
 import shutil
 import sys
 import tempfile
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+import time
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 sys.dont_write_bytecode = True
 
@@ -321,9 +325,89 @@ def _discover_block_descs(scope: str, cache_dir: str) -> List[BlockDesc]:
     return descs
 
 
-def _iter_streamed_blocks(descs: Iterable[BlockDesc]) -> Iterable[Tuple[BlockDesc, Any]]:
+_NOISE_SUBSTRINGS = ("[CEREBRO CARGADO", "PARALYSIS_HOLD_FIXATION")
+
+
+class _EpisodeNoiseLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            msg = str(record.msg)
+        return not any(tok in msg for tok in _NOISE_SUBSTRINGS)
+
+
+class _FilteredStdout(io.TextIOBase):
+    def __init__(self, wrapped: Any):
+        self._wrapped = wrapped
+        self._buf = ""
+
+    def write(self, s: str) -> int:
+        if not s:
+            return 0
+        self._buf += s
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if not any(tok in line for tok in _NOISE_SUBSTRINGS):
+                self._wrapped.write(line + "\n")
+        return len(s)
+
+    def flush(self) -> None:
+        if self._buf:
+            if not any(tok in self._buf for tok in _NOISE_SUBSTRINGS):
+                self._wrapped.write(self._buf)
+            self._buf = ""
+        if hasattr(self._wrapped, "flush"):
+            self._wrapped.flush()
+
+    def isatty(self) -> bool:
+        return bool(getattr(self._wrapped, "isatty", lambda: False)())
+
+    @property
+    def encoding(self) -> str:
+        return getattr(self._wrapped, "encoding", "utf-8")
+
+
+@contextlib.contextmanager
+def _suppress_episode_noise(quiet: bool) -> Iterable[None]:
+    """Suprime warnings/prints repetitivos por episodio cuando quiet=True."""
+    if not quiet:
+        yield
+        return
+
+    noise_filter = _EpisodeNoiseLogFilter()
+    loggers: List[logging.Logger] = [
+        logging.getLogger(),
+        logging.getLogger("LearningQualitySupervisor"),
+    ]
+    lqs_mod = sys.modules.get("learning_quality_supervisor")
+    if lqs_mod is not None and isinstance(getattr(lqs_mod, "logger", None), logging.Logger):
+        if lqs_mod.logger not in loggers:
+            loggers.append(lqs_mod.logger)
+
+    for lg in loggers:
+        lg.addFilter(noise_filter)
+
+    old_stdout = sys.stdout
+    filtered_out = _FilteredStdout(old_stdout)
+    sys.stdout = filtered_out  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        try:
+            filtered_out.flush()
+        finally:
+            sys.stdout = old_stdout
+            for lg in loggers:
+                lg.removeFilter(noise_filter)
+
+
+def _iter_streamed_blocks(descs: Sequence[BlockDesc], quiet: bool = True) -> Iterable[Tuple[BlockDesc, Any]]:
     """Generador estrictamente streaming: mantiene 1 solo .pkl en RAM a la vez."""
-    for desc in descs:
+    descs_list = list(descs)
+    total = len(descs_list)
+    t0 = time.perf_counter()
+    for idx, desc in enumerate(descs_list, start=1):
         if not os.path.exists(desc.pkl_path):
             raise FileNotFoundError(f"Falta bloque requerido en caché: {desc.pkl_path}")
         with open(desc.pkl_path, "rb") as fh:
@@ -333,6 +417,8 @@ def _iter_streamed_blocks(descs: Iterable[BlockDesc]) -> Iterable[Tuple[BlockDes
         finally:
             del blk
             gc.collect()
+        if quiet and total > 0 and (idx % 10 == 0 or idx == total):
+            print(f"[{idx}/{total}] {desc.block_key} completado ({time.perf_counter() - t0:.1f}s)", flush=True)
 
 
 def _prepare_temp_brain(td: str, tag: str, seed_brain: str) -> Tuple[str, str]:
@@ -381,42 +467,16 @@ def _apply_geometry_knobs(
     sl_floor: float,
     cooldown_sec: float,
     short_exp_anchor: str,
-) -> Optional[Tuple[Any, str, Any]]:
-    """
-    Ajusta en memoria los parámetros de geometría/cooldown sin tocar disco.
-    Retorna descriptor para restaurar Config global si se parcheó en RAM.
-    """
+) -> None:
+    """Ajusta en memoria los parámetros de geometría/cooldown sin tocar disco."""
     env.trend_sl_floor_pct = float(sl_floor)
     env.short_exp_phys_hold = True
+    env.short_exp_anchor_raw_atr = (short_exp_anchor == "raw_atr")
 
     if hasattr(env, "side_brake") and env.side_brake is not None:
         for attr in ("pause_duration_sec", "cooldown_sec", "brake_duration_sec"):
             if hasattr(env.side_brake, attr):
                 setattr(env.side_brake, attr, float(cooldown_sec))
-
-    if hasattr(env, "short_exp_anchor"):
-        setattr(env, "short_exp_anchor", short_exp_anchor)
-
-    if short_exp_anchor == "raw_atr":
-        try:
-            from lnm_sniper_v6_advanced import Config as ProdConfig  # noqa: WPS433
-
-            if hasattr(ProdConfig, "SHORT_EXP_MIN_DSL"):
-                prev = getattr(ProdConfig, "SHORT_EXP_MIN_DSL")
-                # Cuando el piso SL sube > 0.006505, evita que el filtro de distancia
-                # anulado por sl_floor desactive C1_SHORT_EXP_PHYS antes de evaluar ATR crudo.
-                target = max(float(prev), float(sl_floor) + 5e-6)
-                setattr(ProdConfig, "SHORT_EXP_MIN_DSL", target)
-                return (ProdConfig, "SHORT_EXP_MIN_DSL", prev)
-        except Exception:
-            return None
-    return None
-
-
-def _restore_config_patch(patch_token: Optional[Tuple[Any, str, Any]]) -> None:
-    if patch_token is not None:
-        obj, attr, prev = patch_token
-        setattr(obj, attr, prev)
 
 
 def _run_env_block(
@@ -434,26 +494,33 @@ def _run_env_block(
     fe_off_trend: bool = True,
     regime_unlock_policy: Optional[str] = None,
     regime_stats: Optional[Counter] = None,
+    forced_edge_loss_only: bool = False,
+    forced_edge_min_loss_atr: float = 0.35,
+    quiet: bool = True,
 ) -> Tuple[Dict[str, Any], SimTrainingEnvironment]:
     b_dst, h_dst = _prepare_temp_brain(td, tag, seed_brain)
-    env = SimTrainingEnvironment(
-        candidate_brain_file=b_dst,
-        candidate_hedge_file=h_dst,
-        initial_balance_sats=initial_balance,
-        taker_fee_rate=taker_fee_rate,
-        trend_sl_floor_pct=sl_floor,
-        fe_off_trend=fe_off_trend,
-        stress_config=stress_cfg,
-    )
+    with _suppress_episode_noise(quiet):
+        env = SimTrainingEnvironment(
+            candidate_brain_file=b_dst,
+            candidate_hedge_file=h_dst,
+            initial_balance_sats=initial_balance,
+            taker_fee_rate=taker_fee_rate,
+            trend_sl_floor_pct=sl_floor,
+            fe_off_trend=fe_off_trend,
+            stress_config=stress_cfg,
+            short_exp_anchor_raw_atr=(short_exp_anchor == "raw_atr"),
+            unlock_transition_regime=(regime_unlock_policy == "unlock_transition"),
+            unlock_range_regime=(regime_unlock_policy == "unlock_range"),
+            unlock_neutral_ema=(regime_unlock_policy == "unlock_neutral_ema"),
+            forced_edge_loss_only=forced_edge_loss_only,
+            forced_edge_min_loss_atr=forced_edge_min_loss_atr,
+        )
 
-    if regime_stats is not None or regime_unlock_policy is not None:
-        _attach_brain_regime_hook(env, regime_unlock_policy, regime_stats)
+        if regime_stats is not None:
+            _attach_brain_regime_hook(env, regime_unlock_policy, regime_stats)
 
-    patch_token = _apply_geometry_knobs(env, sl_floor, cooldown_sec, short_exp_anchor)
-    try:
+        _apply_geometry_knobs(env, sl_floor, cooldown_sec, short_exp_anchor)
         res = env.run_episode(blk, initial_balance=initial_balance)
-    finally:
-        _restore_config_patch(patch_token)
     return res, env
 
 
@@ -463,46 +530,27 @@ def _attach_brain_regime_hook(
     regime_stats: Optional[Counter],
 ) -> None:
     """
-    Hook ligero en memoria sobre env.brain.select_action (si existe) para:
-    1. Medir distribución streaming de seg1 (REGIME) y seg5 (EMA).
-    2. Evaluar desbloqueo selectivo opt-in de regímenes sin alterar archivos del repo.
+    Hook pasivo en memoria sobre env.brain.discretize_state para medir la
+    distribución streaming de seg1 (REGIME) y seg5 (EMA) sin alterar claves ni Q-table.
     """
+    del unlock_policy
     brain = getattr(env, "brain", None)
-    if brain is None or not callable(getattr(brain, "select_action", None)):
+    if brain is None or regime_stats is None or not callable(getattr(brain, "discretize_state", None)):
         return
 
-    orig_select = brain.select_action
+    orig_discretize = brain.discretize_state
 
-    def wrapped_select(state_key: str, *args: Any, **kwargs: Any) -> Any:
-        parts = str(state_key or "").split("|")
+    def wrapped_discretize(*args: Any, **kwargs: Any) -> str:
+        state_key = str(orig_discretize(*args, **kwargs))
+        parts = state_key.split("|")
         seg1 = parts[0] if len(parts) >= 1 else "UNK"
         seg5 = parts[4] if len(parts) >= 5 else "UNK"
-        if regime_stats is not None:
-            regime_stats[f"seg1:{seg1}"] += 1
-            regime_stats[f"seg5:{seg5}"] += 1
-            regime_stats[f"pair:{seg1}|{seg5}"] += 1
+        regime_stats[f"seg1:{seg1}"] += 1
+        regime_stats[f"seg5:{seg5}"] += 1
+        regime_stats[f"pair:{seg1}|{seg5}"] += 1
+        return state_key
 
-        action = orig_select(state_key, *args, **kwargs)
-        if unlock_policy and int(action) == 0:
-            q_vec = getattr(brain, "q_table", {}).get(state_key)
-            if isinstance(q_vec, (list, tuple)) and len(q_vec) >= 9:
-                should_unlock = False
-                if unlock_policy == "unlock_transition" and "TRANS" in seg1.upper():
-                    should_unlock = True
-                elif unlock_policy == "unlock_range" and seg1.upper() in ("RANGE", "CHOP", "FLAT", "RANGING"):
-                    should_unlock = True
-                elif unlock_policy == "unlock_neutral_ema" and seg5.upper() in ("NEUTRAL", "FLAT", "MIXED"):
-                    should_unlock = True
-                elif unlock_policy == "unlock_all_non_extreme":
-                    should_unlock = True
-
-                if should_unlock:
-                    best_act = max(range(1, 9), key=lambda idx: float(q_vec[idx]))
-                    if float(q_vec[best_act]) > float(q_vec[0]):
-                        return best_act
-        return action
-
-    brain.select_action = wrapped_select  # type: ignore[assignment]
+    brain.discretize_state = wrapped_discretize  # type: ignore[assignment]
 
 
 def _summarize_closed(closed: List[dict]) -> Tuple[int, int, int, int]:
@@ -530,6 +578,7 @@ def _run_geometry_mode(
     cooldown_hours: List[float],
     anchors: List[str],
     initial_balance: int,
+    quiet: bool = True,
 ) -> List[Dict[str, Any]]:
     cells: List[Tuple[CellAccumulator, MicrostructureStressConfig, float, float, str]] = []
     for sc_name, sc_cfg in scenarios:
@@ -557,7 +606,7 @@ def _run_geometry_mode(
                         cells.append((acc, sc_cfg, sl_floor, cd_h * 3600.0, anchor))
 
     with tempfile.TemporaryDirectory() as td:
-        for desc, blk in _iter_streamed_blocks(descs):
+        for desc, blk in _iter_streamed_blocks(descs, quiet=quiet):
             for c_idx, (acc, sc_cfg, sl_floor, cd_sec, anchor) in enumerate(cells):
                 res, env = _run_env_block(
                     blk=blk,
@@ -570,6 +619,7 @@ def _run_geometry_mode(
                     sl_floor=sl_floor,
                     cooldown_sec=cd_sec,
                     short_exp_anchor=anchor,
+                    quiet=quiet,
                 )
                 closed = res.get("closed_trades", [])
                 n_settled = int(res.get("total_settled_trades", len(closed)))
@@ -602,6 +652,7 @@ def _run_regimes_mode(
     scenarios: List[Tuple[str, MicrostructureStressConfig]],
     fee_rt_list: List[float],
     initial_balance: int,
+    quiet: bool = True,
 ) -> List[Dict[str, Any]]:
     variants = [
         ("baseline", True, None),
@@ -633,7 +684,7 @@ def _run_regimes_mode(
                 cells.append((acc, sc_cfg, fe_off, unlock_pol))
 
     with tempfile.TemporaryDirectory() as td:
-        for desc, blk in _iter_streamed_blocks(descs):
+        for desc, blk in _iter_streamed_blocks(descs, quiet=quiet):
             for c_idx, (acc, sc_cfg, fe_off, unlock_pol) in enumerate(cells):
                 step_regimes: Counter = Counter()
                 res, env = _run_env_block(
@@ -647,6 +698,7 @@ def _run_regimes_mode(
                     fe_off_trend=fe_off,
                     regime_unlock_policy=unlock_pol,
                     regime_stats=step_regimes,
+                    quiet=quiet,
                 )
                 closed = res.get("closed_trades", [])
                 for row in closed:
@@ -851,6 +903,7 @@ def _run_lane_b_mode(
     fee_rt_list: List[float],
     sl_floors: List[float],
     initial_balance: int,
+    quiet: bool = True,
 ) -> List[Dict[str, Any]]:
     breathable_sls = [s for s in sl_floors if 0.0110 <= s <= 0.0200]
     if not breathable_sls:
@@ -882,7 +935,7 @@ def _run_lane_b_mode(
                 cells.append((acc, sc_cfg, sl_b))
 
     with tempfile.TemporaryDirectory() as td:
-        for desc, blk in _iter_streamed_blocks(descs):
+        for desc, blk in _iter_streamed_blocks(descs, quiet=quiet):
             # Cache por (scenario, fee_bps) para Carril A en este bloque
             lane_a_cache: Dict[Tuple[str, float], Tuple[List[dict], SimTrainingEnvironment, int]] = {}
             for c_idx, (acc, sc_cfg, sl_b) in enumerate(cells):
@@ -897,6 +950,7 @@ def _run_lane_b_mode(
                         taker_fee_rate=acc.taker_fee_rate,
                         stress_cfg=sc_cfg,
                         sl_floor=0.0065,
+                        quiet=quiet,
                     )
                     lane_a_cache[cache_key] = (
                         res_a.get("closed_trades", []),
@@ -914,6 +968,7 @@ def _run_lane_b_mode(
                     taker_fee_rate=acc.taker_fee_rate,
                     stress_cfg=sc_cfg,
                     sl_floor=sl_b,
+                    quiet=quiet,
                 )
                 closed_b = res_b.get("closed_trades", [])
 
@@ -958,6 +1013,92 @@ def _run_lane_b_mode(
                 )
 
     return [acc.finalize() for acc, _, _ in cells]
+
+
+def _run_exit_asym_mode(
+    *,
+    descs: List[BlockDesc],
+    seed_brain: str,
+    scope: str,
+    scenarios: List[Tuple[str, MicrostructureStressConfig]],
+    fee_rt_list: List[float],
+    initial_balance: int,
+    quiet: bool = True,
+) -> List[Dict[str, Any]]:
+    variants = [
+        ("baseline", True, False, 0.35),
+        ("fe_sym", False, False, 0.35),
+        ("fe_loss_only_0.35atr", True, True, 0.35),
+        ("fe_loss_only_0.60atr", True, True, 0.60),
+    ]
+    cells: List[Tuple[CellAccumulator, MicrostructureStressConfig, bool, bool, float]] = []
+    for sc_name, sc_cfg in scenarios:
+        for fee_bps in fee_rt_list:
+            taker_fee = (fee_bps / 2.0) / 10000.0
+            for v_name, e2_fe_off, fe_loss_only, min_loss_atr in variants:
+                cid = f"exit_asym|{sc_name}|{fee_bps:g}bps|{v_name}"
+                acc = CellAccumulator(
+                    cell_id=cid,
+                    mode="exit_asym",
+                    scope=scope,
+                    scenario=sc_name,
+                    fee_rt_bps=fee_bps,
+                    taker_fee_rate=taker_fee,
+                    initial_balance=initial_balance,
+                    params={
+                        "variant": v_name,
+                        "e2_fe_off": e2_fe_off,
+                        "forced_edge_loss_only": fe_loss_only,
+                        "forced_edge_min_loss_atr": min_loss_atr,
+                    },
+                )
+                cells.append((acc, sc_cfg, e2_fe_off, fe_loss_only, min_loss_atr))
+
+    with tempfile.TemporaryDirectory() as td:
+        for desc, blk in _iter_streamed_blocks(descs, quiet=quiet):
+            for c_idx, (acc, sc_cfg, e2_fe_off, fe_loss_only, min_loss_atr) in enumerate(cells):
+                res, env = _run_env_block(
+                    blk=blk,
+                    seed_brain=seed_brain,
+                    td=td,
+                    tag=f"ea{c_idx}_{desc.block_key}",
+                    initial_balance=initial_balance,
+                    taker_fee_rate=acc.taker_fee_rate,
+                    stress_cfg=sc_cfg,
+                    fe_off_trend=e2_fe_off,
+                    forced_edge_loss_only=fe_loss_only,
+                    forced_edge_min_loss_atr=min_loss_atr,
+                    quiet=quiet,
+                )
+                closed = res.get("closed_trades", [])
+                fe_exits = sum(
+                    1
+                    for r in closed
+                    if r.get("close_reason", r.get("reason")) == "FORCED_EDGE_EXIT"
+                )
+                acc.extra_counters["forced_edge_exits"] += fe_exits
+
+                n_settled = int(res.get("total_settled_trades", len(closed)))
+                _, wins, b_win, b_loss = _summarize_closed(closed)
+                net = int(res.get("net_profit_sats", 0))
+                dd_pct = float(res.get("max_drawdown_pct", 0.0))
+                blk_ddg = int(getattr(env, "dd_guard_events", 0))
+                final_eq = int(res.get("final_equity_sats", initial_balance))
+                viol = _check_floor_violation(env, final_eq, initial_balance, dd_pct, blk_ddg)
+                acc.record_block(
+                    desc=desc,
+                    n_trades=n_settled,
+                    wins=wins,
+                    net_sats=net,
+                    b_win=b_win,
+                    b_loss=b_loss,
+                    dd_pct=dd_pct,
+                    blk_ddg=blk_ddg,
+                    floor_violated=viol,
+                    extra={"forced_edge_exits": fe_exits},
+                )
+
+    return [acc.finalize() for acc, _, _, _, _ in cells]
 
 
 def _format_table(rows: List[Dict[str, Any]]) -> str:
@@ -1039,7 +1180,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scope", choices=["fold1", "18m"], default="fold1")
     parser.add_argument("--scenarios", default="S0,S1,S2")
     parser.add_argument("--fee-rt-bps", default="16,20")
-    parser.add_argument("--mode", choices=["geometry", "regimes", "lane_b"], default="geometry")
+    parser.add_argument("--mode", choices=["geometry", "regimes", "lane_b", "exit_asym"], default="geometry")
     parser.add_argument("--sl-floors", default="0.0065,0.0115")
     parser.add_argument("--cooldown-hours", default="24,12,8")
     parser.add_argument("--short-exp-anchor", choices=["sl_dist", "raw_atr", "both"], default="sl_dist")
@@ -1047,6 +1188,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cache-dir", default=DEFAULT_CACHE_DIR)
     parser.add_argument("--initial-balance", type=int, default=DEFAULT_INITIAL_BALANCE)
     parser.add_argument("--dry-check", action="store_true")
+    parser.add_argument(
+        "--quiet",
+        dest="quiet",
+        action="store_true",
+        default=True,
+        help="Suprime warnings repetitivos por episodio e imprime progreso cada 10 bloques (default: True).",
+    )
+    parser.add_argument(
+        "--no-quiet",
+        dest="quiet",
+        action="store_false",
+        help="Muestra todos los mensajes/warnings por episodio sin filtrar.",
+    )
     return parser
 
 
@@ -1081,6 +1235,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             cooldown_hours=cooldown_hours,
             anchors=anchors,
             initial_balance=args.initial_balance,
+            quiet=args.quiet,
         )
     elif args.mode == "regimes":
         results = _run_regimes_mode(
@@ -1090,6 +1245,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             scenarios=scenarios,
             fee_rt_list=fee_rt_list,
             initial_balance=args.initial_balance,
+            quiet=args.quiet,
+        )
+    elif args.mode == "exit_asym":
+        results = _run_exit_asym_mode(
+            descs=descs,
+            seed_brain=seed_brain,
+            scope=args.scope,
+            scenarios=scenarios,
+            fee_rt_list=fee_rt_list,
+            initial_balance=args.initial_balance,
+            quiet=args.quiet,
         )
     else:
         results = _run_lane_b_mode(
@@ -1100,6 +1266,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             fee_rt_list=fee_rt_list,
             sl_floors=sl_floors,
             initial_balance=args.initial_balance,
+            quiet=args.quiet,
         )
 
     print(_format_table(results))
