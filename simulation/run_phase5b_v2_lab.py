@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 simulation/run_phase5b_v2_lab.py
-Laboratorio streaming Fase 5B v2 & Aislamiento de Carriles (geometry | regimes | lane_b | exit_asym).
+Laboratorio streaming Fase 5B v2 & Aislamiento de Carriles (geometry | regimes | lane_b | exit_asym | scalping).
 Carga estrictamente 1 archivo .pkl a la vez seguido de del blk; gc.collect().
 Solo stdlib + módulos del repositorio; jamás muta cachés WSL ni cerebros del repo.
 """
@@ -32,6 +32,11 @@ from simulation.lane_budget import (
     LaneBudgetController,
     compute_inverse_loss_at_sl_sats,
     compute_inverse_net_pnl_sats,
+)
+from simulation.scalp_sim_engine import (
+    SCALP_PROFILE_ORDER,
+    ScalpSimEngine,
+    run_scalp_cells_on_block,
 )
 from simulation.sim_lnm_exchange import MicrostructureStressConfig
 from simulation.sim_training_environment import SimTrainingEnvironment
@@ -81,6 +86,9 @@ class CellAccumulator:
     dd_ge_45: int = 0
     ddg: int = 0
     hard_floor_violations: int = 0
+    total_cost_sats: float = 0.0
+    orders_submitted: int = 0
+    orders_filled: int = 0
 
     oos_bucket_net: Dict[str, int] = field(default_factory=dict)
     monthly_rows: List[Dict[str, Any]] = field(default_factory=list)
@@ -99,6 +107,9 @@ class CellAccumulator:
         dd_pct: float,
         blk_ddg: int,
         floor_violated: bool,
+        cost_sats: float = 0.0,
+        submitted: int = 0,
+        filled: int = 0,
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.n_blocks += 1
@@ -107,6 +118,9 @@ class CellAccumulator:
         self.total_net += net_sats
         self.gross_win += b_win
         self.gross_loss += b_loss
+        self.total_cost_sats += float(cost_sats)
+        self.orders_submitted += int(submitted)
+        self.orders_filled += int(filled)
 
         if desc.is_oos_12m:
             self.oos_12m_trades += n_trades
@@ -162,6 +176,12 @@ class CellAccumulator:
         )
         total_oos_months = len(self.oos_bucket_net)
         pos_months_oos = sum(1 for v in self.oos_bucket_net.values() if v > 0)
+        fer = round(self.total_net / self.total_cost_sats, 3) if self.total_cost_sats > 0.0 else 0.0
+        fill_pct = (
+            round(100.0 * self.orders_filled / self.orders_submitted, 2)
+            if self.orders_submitted > 0
+            else 0.0
+        )
 
         out: Dict[str, Any] = {
             "cell_id": self.cell_id,
@@ -183,6 +203,11 @@ class CellAccumulator:
             "PF_raw": pf_raw,
             "PF_OOS12M": None if pf_oos_raw == float("inf") else round(pf_oos_raw, 3),
             "PF_OOS12M_raw": pf_oos_raw,
+            "FER": fer,
+            "Fill_pct": fill_pct,
+            "orders_submitted": self.orders_submitted,
+            "orders_filled": self.orders_filled,
+            "total_cost_sats": round(self.total_cost_sats, 2),
             "MaxDD_pct": round(self.max_dd_pct, 2),
             "DD_ge_45": self.dd_ge_45,
             "DDG": self.ddg,
@@ -1101,46 +1126,186 @@ def _run_exit_asym_mode(
     return [acc.finalize() for acc, _, _, _, _ in cells]
 
 
-def _format_table(rows: List[Dict[str, Any]]) -> str:
-    headers = [
-        "Cell",
-        "N",
-        "N/mes",
-        "WR%",
-        "Net_18M",
-        "OOS_12M",
-        "OOS_sin_M16",
-        "PF_OOS12M",
-        "MaxDD%",
-        "DD>=4.5%",
-        "DDG",
-        "HFViol",
-        "+Meses_OOS",
-    ]
-    str_rows: List[List[str]] = []
-    for r in rows:
-        pf_val = r["PF_OOS12M_raw"]
-        pf_str = "inf" if pf_val == float("inf") else f"{pf_val:.3f}"
-        str_rows.append(
-            [
-                str(r["cell_id"]),
-                str(r["N"]),
-                f"{r['N_mes']:.2f}",
-                f"{r['WR_pct']:.1f}%",
-                f"{r['Net_18M']:+d}",
-                f"{r['OOS_12M']:+d}",
-                f"{r['OOS_sin_M16']:+d}",
-                pf_str,
-                f"{r['MaxDD_pct']:.2f}%",
-                f"{r['DD_ge_45']}/{r['blocks']}",
-                str(r["DDG"]),
-                str(r["HFViol"]),
-                str(r["PlusMeses_OOS"]),
-            ]
+def _run_scalping_mode(
+    *,
+    descs: List[BlockDesc],
+    scope: str,
+    scenarios: List[Tuple[str, MicrostructureStressConfig]],
+    fee_rt_list: List[float],
+    profiles: List[str],
+    exec_modes: List[str],
+    initial_balance: int,
+    quiet: bool = True,
+) -> List[Dict[str, Any]]:
+    cells: List[Tuple[CellAccumulator, MicrostructureStressConfig, float, str, str]] = []
+    for sc_name, sc_cfg in scenarios:
+        for fee_bps in fee_rt_list:
+            taker_fee = (fee_bps / 2.0) / 10000.0
+            for prof_name in profiles:
+                for exec_mode in exec_modes:
+                    cid = f"scalp|{sc_name}|{fee_bps:g}bps|{prof_name}|{exec_mode}"
+                    acc = CellAccumulator(
+                        cell_id=cid,
+                        mode="scalping",
+                        scope=scope,
+                        scenario=sc_name,
+                        fee_rt_bps=fee_bps,
+                        taker_fee_rate=taker_fee,
+                        initial_balance=initial_balance,
+                        params={
+                            "profile": prof_name,
+                            "exec_mode": exec_mode,
+                            "fee_rt_bps": fee_bps,
+                        },
+                    )
+                    cells.append((acc, sc_cfg, fee_bps, prof_name, exec_mode))
+
+    for desc, blk in _iter_streamed_blocks(descs, quiet=quiet):
+        engines_by_id: Dict[str, ScalpSimEngine] = {}
+        for acc, sc_cfg, fee_bps, prof_name, exec_mode in cells:
+            engines_by_id[acc.cell_id] = ScalpSimEngine(
+                profile=prof_name,
+                exec_mode=exec_mode,
+                fee_rt_bps=fee_bps,
+                stress_config=sc_cfg,
+                initial_balance_sats=initial_balance,
+            )
+
+        block_results = run_scalp_cells_on_block(
+            blk,
+            engines_by_id,
+            initial_balance=initial_balance,
         )
 
-    if not str_rows:
+        for acc, _, _, _, _ in cells:
+            res = block_results.get(acc.cell_id, {})
+            cost_sats = float(res.get("total_cost_sats", res.get("cost_sats", 0.0)))
+            submitted = int(res.get("orders_submitted", res.get("submitted", 0)))
+            filled = int(res.get("orders_filled", res.get("filled", 0)))
+            for k in (
+                "cancelled_ttl",
+                "cancelled_runaway",
+                "cancelled_invalidated",
+                "signals_total",
+            ):
+                acc.extra_counters[k] += int(res.get(k, 0))
+            rejected_reasons = res.get("rejected_reasons") or {}
+            if isinstance(rejected_reasons, dict):
+                for r_key, r_cnt in rejected_reasons.items():
+                    acc.extra_counters[f"rejected:{r_key}"] += int(r_cnt)
+
+            acc.record_block(
+                desc=desc,
+                n_trades=int(res.get("n_trades", 0)),
+                wins=int(res.get("wins", 0)),
+                net_sats=int(round(float(res.get("net_profit_sats", res.get("net_sats", 0))))),
+                b_win=int(round(float(res.get("gross_win_sats", res.get("b_win", 0))))),
+                b_loss=int(round(float(res.get("gross_loss_sats", res.get("b_loss", 0))))),
+                dd_pct=float(res.get("max_drawdown_pct", res.get("dd_pct", 0.0))),
+                blk_ddg=int(res.get("dd_guard_events", res.get("blk_ddg", 0))),
+                floor_violated=bool(res.get("hard_floor_violated", res.get("floor_violated", False))),
+                cost_sats=cost_sats,
+                submitted=submitted,
+                filled=filled,
+                extra={
+                    "cost_sats": round(cost_sats, 2),
+                    "orders_submitted": submitted,
+                    "orders_filled": filled,
+                    "signals_total": int(res.get("signals_total", 0)),
+                    "cancelled_ttl": int(res.get("cancelled_ttl", 0)),
+                    "cancelled_runaway": int(res.get("cancelled_runaway", 0)),
+                    "cancelled_invalidated": int(res.get("cancelled_invalidated", 0)),
+                },
+            )
+
+        del engines_by_id
+
+    return [acc.finalize() for acc, _, _, _, _ in cells]
+
+
+def _format_table(rows: List[Dict[str, Any]]) -> str:
+    if not rows:
         return "(sin resultados)"
+
+    is_scalping = any(r.get("mode") == "scalping" for r in rows)
+    if is_scalping:
+        headers = [
+            "Cell",
+            "N",
+            "N/mes",
+            "WR%",
+            "Fill%",
+            "Net_18M",
+            "OOS_12M",
+            "OOS_sin_M16",
+            "PF",
+            "FER",
+            "MaxDD%",
+            "DD>=4.5%",
+            "DDG",
+            "HFViol",
+            "+Meses_OOS",
+        ]
+        str_rows: List[List[str]] = []
+        for r in rows:
+            pf_val = r["PF_raw"]
+            pf_str = "inf" if pf_val == float("inf") else f"{pf_val:.3f}"
+            str_rows.append(
+                [
+                    str(r["cell_id"]),
+                    str(r["N"]),
+                    f"{r['N_mes']:.2f}",
+                    f"{r['WR_pct']:.1f}%",
+                    f"{r.get('Fill_pct', 0.0):.1f}%",
+                    f"{r['Net_18M']:+d}",
+                    f"{r['OOS_12M']:+d}",
+                    f"{r['OOS_sin_M16']:+d}",
+                    pf_str,
+                    f"{r.get('FER', 0.0):.3f}",
+                    f"{r['MaxDD_pct']:.2f}%",
+                    f"{r['DD_ge_45']}/{r['blocks']}",
+                    str(r["DDG"]),
+                    str(r["HFViol"]),
+                    str(r["PlusMeses_OOS"]),
+                ]
+            )
+    else:
+        headers = [
+            "Cell",
+            "N",
+            "N/mes",
+            "WR%",
+            "Net_18M",
+            "OOS_12M",
+            "OOS_sin_M16",
+            "PF_OOS12M",
+            "MaxDD%",
+            "DD>=4.5%",
+            "DDG",
+            "HFViol",
+            "+Meses_OOS",
+        ]
+        str_rows = []
+        for r in rows:
+            pf_val = r["PF_OOS12M_raw"]
+            pf_str = "inf" if pf_val == float("inf") else f"{pf_val:.3f}"
+            str_rows.append(
+                [
+                    str(r["cell_id"]),
+                    str(r["N"]),
+                    f"{r['N_mes']:.2f}",
+                    f"{r['WR_pct']:.1f}%",
+                    f"{r['Net_18M']:+d}",
+                    f"{r['OOS_12M']:+d}",
+                    f"{r['OOS_sin_M16']:+d}",
+                    pf_str,
+                    f"{r['MaxDD_pct']:.2f}%",
+                    f"{r['DD_ge_45']}/{r['blocks']}",
+                    str(r["DDG"]),
+                    str(r["HFViol"]),
+                    str(r["PlusMeses_OOS"]),
+                ]
+            )
 
     widths = [max(len(headers[i]), *(len(row[i]) for row in str_rows)) for i in range(len(headers))]
     sep = " | "
@@ -1153,16 +1318,26 @@ def _format_table(rows: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _run_dry_check(descs: List[BlockDesc], cache_dir: str, seed_brain: str) -> int:
+def _run_dry_check(
+    descs: List[BlockDesc],
+    cache_dir: str,
+    seed_brain: str,
+    require_seed: bool = True,
+) -> int:
     missing: List[str] = []
-    if not os.path.exists(seed_brain):
+    if require_seed and not os.path.exists(seed_brain):
         missing.append(seed_brain)
     for d in descs:
         if not os.path.exists(d.pkl_path):
             missing.append(d.pkl_path)
 
+    seed_status = (
+        "SKIPPED"
+        if not require_seed
+        else ("OK" if os.path.exists(seed_brain) else "MISSING")
+    )
     print(
-        f"[DRY-CHECK] cache_dir={cache_dir} seed={'OK' if os.path.exists(seed_brain) else 'MISSING'} "
+        f"[DRY-CHECK] cache_dir={cache_dir} seed={seed_status} "
         f"pkls={len(descs) - sum(1 for d in descs if d.pkl_path in missing)}/{len(descs)}"
     )
     if missing:
@@ -1180,10 +1355,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scope", choices=["fold1", "18m"], default="fold1")
     parser.add_argument("--scenarios", default="S0,S1,S2")
     parser.add_argument("--fee-rt-bps", default="16,20")
-    parser.add_argument("--mode", choices=["geometry", "regimes", "lane_b", "exit_asym"], default="geometry")
+    parser.add_argument(
+        "--mode",
+        choices=["geometry", "regimes", "lane_b", "exit_asym", "scalping"],
+        default="geometry",
+    )
     parser.add_argument("--sl-floors", default="0.0065,0.0115")
     parser.add_argument("--cooldown-hours", default="24,12,8")
     parser.add_argument("--short-exp-anchor", choices=["sl_dist", "raw_atr", "both"], default="sl_dist")
+    parser.add_argument("--scalp-profiles", default=",".join(SCALP_PROFILE_ORDER))
+    parser.add_argument("--exec-modes", default="LIMIT,MARKET")
     parser.add_argument("--json-out", default="")
     parser.add_argument("--cache-dir", default=DEFAULT_CACHE_DIR)
     parser.add_argument("--initial-balance", type=int, default=DEFAULT_INITIAL_BALANCE)
@@ -1214,14 +1395,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     sl_floors = _parse_csv_floats(args.sl_floors, "--sl-floors", min_val=0.0)
     cooldown_hours = _parse_csv_floats(args.cooldown_hours, "--cooldown-hours", min_val=0.0)
     anchors = ["sl_dist", "raw_atr"] if args.short_exp_anchor == "both" else [args.short_exp_anchor]
+    scalp_profiles = _parse_csv_strs(args.scalp_profiles, "--scalp-profiles", upper=False)
+    exec_modes = _parse_csv_strs(args.exec_modes, "--exec-modes", upper=True)
 
     descs = _discover_block_descs(args.scope, args.cache_dir)
     seed_brain = os.path.join(args.cache_dir, "q_brain_s2_clean_seed.json")
 
+    require_seed = args.mode != "scalping"
     if args.dry_check:
-        return _run_dry_check(descs, args.cache_dir, seed_brain)
+        return _run_dry_check(descs, args.cache_dir, seed_brain, require_seed=require_seed)
 
-    if not os.path.exists(seed_brain):
+    if require_seed and not os.path.exists(seed_brain):
         raise FileNotFoundError(f"Falta seed brain requerido: {seed_brain}")
 
     if args.mode == "geometry":
@@ -1257,6 +1441,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             initial_balance=args.initial_balance,
             quiet=args.quiet,
         )
+    elif args.mode == "scalping":
+        results = _run_scalping_mode(
+            descs=descs,
+            scope=args.scope,
+            scenarios=scenarios,
+            fee_rt_list=fee_rt_list,
+            profiles=scalp_profiles,
+            exec_modes=exec_modes,
+            initial_balance=args.initial_balance,
+            quiet=args.quiet,
+        )
     else:
         results = _run_lane_b_mode(
             descs=descs,
@@ -1272,7 +1467,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(_format_table(results))
 
     if args.json_out:
-        payload = {
+        payload: Dict[str, Any] = {
             "scope": args.scope,
             "mode": args.mode,
             "scenarios": scenario_names,
@@ -1282,6 +1477,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             "short_exp_anchor": args.short_exp_anchor,
             "results": results,
         }
+        if args.mode == "scalping":
+            payload["scalp_profiles"] = scalp_profiles
+            payload["exec_modes"] = exec_modes
         _atomic_write_json(args.json_out, payload)
         print(f"[JSON] Escrito atómicamente en {args.json_out}")
 
