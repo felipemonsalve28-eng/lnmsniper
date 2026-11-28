@@ -30,10 +30,19 @@ from simulation.lane_budget import (
     compute_inverse_net_pnl_sats,
 )
 from simulation.sim_lnm_exchange import MicrostructureStressConfig
+from sniper_perception_sats_core import MarketRegimeClassifier
 
 
 VALID_LOCK_MODES: Tuple[str, ...] = ("legacy", "pure_sl_tp", "delayed_75")
 VALID_MACRO_FILTERS: Tuple[str, ...] = ("off", "counter_block", "range_only")
+MACRO_REGIME_KEYS: Tuple[str, ...] = (
+    "RANGE",
+    "TRANSITION",
+    "TREND_BULL",
+    "TREND_BEAR",
+    "EXTREME_VOLATILITY",
+    "UNKNOWN",
+)
 SCALP_PROFILE_ORDER: Tuple[str, ...] = (
     "SCALP_SWEEP_TIGHT",
     "SCALP_SWEEP_STD",
@@ -70,7 +79,7 @@ class ScalpProfileConfig:
     def_scalp_lock_enabled: bool = True
     def_scalp_lock_trigger_r: float = 1.15
     def_scalp_lock_offset_r: float = 0.18
-    max_hold_sec: float = 18000.0
+    max_hold_sec: float = 0.0
     base_risk_pct_b: float = 0.0035
     default_leverage: int = 25
 
@@ -272,6 +281,86 @@ def compute_fer(sum_net_pnl_sats: float, sum_c_rt_sats: float) -> float:
     return float(sum_net_pnl_sats) / denom
 
 
+_MACRO_TF_SCALE_MAP: Dict[str, Tuple[float, float]] = {
+    "5m": (1.0, 1.0),
+    "15m": (math.sqrt(3.0), 1.25),
+    "1h": (math.sqrt(12.0), 1.5),
+    "4h": (math.sqrt(48.0), 2.5),
+}
+
+
+def scale_macro_ind_for_regime(ind_tf: Dict[str, Any], tf: str) -> Dict[str, Any]:
+    """Escala indicadores de un timeframe dado al marco 5m de MarketRegimeClassifier."""
+    tf_norm = str(tf or "5m").strip().lower()
+    vol_scale, spread_scale = _MACRO_TF_SCALE_MAP.get(tf_norm, (1.0, 1.0))
+
+    price = max(float(ind_tf.get("price") or ind_tf.get("ema21") or 1.0), 1.0)
+    raw_atr_v = ind_tf.get("atr")
+    raw_atr = float(raw_atr_v) if raw_atr_v is not None else (price * 0.0015 * vol_scale)
+    raw_atr_pct_v = ind_tf.get("atr_pct")
+    raw_atr_pct = float(raw_atr_pct_v) if raw_atr_pct_v is not None else (raw_atr / price)
+    norm_atr_pct = raw_atr_pct / vol_scale
+
+    raw_bb_w_v = ind_tf.get("bb_width_pct")
+    raw_bb_w = float(raw_bb_w_v) if raw_bb_w_v is not None else (0.012 * vol_scale)
+    norm_bb_w = raw_bb_w / vol_scale
+
+    ema21_v = ind_tf.get("ema21")
+    ema21 = float(ema21_v) if ema21_v is not None else price
+    ema9_v = ind_tf.get("ema9")
+    ema9 = float(ema9_v) if ema9_v is not None else price
+    norm_ema9 = ema21 + ((ema9 - ema21) / spread_scale)
+
+    atr_rel_v = ind_tf.get("atr_rel_ratio")
+    bb_exp_v = ind_tf.get("bb_expansion_rate")
+    ema_sc_v = ind_tf.get("ema_score")
+    return {
+        "price": price,
+        "atr": norm_atr_pct * price,
+        "atr_pct": norm_atr_pct,
+        "atr_rel_ratio": float(atr_rel_v) if atr_rel_v is not None else 1.0,
+        "bb_width_pct": norm_bb_w,
+        "bb_expansion_rate": float(bb_exp_v) if bb_exp_v is not None else 1.0,
+        "ema9": norm_ema9,
+        "ema21": ema21,
+        "ema_score": float(ema_sc_v) if ema_sc_v is not None else 0.0,
+    }
+
+
+def classify_macro_tf_regime(ind_tf: Dict[str, Any], tf: str) -> Dict[str, Any]:
+    """Clasifica el régimen de un TF usando MarketRegimeClassifier con escala normalizada."""
+    return MarketRegimeClassifier.classify(scale_macro_ind_for_regime(ind_tf, tf))
+
+
+def _normalize_macro_ind_dict(ind_tf: Optional[Dict[str, Any]], tf: str) -> Dict[str, Any]:
+    """
+    Normaliza un diccionario de indicadores macro sin mutar el input original.
+    Preserva dicts sintéticos sin `atr_pct` usados en tests unitarios.
+    """
+    if not isinstance(ind_tf, dict) or not ind_tf:
+        return {}
+    if ind_tf.get("_macro_normalized"):
+        return ind_tf
+    if "atr_pct" not in ind_tf:
+        return dict(ind_tf)
+
+    out = dict(ind_tf)
+    reg_info = classify_macro_tf_regime(out, tf)
+    m_reg = reg_info["market_regime"]
+    c_reg = reg_info["canonical_regime"]
+    out["market_regime"] = m_reg
+    out["canonical_regime"] = c_reg
+    out["volatility_state"] = reg_info["volatility_state"]
+    if m_reg == "EXTREME_VOLATILITY":
+        out["regime"] = "EXTREME_VOLATILITY"
+    elif m_reg in ("RANGE", "RANGE_SQUEEZE"):
+        out["regime"] = "RANGE"
+    else:
+        out["regime"] = c_reg
+    out["_macro_normalized"] = True
+    return out
+
+
 class CausalScalpContextBuilder:
     """
     Constructor causal O(1) por barra 1m para contexto multi-TF, LiquidityRadar,
@@ -289,6 +378,7 @@ class CausalScalpContextBuilder:
         )
         self._atr_cache: Dict[str, Tuple[int, float]] = {}
         self._macro_cache: Dict[str, Tuple[int, float, Dict[str, Any]]] = {}
+        self._norm_ext_cache: Dict[str, Tuple[int, float, float, Dict[str, Any]]] = {}
 
     def reset(self) -> None:
         max_h = self.agg.max_history
@@ -296,6 +386,7 @@ class CausalScalpContextBuilder:
         self.radar.clear_cache()
         self._atr_cache.clear()
         self._macro_cache.clear()
+        self._norm_ext_cache.clear()
 
     def _causal_atr(
         self,
@@ -392,16 +483,170 @@ class CausalScalpContextBuilder:
 
         return {"bull": bull_cand, "bear": bear_cand}
 
+    def _normalize_ext_macro(self, tf: str, ind_tf: Dict[str, Any]) -> Dict[str, Any]:
+        key_id = id(ind_tf)
+        a_pct_v = ind_tf.get("atr_pct")
+        a_pct = float(a_pct_v) if a_pct_v is not None else -1.0
+        e9_v = ind_tf.get("ema9")
+        e9 = float(e9_v) if e9_v is not None else 0.0
+        cached = self._norm_ext_cache.get(tf)
+        if cached is not None and cached[0] == key_id and cached[1] == a_pct and cached[2] == e9:
+            return cached[3]
+        norm = _normalize_macro_ind_dict(ind_tf, tf)
+        self._norm_ext_cache[tf] = (key_id, a_pct, e9, norm)
+        return norm
+
+    def _causal_tf_ind(
+        self,
+        tf: str,
+        fallback_pct: float,
+        include_forming: bool = False,
+    ) -> Dict[str, Any]:
+        """Calcula indicadores causales por TF alineados con compute_indicators."""
+        _, h_tf, l_tf, c_tf, _, _ = self.agg.get_ohlcv(tf, include_forming=include_forming)
+        n_bars = len(c_tf)
+        if not include_forming and n_bars < 3:
+            return {
+                "regime": "RANGE",
+                "market_regime": "RANGE",
+                "canonical_regime": "RANGE_NORMAL",
+                "volatility_state": "NORMAL",
+                "ema_score": 0.0,
+                "_macro_normalized": True,
+            }
+        if include_forming and n_bars == 0:
+            return {
+                "price": 1.0,
+                "atr": 1.0,
+                "atr_pct": fallback_pct,
+                "atr_rel_ratio": 1.0,
+                "bb_width_pct": fallback_pct * 2.0,
+                "bb_expansion_rate": 1.0,
+                "ema9": 1.0,
+                "ema21": 1.0,
+                "ema50": 1.0,
+                "ema200": 1.0,
+                "ema_score": 0.0,
+                "adx": 0.0,
+                "regime": "RANGE",
+                "market_regime": "RANGE",
+                "canonical_regime": "RANGE_NORMAL",
+                "volatility_state": "NORMAL",
+                "_macro_normalized": True,
+            }
+
+        def _ema(vals: Sequence[float], span: int) -> float:
+            alpha = 2.0 / (float(span) + 1.0)
+            e = float(vals[0])
+            for x in vals[1:]:
+                e = alpha * float(x) + (1.0 - alpha) * e
+            return e
+
+        c_last = max(1.0, float(c_tf[-1]))
+        if n_bars >= 2:
+            tr_vals: List[float] = []
+            plus_dm: List[float] = []
+            minus_dm: List[float] = []
+            for i in range(1, n_bars):
+                h_i = float(h_tf[i])
+                l_i = float(l_tf[i])
+                h_prev = float(h_tf[i - 1])
+                l_prev = float(l_tf[i - 1])
+                c_prev = float(c_tf[i - 1])
+                tr_vals.append(max(h_i - l_i, abs(h_i - c_prev), abs(l_i - c_prev)))
+                up_move = h_i - h_prev
+                down_move = l_prev - l_i
+                plus_dm.append(up_move if (up_move > down_move and up_move > 0.0) else 0.0)
+                minus_dm.append(down_move if (down_move > up_move and down_move > 0.0) else 0.0)
+
+            atr_val = max(1.0, _ema(tr_vals, 14))
+            atr_sma50 = (sum(tr_vals[-50:]) / len(tr_vals[-50:])) if len(tr_vals) >= 10 else atr_val
+            atr_rel_ratio = atr_val / max(atr_sma50, 1e-6)
+
+            alpha14 = 2.0 / 15.0
+            tr_e = tr_vals[0]
+            p_e = plus_dm[0]
+            m_e = minus_dm[0]
+            dx_vals: List[float] = []
+            for j in range(len(tr_vals)):
+                if j > 0:
+                    tr_e = alpha14 * tr_vals[j] + (1.0 - alpha14) * tr_e
+                    p_e = alpha14 * plus_dm[j] + (1.0 - alpha14) * p_e
+                    m_e = alpha14 * minus_dm[j] + (1.0 - alpha14) * m_e
+                denom_tr = max(tr_e, 1e-9)
+                plus_di = 100.0 * (p_e / denom_tr)
+                minus_di = 100.0 * (m_e / denom_tr)
+                di_sum = plus_di + minus_di
+                dx_vals.append((100.0 * abs(plus_di - minus_di) / di_sum) if di_sum > 1e-9 else 0.0)
+            adx = _ema(dx_vals, 14) if dx_vals else 0.0
+        else:
+            atr_val = max(1.0, c_last * fallback_pct)
+            atr_rel_ratio = 1.0
+            adx = 0.0
+
+        atr_pct = atr_val / c_last
+        tail20 = [float(x) for x in c_tf[-20:]]
+        sma20 = sum(tail20) / len(tail20)
+        std20 = math.sqrt(sum((x - sma20) ** 2 for x in tail20) / len(tail20))
+        bb_width_pct = (4.0 * std20) / max(sma20, 1.0)
+        if n_bars >= 26:
+            prev20 = [float(x) for x in c_tf[-25:-5]]
+            prev_sma20 = max(sum(prev20) / len(prev20), 1.0)
+            prev_std20 = math.sqrt(sum((x - prev_sma20) ** 2 for x in prev20) / len(prev20))
+            prev_w = (4.0 * prev_std20) / prev_sma20
+            bb_expansion_rate = bb_width_pct / max(prev_w, 1e-6)
+        else:
+            bb_expansion_rate = 1.0
+
+        ema9 = _ema(c_tf, 9)
+        ema21 = _ema(c_tf, 21)
+        ema50 = _ema(c_tf, 50)
+        ema200 = _ema(c_tf, 200)
+
+        if ema50 > ema200 and c_last >= ema50:
+            ema_score = 1.0
+        elif ema50 > ema200 and c_last < ema50:
+            ema_score = 0.35
+        elif ema50 < ema200 and c_last <= ema50:
+            ema_score = -1.0
+        elif ema50 < ema200 and c_last > ema50:
+            ema_score = -0.35
+        else:
+            ema_score = 0.0
+
+        raw: Dict[str, Any] = {
+            "price": c_last,
+            "atr": atr_val,
+            "atr_pct": atr_pct,
+            "atr_rel_ratio": atr_rel_ratio,
+            "bb_width_pct": bb_width_pct,
+            "bb_expansion_rate": bb_expansion_rate,
+            "ema9": ema9,
+            "ema21": ema21,
+            "ema50": ema50,
+            "ema200": ema200,
+            "ema_score": ema_score,
+            "adx": adx,
+        }
+        return _normalize_macro_ind_dict(raw, tf)
+
     def _causal_macro_ind(
         self,
         tf: str,
         fallback_pct: float,
     ) -> Dict[str, Any]:
         """Calcula indicadores macro causales 1h/4h EXCLUSIVAMENTE sobre barras cerradas."""
-        _, h_tf, l_tf, c_tf, _, ts_tf = self.agg.get_ohlcv(tf, include_forming=False)
+        _, _, _, c_tf, _, ts_tf = self.agg.get_ohlcv(tf, include_forming=False)
         n_closed = len(c_tf)
         if n_closed < 3:
-            return {"regime": "RANGE", "market_regime": "RANGE", "ema_score": 0.0}
+            return {
+                "regime": "RANGE",
+                "market_regime": "RANGE",
+                "canonical_regime": "RANGE_NORMAL",
+                "volatility_state": "NORMAL",
+                "ema_score": 0.0,
+                "_macro_normalized": True,
+            }
 
         last_ts = (
             float(ts_tf[-1])
@@ -412,46 +657,7 @@ class CausalScalpContextBuilder:
         if cached is not None and cached[0] == n_closed and cached[1] == last_ts:
             return dict(cached[2])
 
-        def _ema(vals: Sequence[float], span: int) -> float:
-            alpha = 2.0 / (float(span) + 1.0)
-            e = float(vals[0])
-            for x in vals[1:]:
-                e = alpha * float(x) + (1.0 - alpha) * e
-            return e
-
-        c_last = max(1.0, float(c_tf[-1]))
-        atr_val = self._causal_atr(tf, c_last, fallback_pct, h_tf, l_tf, c_tf)
-        atr_pct = atr_val / c_last
-        ema9 = _ema(c_tf, 9)
-        ema21 = _ema(c_tf, 21)
-        ema50 = _ema(c_tf, 50)
-
-        if ema9 > ema21 >= ema50:
-            ema_score = 1.0
-        elif ema9 < ema21 <= ema50:
-            ema_score = -1.0
-        else:
-            ema_score = 0.0
-
-        if atr_pct >= 0.015:
-            regime = "EXTREME_VOLATILITY"
-        elif ema9 > ema21 and abs(ema9 - ema21) / c_last >= 0.0015:
-            regime = "TREND_BULL"
-        elif ema9 < ema21 and abs(ema9 - ema21) / c_last >= 0.0015:
-            regime = "TREND_BEAR"
-        else:
-            regime = "RANGE"
-
-        out: Dict[str, Any] = {
-            "ema9": ema9,
-            "ema21": ema21,
-            "ema50": ema50,
-            "atr": atr_val,
-            "atr_pct": atr_pct,
-            "ema_score": ema_score,
-            "regime": regime,
-            "market_regime": regime,
-        }
+        out = self._causal_tf_ind(tf, fallback_pct, include_forming=False)
         self._macro_cache[tf] = (n_closed, last_ts, out)
         return dict(out)
 
@@ -536,8 +742,20 @@ class CausalScalpContextBuilder:
 
         td9_out = self.agg.get_td9_state()
         htf_sweeps = self._detect_htf_sweep_reclaim(hierarchy, tf_ohlcv, atr_15m, c_f)
-        eff_ind_1h = ind_1h if isinstance(ind_1h, dict) else self._causal_macro_ind("1h", 0.0070)
-        eff_ind_4h = ind_4h if isinstance(ind_4h, dict) else self._causal_macro_ind("4h", 0.0120)
+        eff_ind_1h = self._normalize_ext_macro("1h", ind_1h) if isinstance(ind_1h, dict) else self._causal_macro_ind("1h", 0.0070)
+        eff_ind_4h = self._normalize_ext_macro("4h", ind_4h) if isinstance(ind_4h, dict) else self._causal_macro_ind("4h", 0.0120)
+        eff_ind_5m = dict(ind_5m) if isinstance(ind_5m, dict) else self._causal_tf_ind("5m", 0.0025, include_forming=True)
+        eff_ind_15m = dict(ind_15m) if isinstance(ind_15m, dict) else self._causal_tf_ind("15m", 0.0040, include_forming=True)
+
+        if isinstance(perception, dict) and perception.get("market_regime"):
+            eff_perc = perception
+        else:
+            eff_perc = dict(perception) if isinstance(perception, dict) else {}
+            if len(c5) >= 3:
+                reg_5m = MarketRegimeClassifier.classify(eff_ind_5m, eff_ind_15m, eff_ind_1h)
+                eff_perc["market_regime"] = reg_5m["market_regime"]
+                eff_perc["canonical_regime"] = reg_5m["canonical_regime"]
+                eff_perc["volatility_state"] = reg_5m["volatility_state"]
 
         return {
             "ts": ts_f,
@@ -550,9 +768,11 @@ class CausalScalpContextBuilder:
             "vwap": vwap_out,
             "td9": td9_out,
             "htf_sweeps": htf_sweeps,
+            "ind_5m": eff_ind_5m,
+            "ind_15m": eff_ind_15m,
             "ind_1h": eff_ind_1h,
             "ind_4h": eff_ind_4h,
-            "perception": perception if isinstance(perception, dict) else {},
+            "perception": eff_perc,
         }
 
 
@@ -634,9 +854,18 @@ class ScalpSimEngine:
         macro_filter: str = "off",
         dynamic_risk_clamp: bool = True,
         rolling_pause_reset: bool = False,
+        max_hold_hours: float = 0.0,
     ) -> None:
         self.profile: ScalpProfileConfig = (
             profile if isinstance(profile, ScalpProfileConfig) else get_scalp_profile(profile)
+        )
+        if float(max_hold_hours) < 0.0:
+            raise ValueError(f"max_hold_hours inválido (< 0): {max_hold_hours}")
+        self.max_hold_hours: float = float(max_hold_hours)
+        self.max_hold_sec: float = (
+            self.max_hold_hours * 3600.0
+            if self.max_hold_hours > 0.0
+            else float(self.profile.max_hold_sec if self.profile.max_hold_sec > 0.0 else 0.0)
         )
         mode_up = str(exec_mode or "LIMIT").strip().upper()
         if mode_up not in ("LIMIT", "MARKET"):
@@ -707,6 +936,7 @@ class ScalpSimEngine:
         self.pending_orders: List[Dict[str, Any]] = []
         self.closed_trades: List[Dict[str, Any]] = []
         self.rejected_reasons: Counter = Counter()
+        self.macro_regime_counts: Dict[str, int] = {k: 0 for k in MACRO_REGIME_KEYS}
 
         self.current_bar_idx: int = -1
         self.current_ts: float = 0.0
@@ -945,7 +1175,7 @@ class ScalpSimEngine:
                 continue
 
             # 3. Time stop intradía (max_hold_sec)
-            if (ts - float(trade["open_ts"])) >= self.profile.max_hold_sec:
+            if self.max_hold_sec > 0.0 and (ts - float(trade["open_ts"])) >= self.max_hold_sec:
                 self._close_trade_record(trade, close_px, "TIME_STOP", ts)
                 continue
 
@@ -1385,17 +1615,32 @@ class ScalpSimEngine:
             return "s", liq_sig
         return None
 
-    def _check_macro_filter(
-        self,
-        side: str,
-        context: Optional[Dict[str, Any]],
-    ) -> Tuple[bool, str]:
-        if self.macro_filter == "off" or not isinstance(context, dict):
-            return True, "OK"
+    def _evaluate_macro_state(self, context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Evalúa el estado macro normalizado y lo clasifica en MACRO_REGIME_KEYS."""
+        if not isinstance(context, dict):
+            return {
+                "bucket": "UNKNOWN",
+                "explicit_macro": "",
+                "ind_1h": {},
+                "ind_4h": {},
+                "perc": {},
+                "is_extreme_vol": False,
+                "bull_1h": False,
+                "bear_1h": False,
+                "bull_4h": False,
+                "bear_4h": False,
+                "strong_bull": False,
+                "strong_bear": False,
+                "is_range_clean": False,
+                "reg_1h": "",
+                "reg_4h": "",
+                "mreg_1h": "",
+                "mreg_4h": "",
+            }
 
         explicit_macro = str(context.get("macro_regime") or "").strip().upper()
-        ind_1h = context.get("ind_1h") or {}
-        ind_4h = context.get("ind_4h") or {}
+        ind_1h = _normalize_macro_ind_dict(context.get("ind_1h"), "1h")
+        ind_4h = _normalize_macro_ind_dict(context.get("ind_4h"), "4h")
         perc = context.get("perception") or {}
 
         is_extreme_vol = "EXTREME_VOLATILITY" in {
@@ -1406,8 +1651,6 @@ class ScalpSimEngine:
             str(ind_4h.get("market_regime") or "").upper(),
             str(ind_4h.get("regime") or "").upper(),
         }
-        if is_extreme_vol:
-            return False, "MACRO_EXTREME_VOL"
 
         reg_1h = str(ind_1h.get("regime") or ind_1h.get("market_regime") or "").upper()
         mreg_1h = str(ind_1h.get("market_regime") or "").upper()
@@ -1460,10 +1703,78 @@ class ScalpSimEngine:
             or (bear_4h and (mreg_4h == "VOLATILITY_EXPANSION" or ema_1h < 0.0))
         )
 
+        allowed_range_tags = {
+            "",
+            "RANGE",
+            "RANGING",
+            "RANGE_NORMAL",
+            "RANGE_SQUEEZE",
+            "NEUTRAL",
+            "EMA_FLAT",
+        }
+        is_range_clean = (
+            (not is_extreme_vol)
+            and (not bull_1h)
+            and (not bear_1h)
+            and (not bull_4h)
+            and (not bear_4h)
+            and (mreg_1h != "VOLATILITY_EXPANSION")
+            and (mreg_4h != "VOLATILITY_EXPANSION")
+            and (explicit_macro in allowed_range_tags)
+            and (reg_1h in allowed_range_tags)
+            and (reg_4h in allowed_range_tags)
+        )
+
+        if not explicit_macro and not ind_1h and not ind_4h and not perc.get("market_regime"):
+            bucket = "UNKNOWN"
+        elif is_extreme_vol:
+            bucket = "EXTREME_VOLATILITY"
+        elif strong_bull and not strong_bear:
+            bucket = "TREND_BULL"
+        elif strong_bear and not strong_bull:
+            bucket = "TREND_BEAR"
+        elif is_range_clean:
+            bucket = "RANGE"
+        else:
+            bucket = "TRANSITION"
+
+        return {
+            "bucket": bucket,
+            "explicit_macro": explicit_macro,
+            "ind_1h": ind_1h,
+            "ind_4h": ind_4h,
+            "perc": perc,
+            "is_extreme_vol": is_extreme_vol,
+            "bull_1h": bull_1h,
+            "bear_1h": bear_1h,
+            "bull_4h": bull_4h,
+            "bear_4h": bear_4h,
+            "strong_bull": strong_bull,
+            "strong_bear": strong_bear,
+            "is_range_clean": is_range_clean,
+            "reg_1h": reg_1h,
+            "reg_4h": reg_4h,
+            "mreg_1h": mreg_1h,
+            "mreg_4h": mreg_4h,
+        }
+
+    def _check_macro_filter(
+        self,
+        side: str,
+        context: Optional[Dict[str, Any]],
+        macro_eval: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, str]:
+        if self.macro_filter == "off" or not isinstance(context, dict):
+            return True, "OK"
+
+        ev = macro_eval if macro_eval is not None else self._evaluate_macro_state(context)
+        if ev["is_extreme_vol"]:
+            return False, "MACRO_EXTREME_VOL"
+
         if self.macro_filter == "counter_block":
-            if side == "s" and strong_bull:
+            if side == "s" and ev["strong_bull"]:
                 return False, "MACRO_COUNTER_BLOCK"
-            if side == "b" and strong_bear:
+            if side == "b" and ev["strong_bear"]:
                 return False, "MACRO_COUNTER_BLOCK"
             return True, "OK"
 
@@ -1478,18 +1789,19 @@ class ScalpSimEngine:
                 "NEUTRAL",
                 "EMA_FLAT",
             }
+            explicit_macro = ev["explicit_macro"]
             if explicit_macro:
                 if explicit_macro not in allowed_tags:
                     return False, "MACRO_NOT_RANGE"
             if (
-                bull_1h
-                or bear_1h
-                or bull_4h
-                or bear_4h
-                or mreg_1h == "VOLATILITY_EXPANSION"
-                or mreg_4h == "VOLATILITY_EXPANSION"
-                or (reg_1h not in allowed_tags)
-                or (reg_4h not in allowed_tags)
+                ev["bull_1h"]
+                or ev["bear_1h"]
+                or ev["bull_4h"]
+                or ev["bear_4h"]
+                or ev["mreg_1h"] == "VOLATILITY_EXPANSION"
+                or ev["mreg_4h"] == "VOLATILITY_EXPANSION"
+                or (ev["reg_1h"] not in allowed_tags)
+                or (ev["reg_4h"] not in allowed_tags)
             ):
                 return False, "MACRO_NOT_RANGE"
             return True, "OK"
@@ -1534,8 +1846,15 @@ class ScalpSimEngine:
             self._reject("HALTED")
             return False, "HALTED", None
 
+        macro_eval = self._evaluate_macro_state(context)
+        self.macro_regime_counts[macro_eval["bucket"]] += 1
+
         if context is not None:
-            macro_ok, macro_reason = self._check_macro_filter(norm_side, context)
+            macro_ok, macro_reason = self._check_macro_filter(
+                norm_side,
+                context,
+                macro_eval=macro_eval,
+            )
             if not macro_ok:
                 self._reject(macro_reason)
                 return False, macro_reason, None
@@ -1868,15 +2187,23 @@ class ScalpSimEngine:
         avg_win_gross_pct = (sum(float(t["gross_pct"]) for t in win_trades) / wins) if wins > 0 else 0.0
         avg_loss_gross_pct = (sum(float(t["gross_pct"]) for t in loss_trades) / losses) if losses > 0 else 0.0
 
-        exit_reasons: Dict[str, int] = {"TP": 0, "SL": 0, "DEF_SCALP_LOCK": 0, "EOD": 0}
+        exit_reasons: Dict[str, int] = {
+            "TP": 0,
+            "SL": 0,
+            "DEF_SCALP_LOCK": 0,
+            "TIME_STOP": 0,
+            "EOD": 0,
+        }
         for t in self.closed_trades:
             cr = str(t.get("close_reason") or "")
             if cr == "TAKE_PROFIT":
                 exit_reasons["TP"] += 1
-            elif cr in ("STOP_LOSS", "LIQUIDATION"):
+            elif cr in ("STOP_LOSS", "LIQUIDATION", "HARD_FLOOR_LIQUIDATION"):
                 exit_reasons["SL"] += 1
             elif cr == "DEF_SCALP_LOCK":
                 exit_reasons["DEF_SCALP_LOCK"] += 1
+            elif cr == "TIME_STOP":
+                exit_reasons["TIME_STOP"] += 1
             else:
                 exit_reasons["EOD"] += 1
 
@@ -1898,6 +2225,9 @@ class ScalpSimEngine:
             "avg_win_gross_pct": avg_win_gross_pct,
             "avg_loss_gross_pct": avg_loss_gross_pct,
             "exit_reasons": exit_reasons,
+            "macro_regime_counts": {
+                k: int(self.macro_regime_counts.get(k, 0)) for k in MACRO_REGIME_KEYS
+            },
             "signals_total": self.signals_total,
             "orders_submitted": self.orders_submitted,
             "orders_filled": self.orders_filled,

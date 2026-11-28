@@ -11,6 +11,7 @@ from __future__ import annotations
 import inspect
 import math
 import os
+import pickle
 import subprocess
 import sys
 import tempfile
@@ -23,20 +24,25 @@ from simulation.run_phase5b_v2_lab import (
     BlockDesc,
     CellAccumulator,
     _format_table,
+    _run_scalping_mode,
     build_arg_parser,
 )
 from simulation.scalp_sim_engine import (
+    MACRO_REGIME_KEYS,
     SCALP_PROFILES,
     SCALP_PROFILE_ORDER,
+    CausalScalpContextBuilder,
     ScalpSimEngine,
     compute_fer,
     compute_scalp_inverse_pnl,
     compute_scalp_loss_at_sl_sats,
     get_scalp_profile,
     run_scalp_cells_on_block,
+    scale_macro_ind_for_regime,
 )
 from simulation.sim_lnm_exchange import MicrostructureStressConfig
 from simulation.sim_market_feed import Candle
+from sniper_perception_sats_core import MarketRegimeClassifier
 
 
 def _neutral_ctx(spot: float = 70000.0, atr_5m: float = 150.0) -> dict:
@@ -1014,6 +1020,7 @@ class TestProfilesAndCLIIntegration(unittest.TestCase):
         self.assertEqual(args.scope, "fold1")
         self.assertEqual(args.exec_modes, "LIMIT,MARKET")
         self.assertEqual(args.scalp_profiles, ",".join(SCALP_PROFILE_ORDER))
+        self.assertEqual(args.max_hold_hours, "0")
 
         args_ablation = parser.parse_args(
             [
@@ -1035,6 +1042,9 @@ class TestProfilesAndCLIIntegration(unittest.TestCase):
         args_rpr = parser.parse_args(["--mode", "scalping", "--rolling-pause-reset"])
         self.assertTrue(args_rpr.rolling_pause_reset)
 
+        args_mh = parser.parse_args(["--mode", "scalping", "--max-hold-hours", "0,16"])
+        self.assertEqual(args_mh.max_hold_hours, "0,16")
+
         proc = subprocess.run(
             [sys.executable, "-B", "simulation/run_phase5b_v2_lab.py", "--help"],
             capture_output=True,
@@ -1049,6 +1059,7 @@ class TestProfilesAndCLIIntegration(unittest.TestCase):
             "--exec-modes",
             "--lock-modes",
             "--macro-filters",
+            "--max-hold-hours",
             "--rolling-pause-reset",
             "--no-rolling-pause-reset",
         ):
@@ -1619,12 +1630,350 @@ class TestPhase1B2AblationAndFixes(unittest.TestCase):
             abs(summary["gross_pnl_sats"] - (summary["net_profit_sats"] + summary["total_cost_sats"])),
             1e-6,
         )
-        self.assertEqual(summary["exit_reasons"], {"TP": 1, "SL": 1, "DEF_SCALP_LOCK": 0, "EOD": 1})
+        self.assertEqual(summary["exit_reasons"], {"TP": 1, "SL": 1, "DEF_SCALP_LOCK": 0, "TIME_STOP": 0, "EOD": 1})
         self.assertEqual(sum(summary["exit_reasons"].values()), summary["n_trades"])
         self.assertGreater(summary["avg_win_net_sats"], 0.0)
         self.assertLess(summary["avg_loss_net_sats"], 0.0)
         self.assertGreater(summary["avg_win_gross_pct"], 0.0)
         self.assertLess(summary["avg_loss_gross_pct"], 0.0)
+
+
+class TestPhase1B3TimeStopAndMacroParity(unittest.TestCase):
+    """9. Certificación Fase 1B.3: max_hold_hours / TIME_STOP y paridad macro TF."""
+
+    def test_max_hold_zero_crosses_utc_midnight_gt_24h_without_time_stop_or_eod(self):
+        t0 = 1700002800.0  # 2023-11-14 23:00:00 UTC (1h antes de medianoche UTC 1700006400)
+
+        def _setup_gt_24h_hold() -> ScalpSimEngine:
+            eng = ScalpSimEngine(
+                profile="SCALP_SWEEP_STD",
+                exec_mode="LIMIT",
+                lock_mode="pure_sl_tp",
+                max_hold_hours=0.0,
+                initial_balance_sats=100_000,
+            )
+            ok, reason, _ = eng.submit_signal(
+                side="b",
+                spot_price=70050.0,
+                limit_price=70000.0,
+                sl_price=69500.0,
+                tp_price=71000.0,
+                invalidation_price=69300.0,
+                ttl_sec=600.0,
+                margin_sats=1000.0,
+                leverage=25,
+                bar_idx=0,
+                ts=t0,
+            )
+            self.assertTrue(ok, msg=reason)
+            eng.process_bar(
+                1,
+                t0 + 60.0,
+                70010.0,
+                70020.0,
+                69999.5,
+                70010.0,
+                context=_neutral_ctx(spot=70010.0),
+            )
+            for idx in range(2, 1602):
+                px = 70000.0 + 150.0 * math.sin(idx / 20.0)
+                eng.process_bar(
+                    idx,
+                    t0 + idx * 60.0,
+                    px,
+                    px + 40.0,
+                    px - 40.0,
+                    px,
+                    context=_neutral_ctx(spot=px),
+                )
+            self.assertEqual(len(eng.running_trades), 1)
+            self.assertEqual(len(eng.closed_trades), 0)
+            return eng
+
+        # Variante A: tras > 26.6h cruzando medianoche UTC, cierra en TAKE_PROFIT sin TIME_STOP ni EOD
+        eng_a = _setup_gt_24h_hold()
+        eng_a.process_bar(
+            1602,
+            t0 + 1602 * 60.0,
+            70200.0,
+            71050.0,
+            70100.0,
+            71020.0,
+            context=_neutral_ctx(spot=71020.0),
+        )
+        ep_a = eng_a.finalize_episode()
+        self.assertEqual(len(eng_a.closed_trades), 1)
+        self.assertEqual(eng_a.closed_trades[0]["close_reason"], "TAKE_PROFIT")
+        self.assertEqual(
+            ep_a["exit_reasons"],
+            {"TP": 1, "SL": 0, "DEF_SCALP_LOCK": 0, "TIME_STOP": 0, "EOD": 0},
+        )
+
+        # Variante B: tras > 26.6h sin tocar SL/TP, finalize_episode cierra como EPISODE_END (EOD)
+        eng_b = _setup_gt_24h_hold()
+        ep_b = eng_b.finalize_episode()
+        self.assertEqual(len(eng_b.closed_trades), 1)
+        self.assertEqual(eng_b.closed_trades[0]["close_reason"], "EPISODE_END")
+        self.assertEqual(
+            ep_b["exit_reasons"],
+            {"TP": 0, "SL": 0, "DEF_SCALP_LOCK": 0, "TIME_STOP": 0, "EOD": 1},
+        )
+
+    def test_max_hold_hours_4_closes_as_time_stop_not_eod_and_cli_exit_split(self):
+        t0 = 1700002800.0
+        eng = ScalpSimEngine(
+            profile="SCALP_SWEEP_STD",
+            exec_mode="LIMIT",
+            lock_mode="pure_sl_tp",
+            max_hold_hours=4.0,
+            initial_balance_sats=100_000,
+        )
+        ok, reason, _ = eng.submit_signal(
+            side="b",
+            spot_price=70050.0,
+            limit_price=70000.0,
+            sl_price=69500.0,
+            tp_price=71000.0,
+            invalidation_price=69300.0,
+            ttl_sec=600.0,
+            margin_sats=1000.0,
+            leverage=25,
+            bar_idx=0,
+            ts=t0,
+        )
+        self.assertTrue(ok, msg=reason)
+
+        open_ts = t0 + 60.0
+        eng.process_bar(1, open_ts, 70010.0, 70020.0, 69999.5, 70010.0, context=_neutral_ctx(spot=70010.0))
+        self.assertEqual(len(eng.running_trades), 1)
+
+        # Hasta open_ts + 14340.0 (3h59m) sigue abierta
+        for idx in range(2, 241):
+            ts_bar = t0 + idx * 60.0
+            eng.process_bar(idx, ts_bar, 70010.0, 70040.0, 69990.0, 70020.0, context=_neutral_ctx(spot=70020.0))
+        self.assertEqual(eng.current_ts, open_ts + 14340.0)
+        self.assertEqual(len(eng.running_trades), 1)
+        self.assertEqual(len(eng.closed_trades), 0)
+
+        # Barra a open_ts + 14400.0 (4h00m) dispara TIME_STOP inmediatamente
+        eng.process_bar(
+            241,
+            open_ts + 14400.0,
+            70020.0,
+            70050.0,
+            69990.0,
+            70030.0,
+            context=_neutral_ctx(spot=70030.0),
+        )
+        self.assertEqual(len(eng.running_trades), 0)
+        self.assertEqual(len(eng.closed_trades), 1)
+        self.assertEqual(eng.closed_trades[0]["close_reason"], "TIME_STOP")
+
+        ep = eng.finalize_episode()
+        self.assertEqual(
+            ep["exit_reasons"],
+            {"TP": 0, "SL": 0, "DEF_SCALP_LOCK": 0, "TIME_STOP": 1, "EOD": 0},
+        )
+
+        acc = CellAccumulator(
+            cell_id="scalp|S0|16bps|SCALP_SWEEP_STD|LIMIT|pure_sl_tp|off|hold4h",
+            mode="scalping",
+            scope="fold1",
+            scenario="S0",
+            fee_rt_bps=16.0,
+            taker_fee_rate=0.0008,
+            initial_balance=100_000,
+            params={"profile": "SCALP_SWEEP_STD", "exec_mode": "LIMIT", "max_hold_hours": 4.0},
+        )
+        desc_mem = BlockDesc(
+            index=0,
+            block_key="B_OOS_01",
+            label="OOS_01",
+            pkl_path="unused.pkl",
+            is_oos_12m=True,
+            is_m16=False,
+            oos_month_bucket="2025-01",
+        )
+        acc.record_block(
+            desc=desc_mem,
+            n_trades=int(ep["n_trades"]),
+            wins=int(ep["wins"]),
+            net_sats=int(round(ep["net_profit_sats"])),
+            b_win=int(round(ep["gross_win_sats"])),
+            b_loss=int(round(ep["gross_loss_sats"])),
+            dd_pct=float(ep["max_drawdown_pct"]),
+            blk_ddg=int(ep["dd_guard_events"]),
+            floor_violated=bool(ep["hard_floor_violated"]),
+            cost_sats=float(ep["total_cost_sats"]),
+            submitted=int(ep["orders_submitted"]),
+            filled=int(ep["orders_filled"]),
+            gross_pnl_sats=float(ep["gross_pnl_sats"]),
+            exit_reasons=dict(ep["exit_reasons"]),
+            macro_regime_counts=dict(ep["macro_regime_counts"]),
+        )
+        final_acc = acc.finalize()
+        self.assertEqual(final_acc["ExitSplit"], "0/0/0/1/0")
+        self.assertEqual(set(final_acc["macro_regime_counts"].keys()), set(MACRO_REGIME_KEYS))
+
+        # Verificar grid CLI _run_scalping_mode con max_hold_hours_list=[0.0, 16.0] sobre 1 bloque .pkl temporal
+        tiny_candles = [
+            Candle(
+                timestamp=t0 + i * 60.0,
+                open=70000.0,
+                high=70020.0,
+                low=69980.0,
+                close=70000.0,
+                volume=10.0,
+            )
+            for i in range(15)
+        ]
+        blk = _make_precomputed_scalp_block(tiny_candles, atr_5m=180.0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pkl_path = os.path.join(tmpdir, "tiny_scalp.pkl")
+            with open(pkl_path, "wb") as fh:
+                pickle.dump(blk, fh)
+            desc_tmp = BlockDesc(
+                index=0,
+                block_key="B_TMP",
+                label="TMP",
+                pkl_path=pkl_path,
+                is_oos_12m=True,
+                is_m16=False,
+                oos_month_bucket="2025-01",
+            )
+            rows = _run_scalping_mode(
+                descs=[desc_tmp],
+                scope="fold1",
+                scenarios=[("S0", MicrostructureStressConfig.s0_nominal())],
+                fee_rt_list=[16.0],
+                profiles=["SCALP_SWEEP_STD"],
+                exec_modes=["LIMIT"],
+                initial_balance=100_000,
+                quiet=True,
+                lock_modes=["pure_sl_tp"],
+                macro_filters=["off"],
+                rolling_pause_reset=True,
+                max_hold_hours_list=[0.0, 16.0],
+            )
+        self.assertEqual(len(rows), 2)
+        by_hold = {r["params"]["max_hold_hours"]: r for r in rows}
+        self.assertEqual(set(by_hold.keys()), {0.0, 16.0})
+        self.assertIn("|hold0h", by_hold[0.0]["cell_id"])
+        self.assertIn("|hold16h", by_hold[16.0]["cell_id"])
+
+    def test_macro_classifier_parity_normal_vol_and_pkl_unscaled_dict_sanitization(self):
+        t0 = 1700006400.0  # frontera limpia UTC 00:00 / 4h / 1h
+        builder = CausalScalpContextBuilder()
+        check_bars = {180, 360, 720, 1080, 1440}
+        checked = 0
+        checked_4h = 0
+        for i in range(1441):
+            c_px = 70000.0 + 180.0 * math.sin(i / 25.0)
+            ctx = builder.step(
+                t0 + i * 60.0,
+                c_px,
+                c_px + 35.0,
+                c_px - 35.0,
+                c_px,
+                volume=12.0,
+            )
+            if i in check_bars:
+                checked += 1
+                self.assertNotEqual(ctx["ind_1h"]["market_regime"], "EXTREME_VOLATILITY")
+                self.assertNotEqual(ctx["ind_4h"]["market_regime"], "EXTREME_VOLATILITY")
+                self.assertEqual(
+                    MarketRegimeClassifier.classify(ctx["ind_5m"], ctx["ind_15m"], ctx["ind_1h"])["market_regime"],
+                    ctx["perception"]["market_regime"],
+                )
+                self.assertEqual(
+                    MarketRegimeClassifier.classify(scale_macro_ind_for_regime(ctx["ind_1h"], "1h"))["market_regime"],
+                    ctx["ind_1h"]["market_regime"],
+                )
+                if "atr_pct" in ctx["ind_4h"]:
+                    checked_4h += 1
+                    self.assertEqual(
+                        MarketRegimeClassifier.classify(scale_macro_ind_for_regime(ctx["ind_4h"], "4h"))["market_regime"],
+                        ctx["ind_4h"]["market_regime"],
+                    )
+        self.assertEqual(checked, len(check_bars))
+        self.assertEqual(checked_4h, 3)
+
+        # Caso exacto de .pkl con umbrales 5m sin escalar estampados en ind_1h/ind_4h
+        pkl_ind_1h = {
+            "price": 70000.0,
+            "atr": 455.0,
+            "atr_pct": 0.0065,
+            "atr_rel_ratio": 1.05,
+            "bb_width_pct": 0.014,
+            "bb_expansion_rate": 1.0,
+            "ema9": 70030.0,
+            "ema21": 70000.0,
+            "ema_score": 0.0,
+            "regime": "RANGE_NORMAL",
+            "market_regime": "RANGE",
+        }
+        pkl_ind_4h = {
+            "price": 70000.0,
+            "atr": 910.0,
+            "atr_pct": 0.0130,
+            "atr_rel_ratio": 1.05,
+            "bb_width_pct": 0.025,
+            "bb_expansion_rate": 1.0,
+            "ema9": 70040.0,
+            "ema21": 70000.0,
+            "ema_score": 0.0,
+            "regime": "CHOP_HIGHVOL",
+            "market_regime": "EXTREME_VOLATILITY",
+        }
+        orig_1h = dict(pkl_ind_1h)
+        orig_4h = dict(pkl_ind_4h)
+
+        san_builder = CausalScalpContextBuilder()
+        ctx_san = san_builder.step(
+            t0,
+            70000.0,
+            70030.0,
+            69970.0,
+            70000.0,
+            volume=10.0,
+            ind_1h=pkl_ind_1h,
+            ind_4h=pkl_ind_4h,
+        )
+        self.assertEqual(pkl_ind_1h, orig_1h)
+        self.assertEqual(pkl_ind_4h, orig_4h)
+        self.assertNotEqual(ctx_san["ind_4h"]["market_regime"], "EXTREME_VOLATILITY")
+
+        for mf in ("counter_block", "range_only"):
+            eng = ScalpSimEngine(
+                profile="SCALP_SWEEP_STD",
+                exec_mode="LIMIT",
+                macro_filter=mf,
+                initial_balance_sats=100_000,
+            )
+            ok, reason, _ = eng.submit_signal(
+                side="b",
+                spot_price=70000.0,
+                atr_5m=150.0,
+                limit_price=69980.0,
+                sl_price=69500.0,
+                tp_price=71000.0,
+                invalidation_price=69300.0,
+                ttl_sec=600.0,
+                margin_sats=1000.0,
+                leverage=25,
+                bar_idx=0,
+                ts=t0,
+                context=ctx_san,
+            )
+            self.assertTrue(ok, msg=f"{mf}: {reason}")
+            self.assertEqual(eng.orders_submitted, 1)
+            self.assertEqual(eng.rejected_reasons.get("MACRO_EXTREME_VOL", 0), 0)
+            ep = eng.finalize_episode()
+            self.assertEqual(ep["macro_regime_counts"]["EXTREME_VOLATILITY"], 0)
+            self.assertEqual(sum(ep["macro_regime_counts"].values()), eng.signals_total)
+
+        self.assertEqual(pkl_ind_1h, orig_1h)
+        self.assertEqual(pkl_ind_4h, orig_4h)
 
 
 if __name__ == "__main__":

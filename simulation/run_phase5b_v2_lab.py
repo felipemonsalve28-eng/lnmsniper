@@ -99,7 +99,17 @@ class CellAccumulator:
     loss_gross_pct_sum: float = 0.0
     clamped_entries: int = 0
     exit_reasons: Dict[str, int] = field(
-        default_factory=lambda: {"TP": 0, "SL": 0, "DEF_SCALP_LOCK": 0, "EOD": 0}
+        default_factory=lambda: {"TP": 0, "SL": 0, "DEF_SCALP_LOCK": 0, "TIME_STOP": 0, "EOD": 0}
+    )
+    macro_regime_counts: Dict[str, int] = field(
+        default_factory=lambda: {
+            "RANGE": 0,
+            "TRANSITION": 0,
+            "TREND_BULL": 0,
+            "TREND_BEAR": 0,
+            "EXTREME_VOLATILITY": 0,
+            "UNKNOWN": 0,
+        }
     )
 
     oos_bucket_net: Dict[str, int] = field(default_factory=dict)
@@ -125,6 +135,7 @@ class CellAccumulator:
         extra: Optional[Dict[str, Any]] = None,
         gross_pnl_sats: Optional[float] = None,
         exit_reasons: Optional[Dict[str, int]] = None,
+        macro_regime_counts: Optional[Dict[str, int]] = None,
         clamped_entries: int = 0,
         avg_win_gross_pct: float = 0.0,
         avg_loss_gross_pct: float = 0.0,
@@ -150,9 +161,21 @@ class CellAccumulator:
         self.loss_gross_pct_sum += losses_blk * float(avg_loss_gross_pct)
         self.clamped_entries += int(clamped_entries)
         if isinstance(exit_reasons, dict):
-            for ex_k in ("TP", "SL", "DEF_SCALP_LOCK", "EOD"):
+            for ex_k in ("TP", "SL", "DEF_SCALP_LOCK", "TIME_STOP", "EOD"):
                 self.exit_reasons[ex_k] = self.exit_reasons.get(ex_k, 0) + int(
                     exit_reasons.get(ex_k, 0)
+                )
+        if isinstance(macro_regime_counts, dict):
+            for mr_k in (
+                "RANGE",
+                "TRANSITION",
+                "TREND_BULL",
+                "TREND_BEAR",
+                "EXTREME_VOLATILITY",
+                "UNKNOWN",
+            ):
+                self.macro_regime_counts[mr_k] = self.macro_regime_counts.get(mr_k, 0) + int(
+                    macro_regime_counts.get(mr_k, 0)
                 )
 
         if desc.is_oos_12m:
@@ -232,7 +255,9 @@ class CellAccumulator:
         exit_split = (
             f"{self.exit_reasons.get('TP', 0)}/"
             f"{self.exit_reasons.get('SL', 0)}/"
-            f"{self.exit_reasons.get('DEF_SCALP_LOCK', 0)}"
+            f"{self.exit_reasons.get('DEF_SCALP_LOCK', 0)}/"
+            f"{self.exit_reasons.get('TIME_STOP', 0)}/"
+            f"{self.exit_reasons.get('EOD', 0)}"
         )
 
         out: Dict[str, Any] = {
@@ -284,6 +309,8 @@ class CellAccumulator:
             ),
             "monthly": self.monthly_rows,
         }
+        if self.mode == "scalping":
+            out["macro_regime_counts"] = dict(self.macro_regime_counts)
         if self.extra_counters:
             out["counters"] = dict(self.extra_counters)
         if self.extra_meta:
@@ -1201,6 +1228,7 @@ def _run_scalping_mode(
     lock_modes: Optional[List[str]] = None,
     macro_filters: Optional[List[str]] = None,
     rolling_pause_reset: bool = True,
+    max_hold_hours_list: Optional[List[float]] = None,
 ) -> List[Dict[str, Any]]:
     eff_lock_modes = (
         list(lock_modes) if lock_modes is not None else ["pure_sl_tp", "delayed_75"]
@@ -1209,6 +1237,13 @@ def _run_scalping_mode(
         list(macro_filters)
         if macro_filters is not None
         else ["off", "counter_block", "range_only"]
+    )
+    eff_max_hold_hours = (
+        list(max_hold_hours_list) if max_hold_hours_list is not None else [0.0]
+    )
+    include_hold_in_cid = (
+        len(eff_max_hold_hours) > 1
+        or (len(eff_max_hold_hours) == 1 and eff_max_hold_hours[0] > 0.0)
     )
     cells: List[
         Tuple[
@@ -1219,6 +1254,7 @@ def _run_scalping_mode(
             str,
             str,
             str,
+            float,
         ]
     ] = []
     for sc_name, sc_cfg in scenarios:
@@ -1228,38 +1264,43 @@ def _run_scalping_mode(
                 for exec_mode in exec_modes:
                     for lock_mode in eff_lock_modes:
                         for macro_filter in eff_macro_filters:
-                            cid = (
-                                f"scalp|{sc_name}|{fee_bps:g}bps|{prof_name}|"
-                                f"{exec_mode}|{lock_mode}|{macro_filter}"
-                            )
-                            acc = CellAccumulator(
-                                cell_id=cid,
-                                mode="scalping",
-                                scope=scope,
-                                scenario=sc_name,
-                                fee_rt_bps=fee_bps,
-                                taker_fee_rate=taker_fee,
-                                initial_balance=initial_balance,
-                                params={
-                                    "profile": prof_name,
-                                    "exec_mode": exec_mode,
-                                    "fee_rt_bps": fee_bps,
-                                    "lock_mode": lock_mode,
-                                    "macro_filter": macro_filter,
-                                    "rolling_pause_reset": bool(rolling_pause_reset),
-                                },
-                            )
-                            cells.append(
-                                (
-                                    acc,
-                                    sc_cfg,
-                                    fee_bps,
-                                    prof_name,
-                                    exec_mode,
-                                    lock_mode,
-                                    macro_filter,
+                            for mh in eff_max_hold_hours:
+                                cid = (
+                                    f"scalp|{sc_name}|{fee_bps:g}bps|{prof_name}|"
+                                    f"{exec_mode}|{lock_mode}|{macro_filter}"
                                 )
-                            )
+                                if include_hold_in_cid:
+                                    cid = f"{cid}|hold{mh:g}h"
+                                acc = CellAccumulator(
+                                    cell_id=cid,
+                                    mode="scalping",
+                                    scope=scope,
+                                    scenario=sc_name,
+                                    fee_rt_bps=fee_bps,
+                                    taker_fee_rate=taker_fee,
+                                    initial_balance=initial_balance,
+                                    params={
+                                        "profile": prof_name,
+                                        "exec_mode": exec_mode,
+                                        "fee_rt_bps": fee_bps,
+                                        "lock_mode": lock_mode,
+                                        "macro_filter": macro_filter,
+                                        "rolling_pause_reset": bool(rolling_pause_reset),
+                                        "max_hold_hours": float(mh),
+                                    },
+                                )
+                                cells.append(
+                                    (
+                                        acc,
+                                        sc_cfg,
+                                        fee_bps,
+                                        prof_name,
+                                        exec_mode,
+                                        lock_mode,
+                                        macro_filter,
+                                        float(mh),
+                                    )
+                                )
 
     for desc, blk in _iter_streamed_blocks(descs, quiet=quiet):
         engines_by_id: Dict[str, ScalpSimEngine] = {}
@@ -1271,6 +1312,7 @@ def _run_scalping_mode(
             exec_mode,
             lock_mode,
             macro_filter,
+            mh,
         ) in cells:
             engines_by_id[acc.cell_id] = ScalpSimEngine(
                 profile=prof_name,
@@ -1281,6 +1323,7 @@ def _run_scalping_mode(
                 lock_mode=lock_mode,
                 macro_filter=macro_filter,
                 rolling_pause_reset=rolling_pause_reset,
+                max_hold_hours=float(mh),
             )
 
         block_results = run_scalp_cells_on_block(
@@ -1289,7 +1332,7 @@ def _run_scalping_mode(
             initial_balance=initial_balance,
         )
 
-        for acc, _, _, _, _, _, _ in cells:
+        for acc, _, _, _, _, _, _, _ in cells:
             res = block_results.get(acc.cell_id, {})
             cost_sats = float(res.get("total_cost_sats", res.get("cost_sats", 0.0)))
             submitted = int(res.get("orders_submitted", res.get("submitted", 0)))
@@ -1316,7 +1359,37 @@ def _run_scalping_mode(
             raw_net_f = float(res.get("net_profit_sats", res.get("net_sats", 0.0)))
             blk_gross_pnl = float(res.get("gross_pnl_sats", raw_net_f + cost_sats))
             blk_exit_reasons = res.get("exit_reasons")
+            blk_macro_counts = res.get("macro_regime_counts")
             blk_clamped = int(res.get("clamped_entries", 0))
+
+            extra_row: Dict[str, Any] = {
+                "cost_sats": round(cost_sats, 2),
+                "gross_pnl_sats": round(blk_gross_pnl, 2),
+                "orders_submitted": submitted,
+                "orders_filled": filled,
+                "signals_total": int(res.get("signals_total", 0)),
+                "cancelled_ttl": int(res.get("cancelled_ttl", 0)),
+                "cancelled_runaway": int(res.get("cancelled_runaway", 0)),
+                "cancelled_invalidated": int(res.get("cancelled_invalidated", 0)),
+                "clamped_entries": blk_clamped,
+                "exit_reasons": (
+                    dict(blk_exit_reasons)
+                    if isinstance(blk_exit_reasons, dict)
+                    else {"TP": 0, "SL": 0, "DEF_SCALP_LOCK": 0, "TIME_STOP": 0, "EOD": 0}
+                ),
+            }
+            if isinstance(blk_macro_counts, dict):
+                extra_row["macro_regime_counts"] = {
+                    k: int(blk_macro_counts.get(k, 0))
+                    for k in (
+                        "RANGE",
+                        "TRANSITION",
+                        "TREND_BULL",
+                        "TREND_BEAR",
+                        "EXTREME_VOLATILITY",
+                        "UNKNOWN",
+                    )
+                }
 
             acc.record_block(
                 desc=desc,
@@ -1331,24 +1404,10 @@ def _run_scalping_mode(
                 cost_sats=cost_sats,
                 submitted=submitted,
                 filled=filled,
-                extra={
-                    "cost_sats": round(cost_sats, 2),
-                    "gross_pnl_sats": round(blk_gross_pnl, 2),
-                    "orders_submitted": submitted,
-                    "orders_filled": filled,
-                    "signals_total": int(res.get("signals_total", 0)),
-                    "cancelled_ttl": int(res.get("cancelled_ttl", 0)),
-                    "cancelled_runaway": int(res.get("cancelled_runaway", 0)),
-                    "cancelled_invalidated": int(res.get("cancelled_invalidated", 0)),
-                    "clamped_entries": blk_clamped,
-                    "exit_reasons": (
-                        dict(blk_exit_reasons)
-                        if isinstance(blk_exit_reasons, dict)
-                        else {"TP": 0, "SL": 0, "DEF_SCALP_LOCK": 0, "EOD": 0}
-                    ),
-                },
+                extra=extra_row,
                 gross_pnl_sats=blk_gross_pnl,
                 exit_reasons=blk_exit_reasons,
+                macro_regime_counts=blk_macro_counts,
                 clamped_entries=blk_clamped,
                 avg_win_gross_pct=float(res.get("avg_win_gross_pct", 0.0)),
                 avg_loss_gross_pct=float(res.get("avg_loss_gross_pct", 0.0)),
@@ -1356,7 +1415,7 @@ def _run_scalping_mode(
 
         del engines_by_id
 
-    return [acc.finalize() for acc, _, _, _, _, _, _ in cells]
+    return [acc.finalize() for acc, _, _, _, _, _, _, _ in cells]
 
 
 def _format_table(rows: List[Dict[str, Any]]) -> str:
@@ -1407,7 +1466,7 @@ def _format_table(rows: List[Dict[str, Any]]) -> str:
                     f"{float(r.get('RR_net', 0.0)):.2f}",
                     pf_str,
                     f"{r.get('FER', 0.0):.3f}",
-                    str(r.get("ExitSplit", "0/0/0")),
+                    str(r.get("ExitSplit", "0/0/0/0/0")),
                     f"{r['MaxDD_pct']:.2f}%",
                     f"{r['DD_ge_45']}/{r['blocks']}",
                     str(r["DDG"]),
@@ -1522,6 +1581,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Filtros macro para scalping: off,counter_block,range_only (default: off,counter_block,range_only).",
     )
     parser.add_argument(
+        "--max-hold-hours",
+        default="0",
+        help="Horas máximas de hold para scalping separadas por coma (0=sin time-stop; ej. 0,12,24).",
+    )
+    parser.add_argument(
         "--rolling-pause-reset",
         dest="rolling_pause_reset",
         action="store_true",
@@ -1568,6 +1632,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     exec_modes = _parse_csv_strs(args.exec_modes, "--exec-modes", upper=True)
     lock_modes: List[str] = []
     macro_filters: List[str] = []
+    max_hold_hours_list: List[float] = []
     if args.mode == "scalping":
         lock_modes = list(
             dict.fromkeys(
@@ -1580,6 +1645,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 m.lower()
                 for m in _parse_csv_strs(args.macro_filters, "--macro-filters", upper=False)
             )
+        )
+        max_hold_hours_list = list(
+            dict.fromkeys(_parse_csv_floats(args.max_hold_hours, "--max-hold-hours", min_val=-1e-12))
         )
         unknown_locks = [m for m in lock_modes if m not in VALID_LOCK_MODES]
         if unknown_locks:
@@ -1650,6 +1718,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             lock_modes=lock_modes,
             macro_filters=macro_filters,
             rolling_pause_reset=args.rolling_pause_reset,
+            max_hold_hours_list=max_hold_hours_list,
         )
     else:
         results = _run_lane_b_mode(
@@ -1682,6 +1751,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             payload["lock_modes"] = lock_modes
             payload["macro_filters"] = macro_filters
             payload["rolling_pause_reset"] = bool(args.rolling_pause_reset)
+            payload["max_hold_hours"] = max_hold_hours_list
         _atomic_write_json(args.json_out, payload)
         print(f"[JSON] Escrito atómicamente en {args.json_out}")
 
